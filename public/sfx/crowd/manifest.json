@@ -1,0 +1,16 @@
+{
+  "forward": [
+    "01_new.mp3",
+    "01.mp3",
+    "02_new.mp3",
+    "02.mp3"
+  ],
+  "goal": [
+    "01.mp3"
+  ],
+  "stand": [
+    "01_new.mp3",
+    "02_new.mp3",
+    "03_new.mp3"
+  ]
+}

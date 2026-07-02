@@ -1,0 +1,199 @@
+import { useEffect, useRef } from 'react'
+import {
+  createGamepadEdgeState,
+  pollXboxGamepad,
+} from './gamepad'
+
+export type ControlState = {
+  forward: boolean
+  backward: boolean
+  left: boolean
+  right: boolean
+  sprint: boolean
+  pass: boolean
+  /** Passe em profundidade (R / Y) */
+  throughPass: boolean
+  /** Cruzamento (Q / B com bola) */
+  cross: boolean
+  /** Botão de chute pressionado (Espaço / X) */
+  kick: boolean
+  slide: boolean
+  switchPlayer: boolean
+  /** Segurar RB / F — protege a bola (parado, imune a roubo) */
+  shield: boolean
+  /** Analógico esquerdo — eixo X (-1..1) */
+  moveX: number
+  /** Analógico esquerdo — eixo Z (-1..1), para frente = positivo */
+  moveZ: number
+}
+
+export type PlayerAction = 'pass' | 'kick' | 'slide' | 'cross' | 'throughPass' | 'switchPlayer'
+
+type BooleanControlKey = Exclude<
+  keyof ControlState,
+  'moveX' | 'moveZ'
+>
+
+const DEFAULT: ControlState = {
+  forward: false,
+  backward: false,
+  left: false,
+  right: false,
+  sprint: false,
+  pass: false,
+  throughPass: false,
+  cross: false,
+  kick: false,
+  slide: false,
+  switchPlayer: false,
+  shield: false,
+  moveX: 0,
+  moveZ: 0,
+}
+
+export function useKeyboardControls() {
+  const controls = useRef<ControlState>({ ...DEFAULT })
+  const gamepadEdge = useRef(createGamepadEdgeState())
+  const keyboardSprint = useRef(false)
+  const keyboardLeft = useRef(false)
+  const keyboardRight = useRef(false)
+  const keyboardKick = useRef(false)
+  const keyboardShield = useRef(false)
+  const kickPressEdge = useRef(false)
+  const kickReleased = useRef(false)
+  const prevKickHeld = useRef(false)
+
+  useEffect(() => {
+    const map: Record<string, BooleanControlKey> = {
+      KeyW: 'forward',
+      ArrowUp: 'forward',
+      KeyS: 'backward',
+      ArrowDown: 'backward',
+      KeyA: 'left',
+      ArrowLeft: 'left',
+      KeyD: 'right',
+      ArrowRight: 'right',
+      ShiftLeft: 'sprint',
+      ShiftRight: 'sprint',
+      KeyE: 'pass',
+      KeyR: 'throughPass',
+      KeyQ: 'cross',
+      KeyF: 'shield',
+      Space: 'kick',
+      Tab: 'switchPlayer',
+    }
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') e.preventDefault()
+      if (e.repeat) return
+      const action = map[e.code]
+      if (!action) return
+      if (action === 'sprint') keyboardSprint.current = true
+      if (action === 'left') keyboardLeft.current = true
+      if (action === 'right') keyboardRight.current = true
+      if (action === 'kick') {
+        keyboardKick.current = true
+        kickPressEdge.current = true
+      }
+      if (action === 'shield') keyboardShield.current = true
+      controls.current[action] = true
+    }
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      const action = map[e.code]
+      if (!action) return
+      if (action === 'sprint') keyboardSprint.current = false
+      if (action === 'left') keyboardLeft.current = false
+      if (action === 'right') keyboardRight.current = false
+      if (action === 'kick') {
+        keyboardKick.current = false
+        kickReleased.current = true
+      }
+      if (action === 'shield') keyboardShield.current = false
+      controls.current[action] = false
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+    }
+  }, [])
+
+  useEffect(() => {
+    let raf = 0
+    const tick = () => {
+      const c = controls.current
+      const gp = {
+        moveX: 0,
+        moveZ: 0,
+        sprint: false,
+        pass: false,
+        throughPass: false,
+        cross: false,
+        kickHeld: false,
+        kickJustPressed: false,
+        slide: false,
+        switchPlayer: false,
+        shieldHeld: false,
+        aimLeft: false,
+        aimRight: false,
+      }
+
+      const hasPad = pollXboxGamepad(gamepadEdge.current, gp)
+
+      c.moveX = gp.moveX
+      c.moveZ = gp.moveZ
+      c.sprint = keyboardSprint.current || gp.sprint
+
+      if (gp.pass) c.pass = true
+      if (gp.throughPass) c.throughPass = true
+      if (gp.cross) c.cross = true
+      if (gp.slide) c.slide = true
+      if (gp.switchPlayer) c.switchPlayer = true
+      if (gp.kickJustPressed) kickPressEdge.current = true
+
+      c.shield = keyboardShield.current || gp.shieldHeld
+      c.kick = keyboardKick.current || gp.kickHeld
+
+      if (prevKickHeld.current && !c.kick) {
+        kickReleased.current = true
+      }
+      prevKickHeld.current = c.kick
+
+      c.left = keyboardLeft.current || (hasPad && gp.aimLeft)
+      c.right = keyboardRight.current || (hasPad && gp.aimRight)
+
+      raf = requestAnimationFrame(tick)
+    }
+
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  const consumeAction = (action: PlayerAction) => {
+    if (action === 'kick') {
+      if (kickPressEdge.current) {
+        kickPressEdge.current = false
+        return true
+      }
+      return false
+    }
+    if (controls.current[action]) {
+      controls.current[action] = false
+      return true
+    }
+    return false
+  }
+
+  const consumeKickRelease = () => {
+    if (kickReleased.current) {
+      kickReleased.current = false
+      return true
+    }
+    return false
+  }
+
+  return { controls, consumeAction, consumeKickRelease }
+}
