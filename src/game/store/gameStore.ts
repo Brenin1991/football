@@ -1,6 +1,18 @@
 import { create } from 'zustand'
 import { getGoalkeeperId, HALF_DURATION, MATCH_DURATION } from '../constants'
+import type { PowerBarMode } from '../systems/shotPower'
 import type { FieldBounds, GoalZone, MatchPhase, TeamId, Vec3 } from '../types'
+
+export interface StrikeAimState {
+  originX: number
+  originZ: number
+  dirX: number
+  dirZ: number
+  angle: number
+  mode: PowerBarMode | null
+  power: number
+  charging: boolean
+}
 
 export interface BallPossession {
   playerId: string
@@ -72,14 +84,24 @@ interface GameStore {
   /** Saída de bola — animação de passe no cobrador */
   kickoffStrikeAnim: { kickerId: string; at: number } | null
 
-  /** Barra de força do chute (0–1) enquanto segura o botão */
+  /** Barra de força do chute/passe (0–1) enquanto segura o botão */
   shotChargeActive: boolean
   shotChargePower: number
+  powerBarMode: PowerBarMode
   pendingUserShot: { power: number; playerId: string; queuedAt: number } | null
+  pendingUserPass: {
+    type: 'pass' | 'through' | 'cross'
+    power: number
+    playerId: string
+    queuedAt: number
+  } | null
   pendingSetPiecePower: number
 
   /** Receptor segura X durante cruzamento — finalização sem dominar */
   crossOneTouchActive: boolean
+
+  /** Indicador de mira do jogador controlado */
+  strikeAim: StrikeAimState | null
 
   /** Portador imune a roubo em pé (finta, etc.) */
   stealImmunityPlayerId: string | null
@@ -122,14 +144,20 @@ interface GameStore {
   rotateSetPieceAim: (delta: number) => void
   setSetPieceAim: (angle: number) => void
   setSetPieceKickPending: (pending: boolean) => void
-  setShotCharge: (power: number, active: boolean) => void
+  setShotCharge: (power: number, active: boolean, mode?: PowerBarMode) => void
   setPendingUserShot: (power: number) => void
   consumePendingUserShot: (playerId: string) => number | null
+  setPendingUserPass: (type: 'pass' | 'through' | 'cross', power: number) => void
+  consumePendingUserPass: (playerId: string) => {
+    type: 'pass' | 'through' | 'cross'
+    power: number
+  } | null
   setPendingSetPiecePower: (power: number) => void
   takePendingSetPiecePower: () => number
   setCrossOneTouchActive: (active: boolean) => void
   setStealImmunity: (playerId: string, ms: number) => void
   isStealImmune: (playerId: string) => boolean
+  setStrikeAim: (aim: StrikeAimState | null) => void
 }
 
 export const USER_TEAM: TeamId = 'home'
@@ -165,9 +193,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
   kickoffStrikeAnim: null,
   shotChargeActive: false,
   shotChargePower: 0,
+  powerBarMode: null,
   pendingUserShot: null,
+  pendingUserPass: null,
   pendingSetPiecePower: 1,
   crossOneTouchActive: false,
+  strikeAim: null,
   stealImmunityPlayerId: null,
   stealImmunityUntil: 0,
   playerCards: {},
@@ -247,8 +278,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({
       passIntent: intent,
       pendingUserShot: null,
+      pendingUserPass: null,
       shotChargeActive: false,
       shotChargePower: 0,
+      powerBarMode: null,
       ...(selectReceiver ? { activePlayerId: receiverId } : {}),
     })
   },
@@ -359,8 +392,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setSetPieceKickPending: (pending) => set({ setPieceKickPending: pending }),
 
-  setShotCharge: (power, active) =>
-    set({ shotChargePower: power, shotChargeActive: active }),
+  setShotCharge: (power, active, mode = null) =>
+    set({
+      shotChargePower: power,
+      shotChargeActive: active,
+      powerBarMode: active ? mode : null,
+    }),
 
   setPendingUserShot: (power) =>
     set({
@@ -369,6 +406,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         playerId: get().activePlayerId,
         queuedAt: performance.now(),
       },
+      pendingUserPass: null,
     }),
 
   consumePendingUserShot: (playerId) => {
@@ -380,6 +418,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (pending.queuedAt < state.possessionSince) return null
     set({ pendingUserShot: null })
     return pending.power
+  },
+
+  setPendingUserPass: (type, power) =>
+    set({
+      pendingUserPass: {
+        type,
+        power,
+        playerId: get().activePlayerId,
+        queuedAt: performance.now(),
+      },
+      pendingUserShot: null,
+    }),
+
+  consumePendingUserPass: (playerId) => {
+    const state = get()
+    const pending = state.pendingUserPass
+    if (!pending || pending.playerId !== playerId) return null
+    const poss = state.ballPossession
+    if (!poss || poss.playerId !== playerId) return null
+    if (pending.queuedAt < state.possessionSince) return null
+    set({ pendingUserPass: null })
+    return { type: pending.type, power: pending.power }
   },
 
   setPendingSetPiecePower: (power) => set({ pendingSetPiecePower: power }),
@@ -409,6 +469,25 @@ export const useGameStore = create<GameStore>((set, get) => ({
       state.stealImmunityPlayerId === playerId &&
       performance.now() < state.stealImmunityUntil
     )
+  },
+
+  setStrikeAim: (aim) => {
+    const prev = get().strikeAim
+    if (
+      prev === aim ||
+      (prev &&
+        aim &&
+        prev.originX === aim.originX &&
+        prev.originZ === aim.originZ &&
+        prev.dirX === aim.dirX &&
+        prev.dirZ === aim.dirZ &&
+        prev.mode === aim.mode &&
+        prev.power === aim.power &&
+        prev.charging === aim.charging)
+    ) {
+      return
+    }
+    set({ strikeAim: aim })
   },
 }))
 

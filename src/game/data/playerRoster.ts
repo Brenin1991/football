@@ -58,6 +58,18 @@ export function getPlayerPositionLabel(index: number): string {
   return FORMATION_POSITION_LABELS[index] ?? 'CM'
 }
 
+export function getPlayerRoleAbbrev(position: string): string {
+  if (position === 'GK') return 'GK'
+  if (position === 'LB' || position === 'CB' || position === 'RB') return 'DF'
+  if (position === 'LM' || position === 'CM' || position === 'RM') return 'MF'
+  return 'FW'
+}
+
+export function getPlayerRoleGroup(position: string): 'gk' | 'df' | 'mf' | 'fw' {
+  const abbr = getPlayerRoleAbbrev(position)
+  return abbr.toLowerCase() as 'gk' | 'df' | 'mf' | 'fw'
+}
+
 /** Só visual — substituir por stamina real depois */
 export function mockStamina(playerId: string): number {
   let h = 0

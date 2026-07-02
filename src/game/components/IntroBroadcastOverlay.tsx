@@ -33,10 +33,12 @@ function LineupPanel({
       className={`psx-intro-panel pes-hud-surface pes-hud-surface--${team} psx-intro-panel--lineup psx-intro-panel--${team}`}
       style={{ opacity }}
     >
-      <div className="psx-intro-panel-kicker pes-hud-highlight">Escalação</div>
-      <div className="psx-intro-panel-title pes-hud-highlight">
-        {getTeamBroadcastName(team)}
-        <span className="psx-intro-formation">{FORMATION_LABEL}</span>
+      <div className="psx-intro-panel-head">
+        <div className="psx-intro-panel-kicker pes-hud-highlight">Escalação</div>
+        <div className="psx-intro-panel-title pes-hud-highlight">
+          {getTeamBroadcastName(team)}
+          <span className="psx-intro-formation">{FORMATION_LABEL}</span>
+        </div>
       </div>
       <ul className="psx-intro-lineup">
         {lineup.map((player) => (

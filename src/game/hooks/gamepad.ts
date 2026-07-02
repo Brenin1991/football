@@ -68,9 +68,10 @@ export function pollXboxGamepad(
     moveX: number
     moveZ: number
     sprint: boolean
-    pass: boolean
-    throughPass: boolean
-    cross: boolean
+    passHeld: boolean
+    passJustPressed: boolean
+    throughHeld: boolean
+    crossHeld: boolean
     kickHeld: boolean
     kickJustPressed: boolean
     slide: boolean
@@ -94,14 +95,13 @@ export function pollXboxGamepad(
 
   out.sprint = triggerValue(pad, XBOX.RT) > TRIGGER_SPRINT
 
-  if (buttonJustPressed(pad, XBOX.A, edge)) out.pass = true
-  if (buttonJustPressed(pad, XBOX.Y, edge)) out.throughPass = true
+  out.passHeld = buttonPressed(pad, XBOX.A)
+  out.throughHeld = buttonPressed(pad, XBOX.Y)
+  out.crossHeld = buttonPressed(pad, XBOX.B)
+  if (buttonJustPressed(pad, XBOX.A, edge)) out.passJustPressed = true
   out.kickHeld = buttonPressed(pad, XBOX.X)
   if (buttonJustPressed(pad, XBOX.X, edge)) out.kickJustPressed = true
-  if (buttonJustPressed(pad, XBOX.B, edge)) {
-    out.cross = true
-    out.slide = true
-  }
+  if (buttonJustPressed(pad, XBOX.B, edge)) out.slide = true
   if (buttonJustPressed(pad, XBOX.LB, edge)) out.switchPlayer = true
   out.shieldHeld = buttonPressed(pad, XBOX.RB)
 

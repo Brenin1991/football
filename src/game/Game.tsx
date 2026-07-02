@@ -20,6 +20,7 @@ import { ReplayOverlay } from './components/ReplayOverlay'
 import { ReplayRecorder } from './components/ReplayRecorder'
 import { SetPieceAim } from './components/SetPieceAim'
 import { OffsideReplayLine } from './components/OffsideReplayLine'
+import { StrikeAimIndicator } from './components/StrikeAimIndicator'
 import { TeamEntranceManager } from './components/TeamEntranceManager'
 import { TeamController } from './components/TeamController'
 import { GoalkeeperController } from './components/GoalkeeperController'
@@ -52,10 +53,12 @@ function TeamPlayers({
   team,
   controls,
   consumeAction,
+  consumePassPress,
 }: {
   team: TeamId
   controls?: SceneProps['controls']
   consumeAction?: SceneProps['consumeAction']
+  consumePassPress?: SceneProps['consumePassPress']
 }) {
   const fieldBounds = useGameStore((s) => s.fieldBounds)
   const half = useGameStore((s) => s.half)
@@ -75,6 +78,7 @@ function TeamPlayers({
             spawn={{ x: spawn.x, y: spawn.y, z: spawn.z }}
             controls={team === 'home' ? controls : undefined}
             consumeAction={team === 'home' ? consumeAction : undefined}
+            consumePassPress={team === 'home' ? consumePassPress : undefined}
           />
         )
       })}
@@ -85,7 +89,12 @@ function TeamPlayers({
 function Players(props: SceneProps) {
   return (
     <>
-      <TeamPlayers team="home" controls={props.controls} consumeAction={props.consumeAction} />
+      <TeamPlayers
+        team="home"
+        controls={props.controls}
+        consumeAction={props.consumeAction}
+        consumePassPress={props.consumePassPress}
+      />
       <TeamPlayers team="away" />
     </>
   )
@@ -108,6 +117,7 @@ function Scene(props: SceneProps) {
           <PlayerAssetsProvider>
             <Ball />
             <SetPieceAim />
+            <StrikeAimIndicator />
             <OffsideReplayLine />
             <Referee />
             <Players {...props} />
@@ -144,10 +154,12 @@ export function Game() {
         canvas?.focus()
       }}
     >
-      <HUD />
+      <div className="game-ui-layer game-ui-layer--retro">
+        <HUD />
+        <ReplayOverlay />
+        <IntroBroadcastOverlay />
+      </div>
       <GameTimeController />
-      <ReplayOverlay />
-      <IntroBroadcastOverlay />
       <ScreenFade />
       <Canvas
         shadows

@@ -9,11 +9,23 @@ const LOCO_BLEND = 0.28
 const ACTION_BLEND = 0.18
 /** Sprint corre um pouco mais rápido que corrida normal */
 const SPRINT_TIME_SCALE = 1.12
+/** Clipes de passe/chute mais rápidos — sensação FIFA */
+const STRIKE_TIME_SCALE: Partial<Record<PlayerAnim, number>> = {
+  pass: 1.42,
+  kick: 1.28,
+  shoot: 1.32,
+}
+
+const STRIKE_MOVE_MUL: Partial<Record<PlayerAnim, number>> = {
+  pass: 0.74,
+  kick: 0.62,
+  shoot: 0.58,
+}
 
 const STRIKE_CONTACT_RATIO: Partial<Record<PlayerAnim, number>> = {
-  pass: 0.52,
-  kick: 0.54,
-  shoot: 0.46,
+  pass: 0.24,
+  kick: 0.26,
+  shoot: 0.22,
 }
 
 type AnimMap = Partial<Record<PlayerAnim, THREE.AnimationAction>>
@@ -104,7 +116,7 @@ export class PlayerAnimController {
   }
 
   isBodyLocked() {
-    if (isMovingStrike(this.action)) return true
+    if (isMovingStrike(this.action)) return false
     return (
       this.lockUntil > 0 &&
       this.action != null &&
@@ -112,12 +124,21 @@ export class PlayerAnimController {
     )
   }
 
-  locksFacing() {
+  isStriking() {
     return isMovingStrike(this.action)
   }
 
-  allowsLocomotionDuringAction() {
+  locksFacing() {
     return false
+  }
+
+  allowsLocomotionDuringAction() {
+    return isMovingStrike(this.action)
+  }
+
+  getStrikeMoveMultiplier() {
+    if (!this.action) return 1
+    return STRIKE_MOVE_MUL[this.action] ?? 1
   }
 
   clipSec(name: PlayerAnim) {
@@ -131,7 +152,7 @@ export class PlayerAnimController {
 
   private playbackScale(name: PlayerAnim): number {
     if (name === 'run' && this.runSprint) return SPRINT_TIME_SCALE
-    return 1
+    return STRIKE_TIME_SCALE[name] ?? 1
   }
 
   private clearListeners() {
@@ -296,7 +317,15 @@ export class PlayerAnimController {
     this.finishCleanup = () => this.mixer.removeEventListener('finished', handleFinished)
   }
 
-  playStrike(name: 'pass' | 'kick' | 'shoot', opts?: { onContact?: () => void }) {
+  playStrike(
+    name: 'pass' | 'kick' | 'shoot',
+    opts?: { onContact?: () => void; instantContact?: boolean },
+  ) {
+    if (opts?.instantContact && opts.onContact) {
+      opts.onContact()
+      this.playAction(name)
+      return
+    }
     this.playAction(name, opts)
   }
 

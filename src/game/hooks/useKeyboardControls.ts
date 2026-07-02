@@ -57,11 +57,15 @@ export function useKeyboardControls() {
   const keyboardSprint = useRef(false)
   const keyboardLeft = useRef(false)
   const keyboardRight = useRef(false)
+  const keyboardPass = useRef(false)
+  const keyboardThrough = useRef(false)
+  const keyboardCross = useRef(false)
   const keyboardKick = useRef(false)
   const keyboardShield = useRef(false)
   const kickPressEdge = useRef(false)
   const kickReleased = useRef(false)
   const prevKickHeld = useRef(false)
+  const passPressEdge = useRef(false)
 
   useEffect(() => {
     const map: Record<string, BooleanControlKey> = {
@@ -91,6 +95,12 @@ export function useKeyboardControls() {
       if (action === 'sprint') keyboardSprint.current = true
       if (action === 'left') keyboardLeft.current = true
       if (action === 'right') keyboardRight.current = true
+      if (action === 'pass') {
+        keyboardPass.current = true
+        passPressEdge.current = true
+      }
+      if (action === 'throughPass') keyboardThrough.current = true
+      if (action === 'cross') keyboardCross.current = true
       if (action === 'kick') {
         keyboardKick.current = true
         kickPressEdge.current = true
@@ -105,6 +115,9 @@ export function useKeyboardControls() {
       if (action === 'sprint') keyboardSprint.current = false
       if (action === 'left') keyboardLeft.current = false
       if (action === 'right') keyboardRight.current = false
+      if (action === 'pass') keyboardPass.current = false
+      if (action === 'throughPass') keyboardThrough.current = false
+      if (action === 'cross') keyboardCross.current = false
       if (action === 'kick') {
         keyboardKick.current = false
         kickReleased.current = true
@@ -129,9 +142,10 @@ export function useKeyboardControls() {
         moveX: 0,
         moveZ: 0,
         sprint: false,
-        pass: false,
-        throughPass: false,
-        cross: false,
+        passHeld: false,
+        passJustPressed: false,
+        throughHeld: false,
+        crossHeld: false,
         kickHeld: false,
         kickJustPressed: false,
         slide: false,
@@ -147,12 +161,13 @@ export function useKeyboardControls() {
       c.moveZ = gp.moveZ
       c.sprint = keyboardSprint.current || gp.sprint
 
-      if (gp.pass) c.pass = true
-      if (gp.throughPass) c.throughPass = true
-      if (gp.cross) c.cross = true
+      c.pass = keyboardPass.current || gp.passHeld
+      c.throughPass = keyboardThrough.current || gp.throughHeld
+      c.cross = keyboardCross.current || gp.crossHeld
       if (gp.slide) c.slide = true
       if (gp.switchPlayer) c.switchPlayer = true
       if (gp.kickJustPressed) kickPressEdge.current = true
+      if (gp.passJustPressed) passPressEdge.current = true
 
       c.shield = keyboardShield.current || gp.shieldHeld
       c.kick = keyboardKick.current || gp.kickHeld
@@ -195,5 +210,13 @@ export function useKeyboardControls() {
     return false
   }
 
-  return { controls, consumeAction, consumeKickRelease }
+  const consumePassPress = () => {
+    if (passPressEdge.current) {
+      passPressEdge.current = false
+      return true
+    }
+    return false
+  }
+
+  return { controls, consumeAction, consumeKickRelease, consumePassPress }
 }

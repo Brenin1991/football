@@ -202,7 +202,7 @@ export function releaseBallFromFeet(
   store.clearPossession()
 
   if (passerId) {
-    store.blockPasserClaim(passerId, 500)
+    store.blockPasserClaim(passerId, 380)
     store.setLastTouch(
       playerRegistry.get(passerId)?.team ?? USER_TEAM,
     )

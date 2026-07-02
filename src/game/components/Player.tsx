@@ -14,11 +14,11 @@ import {
   PLAYER_TURN_SPEED_CONTROLLED,
   LOOSE_BALL_MAX_SPEED,
   GK_TURN_SPEED,
-  SHOT_LOFT,
   SHOT_SPEED,
   getHomeOutfieldIds,
 } from '../constants'
 import { passSpeedForDistance, releaseBallFromFeet } from './TeamController'
+import { computeStrikeDirection } from '../systems/strikeAim'
 import { PlayerSelectionLabel } from './PlayerSelectionLabel'
 import { usePlayerAssets } from '../context/PlayerAssetsContext'
 import { useGameStore, USER_TEAM } from '../store/gameStore'
@@ -80,7 +80,15 @@ import {
   getThrowInSetupTarget,
   isActiveSetPiecePhase,
 } from '../systems/setPiece'
-import { shotLoftFromPower, shotSpeedFromPower } from '../systems/shotPower'
+import {
+  crossLoftFromPower,
+  crossSpeedFromPower,
+  passLoftFromPower,
+  passSpeedFromPower,
+  shotLoftFromPower,
+  shotSpeedFromPower,
+  throughSpeedFromPower,
+} from '../systems/shotPower'
 import {
   findThroughPassTarget,
   getThroughPassLead,
@@ -141,6 +149,7 @@ type PlayerProps = {
   formation: FormationSlot
   controls?: MutableRefObject<ControlState>
   consumeAction?: (action: 'pass' | 'kick' | 'slide' | 'cross' | 'throughPass' | 'switchPlayer') => boolean
+  consumePassPress?: () => boolean
 }
 
 function setOpenSpacePassIntent(
@@ -183,6 +192,7 @@ export function Player({
   formation,
   controls,
   consumeAction,
+  consumePassPress,
 }: PlayerProps) {
   const { scene, animations } = usePlayerAssets()
   const modelRootRef = useRef<THREE.Group>(null)
@@ -631,37 +641,20 @@ export function Player({
     const canMove =
       (phase === 'playing' && !ballFrozen) || (phase === 'kickoff' && !ballFrozen)
 
+    const canStrike = !(ctrl?.isStriking() ?? false)
+
     if (controls?.current) {
       if (isActive && consumeAction?.('switchPlayer')) cycleTeammate()
       if (
         isActive &&
-        consumeAction?.('pass') &&
-        animFree &&
-        canMove &&
-        phase === 'playing'
-      ) {
-        if (hasBall) performPass()
-        else if (!isGoalkeeper) performStandingSteal()
-      }
-      if (
-        isActive &&
-        consumeAction?.('throughPass') &&
-        animFree &&
-        canMove &&
-        hasBall &&
-        phase === 'playing'
-      ) {
-        performThroughPass()
-      }
-      if (
-        isActive &&
-        hasBall &&
+        consumePassPress?.() &&
         animFree &&
         canMove &&
         phase === 'playing' &&
-        consumeAction?.('cross')
+        !hasBall &&
+        !isGoalkeeper
       ) {
-        performCross()
+        performStandingSteal()
       }
       if (
         isActive &&
@@ -670,25 +663,26 @@ export function Player({
         storeState.passIntent.receiverId === id &&
         !hasBall &&
         storeState.crossOneTouchActive &&
-        animFree &&
+        canStrike &&
         phase === 'playing' &&
         controls.current.kick &&
         shouldVolleyCross(position.current, ballRef.current, ballRef.velocity)
       ) {
         performOneTouchCrossShot()
       }
-      if (
-        isActive &&
-        hasBall &&
-        animFree &&
-        phase === 'playing'
-      ) {
+      if (isActive && hasBall && canStrike && phase === 'playing') {
+        const pendingPass = useGameStore.getState().consumePendingUserPass(id)
+        if (pendingPass) {
+          if (pendingPass.type === 'pass') performPass(pendingPass.power)
+          else if (pendingPass.type === 'through') performThroughPass(pendingPass.power)
+          else performCross(pendingPass.power)
+        }
         const pendingShot = useGameStore.getState().consumePendingUserShot(id)
         if (pendingShot !== null) performKick(pendingShot)
       }
       if (
         isActive &&
-        (consumeAction?.('cross') || consumeAction?.('slide')) &&
+        consumeAction?.('slide') &&
         animFree &&
         !hasBall &&
         phase === 'playing' &&
@@ -1046,6 +1040,10 @@ export function Player({
     if (bodyActionLocked) {
       moveX = 0
       moveZ = 0
+    } else if (ctrl?.isStriking()) {
+      const strikeMul = ctrl.getStrikeMoveMultiplier()
+      moveX *= strikeMul
+      moveZ *= strikeMul
     }
 
     const prevX = position.current.x
@@ -1573,7 +1571,7 @@ export function Player({
           target.position.z - position.current.z,
         )
         rotation.current = Math.atan2(n.x, n.z)
-        performPassTo(target)
+        performPassTo(target, { power: 0.42 + Math.random() * 0.45 })
       }
       return
     }
@@ -1584,14 +1582,40 @@ export function Player({
   }
 
   function performAIShot(dir: { x: number; z: number }) {
-    animCtrl.current?.playStrike('shoot', {
-      onContact: () => {
-        releaseBallFromFeet(dir.x * SHOT_SPEED, 0, dir.z * SHOT_SPEED, id, {
-          loft: SHOT_LOFT,
-          releaseKind: 'shot',
-        })
-      },
+    const power = 0.42 + Math.random() * 0.48
+    const speed = shotSpeedFromPower(power)
+    const loft = shotLoftFromPower(power)
+    playStrikeRelease('shoot', () => {
+      releaseBallFromFeet(dir.x * speed, 0, dir.z * speed, id, {
+        loft,
+        releaseKind: 'shot',
+      })
     })
+  }
+
+  function getStrikeDirection(): { x: number; z: number } {
+    const c = controls?.current
+    if (!c) {
+      return {
+        x: Math.sin(rotation.current),
+        z: Math.cos(rotation.current),
+      }
+    }
+    return computeStrikeDirection(c, rotation.current)
+  }
+
+  function applyStrikeFacing(dir: { x: number; z: number }) {
+    rotation.current = Math.atan2(dir.x, dir.z)
+    if (modelRootRef.current) {
+      modelRootRef.current.rotation.y = rotation.current
+    }
+  }
+
+  function playStrikeRelease(
+    anim: 'pass' | 'shoot',
+    onContact: () => void,
+  ) {
+    animCtrl.current?.playStrike(anim, { onContact, instantContact: true })
   }
 
   function performKickoffPass() {
@@ -1609,18 +1633,22 @@ export function Player({
     performPassTo(mate, { kickoff: true })
   }
 
-  function performPass() {
+  function performPass(power = 0.55) {
     if (!hasBall || !fieldBounds) return
+    const strikeDir = getStrikeDirection()
+    applyStrikeFacing(strikeDir)
     const me = mySnapshot()
     const teammates = [...playerRegistry.values()].filter(
       (p) => p.team === team && p.id !== id && p.role !== 'gk',
     )
     const mate = findPassTargetInFacingDirection(me, teammates)
-    performPassTo(mate)
+    performPassTo(mate, { power })
   }
 
-  function performThroughPass() {
+  function performThroughPass(power = 0.62) {
     if (!hasBall || !fieldBounds) return
+    const strikeDir = getStrikeDirection()
+    applyStrikeFacing(strikeDir)
     const me = mySnapshot()
     const teammates = [...playerRegistry.values()].filter(
       (p) => p.team === team && p.id !== id && p.role !== 'gk',
@@ -1634,11 +1662,13 @@ export function Player({
         minDot: 0.48,
         maxLateralRatio: 0.48,
       })
-    performPassTo(mate, { through: true })
+    performPassTo(mate, { through: true, power })
   }
 
-  function performCross() {
+  function performCross(power = 0.68) {
     if (!hasBall || !fieldBounds) return
+    const strikeDir = getStrikeDirection()
+    applyStrikeFacing(strikeDir)
     const me = mySnapshot()
     const teammates = [...playerRegistry.values()].filter(
       (p) => p.team === team && p.id !== id && p.role !== 'gk',
@@ -1652,20 +1682,22 @@ export function Player({
         minDot: 0.45,
         maxLateralRatio: 0.85,
       })
-    performCrossTo(mate)
+    performCrossTo(mate, power)
   }
 
-  function performCrossTo(mate: PlayerRef | null) {
-    if (!fieldBounds || !hasBall || animCtrl.current?.isLocked()) return
+  function performCrossTo(mate: PlayerRef | null, power = 0.68) {
+    if (!fieldBounds || !hasBall || animCtrl.current?.isStriking()) return
 
     const store = useGameStore.getState()
     const me = mySnapshot()
+    const strikeDir = getStrikeDirection()
 
-    let dx = Math.sin(rotation.current)
-    let dz = Math.cos(rotation.current)
-    let speed = crossSpeedForDistance(14)
+    let dx = strikeDir.x
+    let dz = strikeDir.z
+    let speed = crossSpeedFromPower(crossSpeedForDistance(14), power)
     let targetX = me.position.x + dx * 12
     let targetZ = me.position.z + dz * 12
+    let loft = crossLoftFromPower(power, CROSS_LOFT)
 
     if (mate) {
       if (team === USER_TEAM) {
@@ -1674,7 +1706,7 @@ export function Player({
 
       const lead = getCrossReceiveLead(mate, fieldBounds, team)
       const dist = distance2D(me.position, mate.position)
-      speed = crossSpeedForDistance(dist)
+      speed = crossSpeedFromPower(crossSpeedForDistance(dist), power)
       const n = normalize2D(lead.x - me.position.x, lead.z - me.position.z)
       dx = n.x
       dz = n.z
@@ -1700,13 +1732,11 @@ export function Player({
       setOpenSpacePassIntent(me, team, dx, dz, 12, 'cross')
     }
 
-    animCtrl.current?.playStrike('pass', {
-      onContact: () => {
-        releaseBallFromFeet(dx * speed, 0, dz * speed, id, {
-          loft: CROSS_LOFT,
-          releaseKind: 'cross',
-        })
-      },
+    playStrikeRelease('pass', () => {
+      releaseBallFromFeet(dx * speed, 0, dz * speed, id, {
+        loft,
+        releaseKind: 'cross',
+      })
     })
   }
 
@@ -1725,32 +1755,37 @@ export function Player({
 
     store.setPassIntent(null)
     store.setCrossOneTouchActive(false)
-    animCtrl.current?.playStrike('shoot', {
-      onContact: () => {
-        releaseBallFromFeet(n.x * speed, 0, n.z * speed, id, {
-          loft,
-          releaseKind: 'shot',
-        })
-      },
+    playStrikeRelease('shoot', () => {
+      releaseBallFromFeet(n.x * speed, 0, n.z * speed, id, {
+        loft,
+        releaseKind: 'shot',
+      })
     })
   }
 
   function performPassTo(
     mate: PlayerRef | null,
-    opts?: { kickoff?: boolean; through?: boolean },
+    opts?: { kickoff?: boolean; through?: boolean; power?: number },
   ) {
     if (!fieldBounds) return
     if (!opts?.kickoff && !hasBall) return
-    if (!opts?.kickoff && animCtrl.current?.isLocked()) return
+    if (!opts?.kickoff && animCtrl.current?.isStriking()) return
 
     const store = useGameStore.getState()
     const me = mySnapshot()
+    const power = opts?.power ?? (opts?.through ? 0.62 : 0.55)
+    const strikeDir = opts?.kickoff
+      ? { x: Math.sin(rotation.current), z: Math.cos(rotation.current) }
+      : getStrikeDirection()
 
-    let dx = Math.sin(rotation.current)
-    let dz = Math.cos(rotation.current)
-    let speed = opts?.through
+    let dx = strikeDir.x
+    let dz = strikeDir.z
+    let baseSpeed = opts?.through
       ? throughPassSpeedForDistance(12)
       : passSpeedForDistance(8)
+    let speed = opts?.through
+      ? throughSpeedFromPower(baseSpeed, power)
+      : passSpeedFromPower(baseSpeed, power)
 
     if (mate) {
       if (team === USER_TEAM) {
@@ -1758,9 +1793,12 @@ export function Player({
       }
 
       const dist = distance2D(me.position, mate.position)
-      speed = opts?.through
+      baseSpeed = opts?.through
         ? throughPassSpeedForDistance(dist)
         : passSpeedForDistance(dist)
+      speed = opts?.through
+        ? throughSpeedFromPower(baseSpeed, power)
+        : passSpeedFromPower(baseSpeed, power)
       const lead = opts?.through
         ? getThroughPassLead(mate, me.position, speed, fieldBounds, team)
         : getPassLeadPosition(mate, me.position, speed, fieldBounds)
@@ -1787,21 +1825,20 @@ export function Player({
       const fallback = throughPassFallbackDir(me, fieldBounds, team)
       dx = fallback.x
       dz = fallback.z
-      speed = throughPassSpeedForDistance(fallback.dist)
+      baseSpeed = throughPassSpeedForDistance(fallback.dist)
+      speed = throughSpeedFromPower(baseSpeed, power)
       setOpenSpacePassIntent(me, team, dx, dz, fallback.dist, 'through')
     } else {
       setOpenSpacePassIntent(me, team, dx, dz, 8, 'pass')
     }
 
-    const passLoft = opts?.through ? 0.05 : 0
+    const passLoft = passLoftFromPower(power, !!opts?.through)
     const releaseKind = opts?.through ? 'through' : 'pass'
-    animCtrl.current?.playStrike('pass', {
-      onContact: () => {
-        releaseBallFromFeet(dx * speed, 0, dz * speed, id, {
-          loft: passLoft,
-          releaseKind,
-        })
-      },
+    playStrikeRelease('pass', () => {
+      releaseBallFromFeet(dx * speed, 0, dz * speed, id, {
+        loft: passLoft,
+        releaseKind,
+      })
     })
   }
 
@@ -1842,17 +1879,15 @@ export function Player({
 
     if (!hasBall) return
 
+    const strikeDir = getStrikeDirection()
+    applyStrikeFacing(strikeDir)
     const speed = shotSpeedFromPower(power)
     const loft = shotLoftFromPower(power)
-    const dx = Math.sin(rotation.current)
-    const dz = Math.cos(rotation.current)
-    animCtrl.current?.playStrike('shoot', {
-      onContact: () => {
-        releaseBallFromFeet(dx * speed, 0, dz * speed, id, {
-          loft,
-          releaseKind: 'shot',
-        })
-      },
+    playStrikeRelease('shoot', () => {
+      releaseBallFromFeet(strikeDir.x * speed, 0, strikeDir.z * speed, id, {
+        loft,
+        releaseKind: 'shot',
+      })
     })
   }
 

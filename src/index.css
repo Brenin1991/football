@@ -1,84 +1,85 @@
-@import url('https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Oxanium:wght@200;300;400;500&display=swap');
 
 :root {
-  --psx-font: 'Pixelify Sans', 'Courier New', monospace;
-  /* Sombra dura em degraus — estilo PS1, sem blur */
-  --psx-text-shadow:
-    1px 0 0 #000,
-    2px 0 0 #000,
-    0 1px 0 #000,
-    0 2px 0 #000,
-    1px 1px 0 #000,
-    2px 2px 0 #000;
+  --font-ui: 'Oxanium', system-ui, sans-serif;
+  --font-hud: 'Oxanium', system-ui, sans-serif;
+  --font-score: 'Oxanium', system-ui, sans-serif;
+  --font-clock: 'Oxanium', system-ui, sans-serif;
+  --font-digits: 'Oxanium', system-ui, sans-serif;
+  --font-title: 'Oxanium', system-ui, sans-serif;
+  --pes-font-light: 300;
+  --pes-font-regular: 400;
+  --pes-font-medium: 500;
 
-  /* Degradês retro PES 2006 — transparentes (todos os HUDs) */
-  --pes-header-grad: linear-gradient(
+  --we-text-shadow: 2px 2px 0 #000;
+  --we-chrome-top: rgba(255, 255, 255, 0.32);
+  --we-chrome-mid: rgba(180, 186, 198, 0.2);
+  --we-chrome-bottom: rgba(0, 0, 0, 0.55);
+  /* PES 2001–2006: painel escuro semi-transparente, SEM blur */
+  --we-panel-bg: linear-gradient(
     180deg,
-    rgba(158, 192, 224, 0.5) 0%,
-    rgba(158, 192, 224, 0.5) 18%,
-    rgba(74, 120, 168, 0.46) 19%,
-    rgba(74, 120, 168, 0.46) 58%,
-    rgba(58, 104, 152, 0.48) 59%,
-    rgba(104, 152, 184, 0.42) 100%
+    rgba(56, 60, 70, 0.68) 0%,
+    rgba(56, 60, 70, 0.68) 10%,
+    rgba(40, 44, 54, 0.72) 11%,
+    rgba(22, 24, 30, 0.76) 100%
   );
-  --pes-panel-grad: linear-gradient(
+  --we-panel-border: rgba(0, 0, 0, 0.72);
+  --we-silver-plate: linear-gradient(
     180deg,
-    rgba(88, 92, 102, 0.36) 0%,
-    rgba(88, 92, 102, 0.36) 30%,
-    rgba(58, 62, 72, 0.32) 31%,
-    rgba(58, 62, 72, 0.32) 62%,
-    rgba(24, 26, 32, 0.4) 63%,
-    rgba(24, 26, 32, 0.4) 100%
+    rgba(248, 248, 248, 0.9) 0%,
+    rgba(220, 220, 220, 0.84) 38%,
+    rgba(176, 176, 176, 0.8) 72%,
+    rgba(148, 148, 148, 0.76) 100%
   );
+  --we-role-gk: #d4a017;
+  --we-role-df: #1d6fd4;
+  --we-role-mf: #1a9e3f;
+  --we-role-fw: #c41e24;
+
+  /* Broadcast PES 2001–2006 — alpha simples, bevel leve */
+  --pes-header-grad: var(--we-panel-bg);
+  --pes-panel-grad: var(--we-panel-bg);
   --pes-panel-home-grad: linear-gradient(
     180deg,
-    rgba(72, 82, 108, 0.38) 0%,
-    rgba(72, 82, 108, 0.38) 42%,
-    rgba(26, 30, 44, 0.4) 43%,
-    rgba(26, 30, 44, 0.4) 100%
+    rgba(36, 44, 64, 0.7) 0%,
+    rgba(36, 44, 64, 0.7) 10%,
+    rgba(24, 30, 46, 0.74) 11%,
+    rgba(12, 16, 26, 0.78) 100%
   );
   --pes-panel-away-grad: linear-gradient(
     180deg,
-    rgba(108, 72, 72, 0.38) 0%,
-    rgba(108, 72, 72, 0.38) 42%,
-    rgba(44, 26, 26, 0.4) 43%,
-    rgba(44, 26, 26, 0.4) 100%
+    rgba(64, 36, 36, 0.7) 0%,
+    rgba(64, 36, 36, 0.7) 10%,
+    rgba(46, 24, 24, 0.74) 11%,
+    rgba(26, 12, 12, 0.78) 100%
   );
-  --pes-highlight-grad: linear-gradient(
-    180deg,
-    rgba(255, 248, 120, 0.7) 0%,
-    rgba(255, 248, 120, 0.7) 38%,
-    rgba(245, 208, 48, 0.64) 39%,
-    rgba(232, 168, 24, 0.6) 72%,
-    rgba(200, 120, 16, 0.55) 73%,
-    rgba(200, 120, 16, 0.55) 100%
-  );
-  --pes-gold-border: rgba(200, 160, 32, 0.62);
-  --pes-header-border: rgba(42, 64, 96, 0.55);
-  --pes-radius: calc(10px * var(--psx-ui, 1.85));
-  --pes-radius-sm: calc(6px * var(--psx-ui, 1.85));
-  --pes-radius-xs: calc(4px * var(--psx-ui, 1.85));
-  /* Degradês em faixas — menos suave, mais PS2 */
+  --pes-highlight-grad: var(--we-silver-plate);
+  --pes-gold-border: rgba(0, 0, 0, 0.55);
+  --pes-header-border: rgba(0, 0, 0, 0.65);
+  --pes-radius: 8px;
+  --pes-radius-sm: 6px;
+  --pes-radius-xs: 5px;
+  --pes-radius-pill: 10px;
   --pes-gloss: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.16) 0%,
-    rgba(255, 255, 255, 0.16) 22%,
-    transparent 23%,
-    transparent 100%
+    rgba(255, 255, 255, 0.1) 0%,
+    transparent 18%
   );
   --pes-inset-shadow:
-    inset 0 calc(2px * var(--psx-ui, 1.85)) 0 rgba(0, 0, 0, 0.22),
-    inset 0 calc(1px * var(--psx-ui, 1.85)) 0 rgba(255, 255, 255, 0.1);
-  --pes-frame-shadow:
-    calc(2px * var(--psx-ui, 1.85)) calc(2px * var(--psx-ui, 1.85)) 0 rgba(0, 0, 0, 0.5),
-    0 0 0 calc(1px * var(--psx-ui, 1.85)) rgba(0, 0, 0, 0.55);
+    inset 1px 1px 0 rgba(255, 255, 255, 0.2),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.38);
+  --pes-frame-shadow: 2px 2px 0 rgba(0, 0, 0, 0.72);
   --pes-dither: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0, 0, 0, 0.05) 2px,
-    rgba(0, 0, 0, 0.05) 3px
+    135deg,
+    rgba(0, 0, 0, 0.04) 0px,
+    rgba(0, 0, 0, 0.04) 1px,
+    transparent 1px,
+    transparent 3px
   );
+
+  /* Pós-processamento UI retro (buffer baixa res + scanlines) */
+  --ui-retro-scale: 1.2;
+  --ui-retro-buffer: calc(100% / var(--ui-retro-scale));
 }
 
 /* —— Superfície genérica PES (painéis HUD) —— */
@@ -87,10 +88,8 @@
   overflow: hidden;
   border-radius: var(--pes-radius);
   background: var(--pes-panel-grad);
-  border: calc(3px * var(--psx-ui, 1.85)) solid var(--pes-gold-border);
+  border: 2px solid var(--we-panel-border);
   box-shadow: var(--pes-frame-shadow), var(--pes-inset-shadow);
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
 }
 
 .pes-hud-surface::before {
@@ -108,10 +107,10 @@
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: var(--pes-dither);
   pointer-events: none;
   z-index: 2;
-  opacity: 0.65;
+  opacity: 0.05;
+  background: var(--pes-dither);
 }
 
 .pes-hud-surface > * {
@@ -135,46 +134,104 @@
 .pes-hud-highlight {
   border-radius: var(--pes-radius-xs);
   background: var(--pes-highlight-grad);
+  border: 2px solid var(--pes-gold-border);
   box-shadow:
-    inset 0 calc(1px * var(--psx-ui, 1.85)) 0 rgba(255, 255, 255, 0.22),
-    inset 0 calc(-2px * var(--psx-ui, 1.85)) 0 rgba(0, 0, 0, 0.14),
-    calc(1px * var(--psx-ui, 1.85)) calc(1px * var(--psx-ui, 1.85)) 0 rgba(0, 0, 0, 0.35);
-  image-rendering: pixelated;
+    inset 1px 1px 0 rgba(255, 255, 255, 0.42),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.22);
 }
 
 .pes-hud-highlight--accent-left {
-  border-left: calc(3px * var(--psx-ui, 1.85)) solid rgba(184, 24, 24, 0.85);
+  border-left: 3px solid var(--we-role-df);
 }
 
 .pes-hud-highlight--accent-right {
-  border-right: calc(3px * var(--psx-ui, 1.85)) solid rgba(184, 24, 24, 0.85);
+  border-right: 3px solid var(--we-role-fw);
 }
 
-/* Shell compartilhado — tipografia e escala em todos os overlays */
+/* Shell — broadcast WE / PES 2000–2006 */
 .pes-hud-shell {
-  --psx-font: 'Pixelify Sans', 'Courier New', monospace;
-  --pes-radius: calc(10px * var(--psx-ui));
-  --pes-radius-sm: calc(6px * var(--psx-ui));
-  --pes-radius-xs: calc(4px * var(--psx-ui));
-  font-family: var(--psx-font);
-  font-weight: 500;
-  text-rendering: geometricPrecision;
-  -webkit-font-smoothing: none;
-  font-smooth: never;
-  --psx-ui: 1.85;
+  --psx-ui: 1.38;
+  --psx-ui-top: 1.15;
   --psx-edge: calc(14px * var(--psx-ui));
-  --psx-text-shadow:
-    calc(1px * var(--psx-ui)) 0 0 #000,
-    calc(2px * var(--psx-ui)) 0 0 #000,
-    0 calc(1px * var(--psx-ui)) 0 #000,
-    0 calc(2px * var(--psx-ui)) 0 #000,
-    calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 #000,
-    calc(2px * var(--psx-ui)) calc(2px * var(--psx-ui)) 0 #000;
+  --psx-scoreboard-h: calc(32px * var(--psx-ui-top));
+  --psx-top-gap: calc(8px * var(--psx-ui-top));
+  --psx-below-scoreboard: calc(var(--psx-edge) + var(--psx-scoreboard-h) + var(--psx-top-gap));
+  --psx-text-shadow: var(--we-text-shadow);
+  font-family: var(--font-ui);
+  font-weight: var(--pes-font-regular);
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: 0.03em;
 }
 
-.pes-hud-shell,
-.pes-hud-shell * {
+.pes-hud-shell *:not(.psx-player-card-name):not(.we-scoreboard-digit):not(.we-scoreboard-sep) {
   text-shadow: var(--psx-text-shadow);
+}
+
+/* —— Camada UI: pixelização + scanlines (sem blur) —— */
+.game-ui-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.game-ui-layer--retro {
+  width: var(--ui-retro-buffer);
+  height: var(--ui-retro-buffer);
+  transform: scale(var(--ui-retro-scale));
+  transform-origin: top left;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  filter: contrast(1.12) saturate(0.88) brightness(0.97);
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+  text-rendering: optimizeSpeed;
+}
+
+.game-ui-layer--retro,
+.game-ui-layer--retro * {
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+}
+
+.game-ui-layer--retro::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 99999;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.16) 0px,
+      rgba(0, 0, 0, 0.16) 1px,
+      transparent 1px,
+      transparent 2px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.025) 0px,
+      rgba(255, 255, 255, 0.025) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  mix-blend-mode: multiply;
+  opacity: 0.5;
+}
+
+.game-ui-layer--retro::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 99998;
+  opacity: 0.06;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 128 128' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  background-size: 128px 128px;
+  mix-blend-mode: overlay;
 }
 
 * {
@@ -225,14 +282,142 @@ body,
   pointer-events: none;
   z-index: 10;
   transition: opacity 0.35s ease;
-  --psx-radar-w: 322;
-  --psx-radar-h: 220;
+  --psx-radar-w: 320;
+  --psx-radar-h: 212;
 }
 
 .psx-hud-hidden {
   opacity: 0;
 }
 
+/* —— Placar PES 2006 (topo esquerdo) —— */
+.we-scoreboard {
+  position: absolute;
+  top: var(--psx-edge);
+  left: var(--psx-edge);
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-height: calc(32px * var(--psx-ui-top));
+  padding: calc(2px * var(--psx-ui-top));
+  background: linear-gradient(
+    180deg,
+    rgba(52, 56, 66, 0.62) 0%,
+    rgba(52, 56, 66, 0.62) 10%,
+    rgba(36, 40, 48, 0.66) 11%,
+    rgba(20, 22, 28, 0.7) 100%
+  );
+}
+
+.we-scoreboard-side {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: calc(52px * var(--psx-ui-top));
+  padding: 0 calc(10px * var(--psx-ui-top));
+}
+
+.we-scoreboard-side--home {
+  border-left: 3px solid #2a6fd4;
+  padding-left: calc(8px * var(--psx-ui-top));
+}
+
+.we-scoreboard-side--away {
+  border-right: 3px solid #c41e24;
+  padding-right: calc(8px * var(--psx-ui-top));
+}
+
+.we-scoreboard-team {
+  font-family: var(--font-score);
+  font-size: calc(17px * var(--psx-ui-top));
+  font-weight: var(--pes-font-medium);
+  line-height: 1;
+  color: #f0f0f0;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.we-scoreboard-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(6px * var(--psx-ui-top));
+  min-width: calc(76px * var(--psx-ui-top));
+  margin: 0 calc(2px * var(--psx-ui-top));
+  padding: calc(2px * var(--psx-ui-top)) calc(10px * var(--psx-ui-top));
+  border-radius: var(--pes-radius-xs);
+}
+
+.we-scoreboard-digit {
+  font-family: var(--font-digits);
+  font-size: calc(22px * var(--psx-ui-top));
+  font-weight: var(--pes-font-medium);
+  line-height: 1;
+  color: #141414;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  min-width: calc(0.65em * var(--psx-ui-top));
+  text-align: center;
+  text-shadow: 1px 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.we-scoreboard-sep {
+  font-family: var(--font-digits);
+  font-size: calc(18px * var(--psx-ui-top));
+  font-weight: var(--pes-font-light);
+  line-height: 1;
+  color: #3a3a3a;
+  text-shadow: none;
+  opacity: 0.85;
+}
+
+/* —— Cronômetro PES 2006 (topo direito) —— */
+.we-clock {
+  position: absolute;
+  top: var(--psx-edge);
+  right: var(--psx-edge);
+  display: flex;
+  align-items: stretch;
+  min-height: calc(32px * var(--psx-ui-top));
+  padding: calc(2px * var(--psx-ui-top));
+  background: linear-gradient(
+    180deg,
+    rgba(52, 56, 66, 0.62) 0%,
+    rgba(52, 56, 66, 0.62) 10%,
+    rgba(36, 40, 48, 0.66) 11%,
+    rgba(20, 22, 28, 0.7) 100%
+  );
+}
+
+.we-clock-half {
+  display: flex;
+  align-items: center;
+  font-family: var(--font-ui);
+  font-size: calc(12px * var(--psx-ui-top));
+  font-weight: var(--pes-font-medium);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
+  padding: 0 calc(8px * var(--psx-ui-top));
+  border-right: 2px solid rgba(0, 0, 0, 0.45);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.12) 0%, rgba(0, 0, 0, 0.28) 100%);
+}
+
+.we-clock-time {
+  display: flex;
+  align-items: center;
+  font-family: var(--font-clock);
+  font-size: calc(20px * var(--psx-ui-top));
+  font-weight: var(--pes-font-medium);
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  color: #fff878;
+  padding: 0 calc(10px * var(--psx-ui-top)) 0 calc(8px * var(--psx-ui-top));
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.85);
+}
+
+/* Legado — placar antigo */
 .psx-scoreboard {
   position: absolute;
   top: var(--psx-edge);
@@ -312,12 +497,16 @@ body,
 
 .psx-speed {
   position: absolute;
-  top: calc(44px * var(--psx-ui));
+  top: var(--psx-below-scoreboard);
   left: var(--psx-edge);
-  padding: calc(4px * var(--psx-ui)) calc(10px * var(--psx-ui));
-  color: #fff878;
-  font-size: calc(18px * var(--psx-ui));
+  padding: calc(4px * var(--psx-ui-top)) calc(10px * var(--psx-ui-top));
+  color: #fef08a;
+  font-family: var(--font-ui);
+  font-size: calc(14px * var(--psx-ui-top));
+  font-weight: var(--pes-font-medium);
   line-height: 1;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .psx-speed.paused {
@@ -340,10 +529,135 @@ body,
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: end;
-  column-gap: calc(10px * var(--psx-ui));
+  column-gap: calc(14px * var(--psx-ui));
   padding: 0 var(--psx-edge);
   pointer-events: none;
   z-index: 11;
+}
+
+/* —— Cartão jogador — broadcast inferior —— */
+.psx-player-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: calc(3px * var(--psx-ui));
+  width: calc(282px * var(--psx-ui));
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.psx-player-card::before,
+.psx-player-card::after {
+  display: none;
+}
+
+.psx-player-card-frame {
+  display: flex;
+  align-items: stretch;
+  min-height: calc(36px * var(--psx-ui));
+  padding: calc(3px * var(--psx-ui));
+  border-radius: var(--pes-radius);
+  background: var(--pes-panel-grad);
+  border: 2px solid var(--we-panel-border);
+  box-shadow: var(--pes-frame-shadow), var(--pes-inset-shadow);
+}
+
+.psx-player-card--away .psx-player-card-frame {
+  flex-direction: row-reverse;
+}
+
+.psx-player-card-role {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(34px * var(--psx-ui));
+  font-family: var(--font-ui);
+  font-size: calc(15px * var(--psx-ui));
+  font-weight: var(--pes-font-medium);
+  line-height: 1;
+  letter-spacing: 0.04em;
+  color: #fff;
+  border: 2px solid rgba(0, 0, 0, 0.55);
+  border-radius: var(--pes-radius-xs);
+  box-shadow:
+    inset 1px 1px 0 rgba(255, 255, 255, 0.18),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.35);
+  text-shadow: 1px 1px 0 #000;
+}
+
+.psx-player-card-role--gk {
+  background: var(--we-role-gk);
+}
+
+.psx-player-card-role--df {
+  background: var(--we-role-df);
+}
+
+.psx-player-card-role--mf {
+  background: var(--we-role-mf);
+}
+
+.psx-player-card-role--fw {
+  background: var(--we-role-fw);
+}
+
+.psx-player-card-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.psx-player-card-nameplate {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-height: calc(30px * var(--psx-ui));
+  padding: 0 calc(10px * var(--psx-ui));
+  border-radius: var(--pes-radius-sm);
+  background: var(--we-silver-plate);
+  border: 2px solid rgba(0, 0, 0, 0.5);
+  box-shadow:
+    inset 1px 1px 0 rgba(255, 255, 255, 0.38),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.18);
+}
+
+.psx-player-card-name {
+  flex: 1;
+  font-family: var(--font-hud);
+  font-size: calc(20px * var(--psx-ui));
+  font-weight: var(--pes-font-medium);
+  line-height: 1;
+  color: #0a0a0a;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 1px 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.psx-player-card--away .psx-player-card-name {
+  text-align: right;
+}
+
+.psx-player-card-stamina-track {
+  height: calc(7px * var(--psx-ui));
+  border-radius: var(--pes-radius-pill);
+  background: rgba(0, 0, 0, 0.55);
+  border: 2px solid rgba(0, 0, 0, 0.65);
+  box-shadow: inset 1px 1px 0 rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.psx-player-card-stamina-fill {
+  height: 100%;
+  min-width: 3px;
+  transition: width 0.35s ease;
+  background: linear-gradient(180deg, #ffc040 0%, #ff9018 45%, #e06808 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
 .psx-bottom-bar .psx-player-card--home {
@@ -358,17 +672,6 @@ body,
   justify-self: center;
 }
 
-/* —— Cartão de jogador (cantos inferiores) —— */
-.psx-player-card {
-  position: relative;
-  display: flex;
-  align-items: stretch;
-  gap: calc(4px * var(--psx-ui));
-  width: calc(198px * var(--psx-ui));
-  min-height: calc(34px * var(--psx-ui));
-  padding: calc(3px * var(--psx-ui));
-}
-
 .psx-radar {
   position: relative;
   z-index: 2;
@@ -377,129 +680,29 @@ body,
   height: calc(var(--psx-radar-h) * 1px * var(--psx-ui));
   aspect-ratio: var(--psx-radar-w) / var(--psx-radar-h);
   border-radius: var(--pes-radius-sm);
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
 }
 
-.psx-player-card--away {
-  flex-direction: row-reverse;
-}
-
-.psx-player-card-icon {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: calc(2px * var(--psx-ui));
-  width: calc(14px * var(--psx-ui));
-  padding: calc(2px * var(--psx-ui)) calc(3px * var(--psx-ui));
-  border-radius: var(--pes-radius-xs);
+.psx-radar-wrap.pes-hud-surface {
+  padding: calc(3px * var(--psx-ui));
   background: linear-gradient(
     180deg,
-    rgba(0, 0, 0, 0.5) 0%,
-    rgba(0, 0, 0, 0.5) 45%,
-    rgba(0, 0, 0, 0.78) 46%,
-    rgba(0, 0, 0, 0.78) 100%
+    rgba(20, 22, 28, 0.38) 0%,
+    rgba(8, 10, 14, 0.44) 100%
   );
-  border: calc(2px * var(--psx-ui)) solid rgba(255, 255, 255, 0.12);
-  box-shadow:
-    inset 0 calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.08),
-    calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(0, 0, 0, 0.4);
-}
-
-.psx-player-card-icon span {
-  display: block;
-  height: calc(3px * var(--psx-ui));
-  border-radius: calc(1px * var(--psx-ui));
-  background: linear-gradient(180deg, #fff878 0%, #fff878 50%, #e8a818 51%, #e8a818 100%);
-  box-shadow: 0 0 0 calc(1px * var(--psx-ui)) rgba(0, 0, 0, 0.4);
-}
-
-.psx-player-card-body {
-  position: relative;
-  z-index: 1;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  min-width: 0;
-}
-
-.psx-player-card-header {
-  display: flex;
-  align-items: center;
-  gap: calc(6px * var(--psx-ui));
-  min-height: calc(22px * var(--psx-ui));
-  padding: calc(1px * var(--psx-ui)) calc(4px * var(--psx-ui));
-}
-
-.psx-player-card--away .psx-player-card-header {
-  flex-direction: row-reverse;
-}
-
-.psx-player-card-role {
-  flex-shrink: 0;
-  min-width: calc(28px * var(--psx-ui));
-  padding: calc(2px * var(--psx-ui)) calc(4px * var(--psx-ui));
-  border-radius: var(--pes-radius-xs);
-  background: linear-gradient(180deg, #2a2a2a 0%, #2a2a2a 48%, #0a0a0a 49%, #0a0a0a 100%);
-  color: #f2f2f2;
-  font-size: calc(14px * var(--psx-ui));
-  line-height: 1;
-  letter-spacing: 0.08em;
-  text-align: center;
-  border: calc(2px * var(--psx-ui)) solid rgba(255, 255, 255, 0.1);
-  box-shadow:
-    inset 0 calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.08),
-    calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(0, 0, 0, 0.45);
-}
-
-.psx-player-card-name {
-  flex: 1;
-  color: #141414;
-  font-size: calc(20px * var(--psx-ui));
-  line-height: 1;
-  letter-spacing: 0.03em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-shadow: calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.28);
-}
-
-.psx-player-card--away .psx-player-card-name {
-  text-align: right;
-}
-
-.psx-player-card-stamina-track {
-  height: calc(6px * var(--psx-ui));
-  margin-top: calc(3px * var(--psx-ui));
-  border-radius: var(--pes-radius-xs);
-  background: linear-gradient(180deg, #0a0a0a 0%, #0a0a0a 48%, #222 49%, #222 100%);
-  border: calc(2px * var(--psx-ui)) solid rgba(0, 0, 0, 0.55);
-  box-shadow: inset 0 calc(2px * var(--psx-ui)) 0 rgba(0, 0, 0, 0.55);
-  overflow: hidden;
-}
-
-.psx-player-card-stamina-fill {
-  height: 100%;
-  min-width: 2px;
-  border-radius: calc(1px * var(--psx-ui));
-  transition: width 0.35s ease;
-  box-shadow: inset 0 calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.28);
-  image-rendering: pixelated;
+  border: 2px solid rgba(0, 0, 0, 0.45);
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.45), var(--pes-inset-shadow);
 }
 
 /* —— Nome do jogador selecionado (acima da cabeça) —— */
 .psx-player-selection-name {
-  font-family: var(--psx-font, 'Pixelify Sans', 'Courier New', monospace);
-  font-weight: 600;
+  font-family: var(--font-hud);
+  font-weight: var(--pes-font-medium);
   color: #fff;
-  font-size: 22px;
+  font-size: 24px;
   line-height: 1;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.05em;
   white-space: nowrap;
-  text-shadow: var(--psx-text-shadow);
+  text-shadow: var(--we-text-shadow);
 }
 
 .psx-player-selection-name--yellow {
@@ -508,14 +711,20 @@ body,
 
 .psx-toast {
   position: absolute;
-  top: calc(44px * var(--psx-ui));
-  left: var(--psx-edge);
-  max-width: min(calc(22rem * var(--psx-ui)), calc(100vw - 2rem));
-  padding: calc(6px * var(--psx-ui)) calc(12px * var(--psx-ui));
-  color: #f2f2f2;
-  font-size: calc(20px * var(--psx-ui));
+  top: var(--psx-below-scoreboard);
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(28rem, calc(100vw - 2 * var(--psx-edge)));
+  padding: calc(5px * var(--psx-ui-top)) calc(12px * var(--psx-ui-top));
+  color: #f4f4f5;
+  font-family: var(--font-ui);
+  font-size: calc(15px * var(--psx-ui-top));
+  font-weight: var(--pes-font-medium);
   line-height: 1.2;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: center;
+  white-space: pre-line;
 }
 
 .scoreboard-wrap {
@@ -531,7 +740,7 @@ body,
   display: flex;
   align-items: stretch;
   height: 2.5rem;
-  font-weight: 700;
+  font-weight: var(--pes-font-medium);
   letter-spacing: 0.02em;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
@@ -563,7 +772,7 @@ body,
   height: 1.65rem;
   border-radius: 50%;
   font-size: 0.72rem;
-  font-weight: 800;
+  font-weight: var(--pes-font-medium);
   color: #fff;
   flex-shrink: 0;
 }
@@ -600,14 +809,14 @@ body,
   background: #1c1c1c;
   color: #fff;
   font-size: 1rem;
-  font-weight: 700;
+  font-weight: var(--pes-font-medium);
   font-variant-numeric: tabular-nums;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
 .scoreboard-half {
   font-size: 0.62rem;
-  font-weight: 800;
+  font-weight: var(--pes-font-medium);
   letter-spacing: 0.06em;
   opacity: 0.72;
   padding-right: 0.15rem;
@@ -621,7 +830,7 @@ body,
   background: rgba(28, 28, 28, 0.92);
   color: #c8f031;
   font-size: 0.75rem;
-  font-weight: 700;
+  font-weight: var(--pes-font-medium);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 
@@ -638,7 +847,7 @@ body,
   background: rgba(28, 28, 28, 0.92);
   color: #f3f4f6;
   font-size: 0.82rem;
-  font-weight: 600;
+  font-weight: var(--pes-font-medium);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
@@ -667,38 +876,39 @@ body,
 
 .shot-power {
   position: absolute;
-  right: var(--psx-edge, 26px);
-  bottom: var(--psx-edge, 26px);
+  right: var(--psx-edge);
+  bottom: calc(var(--psx-edge) + 104px * var(--psx-ui));
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: calc(4px * var(--psx-ui, 1.85));
-  padding: calc(8px * var(--psx-ui, 1.85)) calc(10px * var(--psx-ui, 1.85));
+  gap: calc(5px * var(--psx-ui));
+  padding: calc(8px * var(--psx-ui)) calc(10px * var(--psx-ui));
   pointer-events: none;
-  font-family: var(--psx-font, 'Pixelify Sans', 'Courier New', monospace);
-  font-weight: 500;
+  font-family: var(--font-hud);
+  border-radius: var(--pes-radius);
+  background: var(--pes-panel-grad);
+  border: 2px solid var(--we-panel-border);
+  box-shadow: var(--pes-frame-shadow), var(--pes-inset-shadow);
 }
 
 .shot-power-label {
-  font-size: calc(16px * var(--psx-ui, 1.85));
+  font-family: var(--font-title);
+  font-size: calc(14px * var(--psx-ui));
+  font-weight: var(--pes-font-light);
   text-transform: uppercase;
   letter-spacing: 0.14em;
-  color: #f2f2f2;
-  opacity: 0.9;
+  color: #f4f4f5;
 }
 
 .shot-power-track {
   position: relative;
-  width: calc(14px * var(--psx-ui, 1.85));
-  height: calc(88px * var(--psx-ui, 1.85));
+  width: calc(16px * var(--psx-ui));
+  height: calc(96px * var(--psx-ui));
   overflow: hidden;
-  border-radius: var(--pes-radius-sm, calc(6px * var(--psx-ui, 1.85)));
-  background: linear-gradient(180deg, #0a0a0a 0%, #0a0a0a 48%, #2a2a2a 49%, #2a2a2a 100%);
-  border: calc(3px * var(--psx-ui, 1.85)) solid rgba(255, 255, 255, 0.18);
-  box-shadow:
-    inset 0 calc(2px * var(--psx-ui, 1.85)) 0 rgba(0, 0, 0, 0.55),
-    calc(1px * var(--psx-ui, 1.85)) calc(1px * var(--psx-ui, 1.85)) 0 rgba(0, 0, 0, 0.45);
-  image-rendering: pixelated;
+  border-radius: var(--pes-radius-xs);
+  background: rgba(0, 0, 0, 0.5);
+  border: 2px solid rgba(0, 0, 0, 0.6);
+  box-shadow: inset 1px 1px 0 rgba(0, 0, 0, 0.45);
 }
 
 .shot-power-zones {
@@ -734,35 +944,39 @@ body,
 }
 
 .shot-power-fill.weak {
-  background: #ef4444;
+  background: linear-gradient(180deg, #ff6060 0%, #dc2626 100%);
 }
 
 .shot-power-fill.mid {
-  background: #ca8a04;
+  background: linear-gradient(180deg, #ffd040 0%, #ca8a04 100%);
 }
 
 .shot-power-fill.strong {
-  background: #16a34a;
+  background: linear-gradient(180deg, #6ee87a 0%, #16a34a 100%);
 }
 
 .shot-power-marker {
   position: absolute;
-  left: -3px;
-  right: -3px;
-  height: 3px;
-  margin-bottom: -1.5px;
+  left: -4px;
+  right: -4px;
+  height: 4px;
+  margin-bottom: -2px;
   background: #fff;
-  box-shadow: 0 0 4px rgba(255, 255, 255, 0.75);
+  border: 1px solid #111;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.85);
   transition: bottom 0.03s linear;
 }
 
 .shot-power-hint {
-  font-size: calc(14px * var(--psx-ui, 1.85));
+  font-family: var(--font-ui);
+  font-size: calc(13px * var(--psx-ui));
+  font-weight: var(--pes-font-medium);
   color: rgba(255, 255, 255, 0.75);
   text-align: center;
-  max-width: calc(5.5rem * var(--psx-ui, 1.85));
+  max-width: calc(6.5rem * var(--psx-ui));
   line-height: 1.15;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .graphics-toggle {
@@ -795,7 +1009,7 @@ body,
   border-radius: 5px;
   font-size: 0.68rem;
   font-family: inherit;
-  font-weight: 600;
+  font-weight: var(--pes-font-medium);
   color: rgba(255, 255, 255, 0.75);
   background: rgba(255, 255, 255, 0.08);
   transition: background 0.15s, color 0.15s;
@@ -839,18 +1053,7 @@ body,
 }
 
 .psx-replay-scanlines {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  opacity: 0.05;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(255, 255, 255, 0.45) 2px,
-    rgba(255, 255, 255, 0.45) 3px
-  );
-  pointer-events: none;
+  display: none;
 }
 
 .psx-replay-tag {
@@ -860,20 +1063,21 @@ body,
   z-index: 2;
   display: flex;
   align-items: center;
-  gap: calc(8px * var(--psx-ui));
-  height: calc(30px * var(--psx-ui));
-  padding: 0 calc(12px * var(--psx-ui));
-  color: #fff878;
-  font-size: calc(22px * var(--psx-ui));
+  gap: calc(6px * var(--psx-ui));
+  height: calc(26px * var(--psx-ui));
+  padding: 0 calc(10px * var(--psx-ui));
+  font-family: var(--font-title);
+  color: #fff;
+  font-size: calc(16px * var(--psx-ui));
   line-height: 1;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
 }
 
 .psx-replay-dot,
 .psx-intro-live-dot {
   width: calc(8px * var(--psx-ui));
   height: calc(8px * var(--psx-ui));
-  border-radius: calc(2px * var(--psx-ui));
+  border-radius: var(--pes-radius-xs);
   background: #ef4444;
   box-shadow: calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(0, 0, 0, 0.55);
   animation: psx-replay-blink 0.9s step-end infinite;
@@ -920,19 +1124,22 @@ body,
 }
 
 .psx-replay-player {
-  font-size: calc(26px * var(--psx-ui));
+  font-family: var(--font-hud);
+  font-size: calc(20px * var(--psx-ui));
+  font-weight: var(--pes-font-medium);
   line-height: 1.1;
-  color: #fff878;
-  letter-spacing: 0.06em;
-  text-shadow: calc(2px * var(--psx-ui)) calc(2px * var(--psx-ui)) 0 rgba(0, 0, 0, 0.65);
+  color: #fff;
+  letter-spacing: 0.05em;
 }
 
 .psx-replay-action {
-  font-size: calc(18px * var(--psx-ui));
+  font-family: var(--font-ui);
+  font-size: calc(14px * var(--psx-ui));
+  font-weight: var(--pes-font-medium);
   line-height: 1.15;
-  color: #f2f2f2;
-  letter-spacing: 0.08em;
-  opacity: 0.92;
+  color: #d4d4d8;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 @keyframes psx-replay-blink {
@@ -955,18 +1162,7 @@ body,
 }
 
 .psx-intro-scanlines {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  opacity: 0.04;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(255, 255, 255, 0.45) 2px,
-    rgba(255, 255, 255, 0.45) 3px
-  );
-  pointer-events: none;
+  display: none;
 }
 
 .psx-intro-live-tag {
@@ -976,11 +1172,12 @@ body,
   z-index: 2;
   display: flex;
   align-items: center;
-  gap: calc(8px * var(--psx-ui));
-  height: calc(30px * var(--psx-ui));
-  padding: 0 calc(12px * var(--psx-ui));
-  color: #fff878;
-  font-size: calc(22px * var(--psx-ui));
+  gap: calc(6px * var(--psx-ui));
+  height: calc(26px * var(--psx-ui));
+  padding: 0 calc(10px * var(--psx-ui));
+  font-family: var(--font-title);
+  color: #fff;
+  font-size: calc(15px * var(--psx-ui));
   line-height: 1;
   letter-spacing: 0.14em;
 }
@@ -990,11 +1187,12 @@ body,
   top: var(--psx-edge);
   left: var(--psx-edge);
   z-index: 2;
-  padding: calc(4px * var(--psx-ui)) calc(10px * var(--psx-ui));
-  color: #f2f2f2;
-  font-size: calc(20px * var(--psx-ui));
+  padding: calc(3px * var(--psx-ui)) calc(8px * var(--psx-ui));
+  font-family: var(--font-title);
+  color: #f4f4f5;
+  font-size: calc(16px * var(--psx-ui));
   line-height: 1;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.2em;
 }
 
 .psx-intro-panel {
@@ -1013,32 +1211,38 @@ body,
 
 .psx-intro-stadium {
   display: inline-block;
-  padding: calc(4px * var(--psx-ui)) calc(10px * var(--psx-ui));
-  font-size: calc(30px * var(--psx-ui));
+  padding: calc(3px * var(--psx-ui)) calc(8px * var(--psx-ui));
+  font-family: var(--font-title);
+  font-size: calc(24px * var(--psx-ui));
   line-height: 1;
-  color: #141414;
-  letter-spacing: 0.06em;
-  text-shadow: calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.22);
+  color: #111;
+  letter-spacing: 0.08em;
+  text-shadow: none;
 }
 
 .psx-intro-match-type {
-  margin-top: calc(6px * var(--psx-ui));
-  font-size: calc(18px * var(--psx-ui));
+  margin-top: calc(5px * var(--psx-ui));
+  font-family: var(--font-ui);
+  font-size: calc(13px * var(--psx-ui));
+  font-weight: var(--pes-font-medium);
   line-height: 1;
-  color: rgba(255, 255, 255, 0.62);
-  letter-spacing: 0.22em;
+  color: rgba(255, 255, 255, 0.55);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
 }
 
 .psx-intro-fixture {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: calc(14px * var(--psx-ui));
-  margin-top: calc(10px * var(--psx-ui));
-  font-size: calc(28px * var(--psx-ui));
+  gap: calc(12px * var(--psx-ui));
+  margin-top: calc(8px * var(--psx-ui));
+  font-family: var(--font-score);
+  font-size: calc(26px * var(--psx-ui));
+  font-weight: var(--pes-font-medium);
   line-height: 1;
-  color: #f0d030;
-  letter-spacing: 0.05em;
+  color: #fff;
+  letter-spacing: 0.06em;
 }
 
 .psx-intro-vs {
@@ -1047,13 +1251,21 @@ body,
 }
 
 .psx-intro-panel--lineup {
-  top: calc(52px * var(--psx-ui));
-  bottom: calc(10% + var(--psx-edge));
-  width: min(calc(23rem * var(--psx-ui)), calc(52vw - 1rem));
-  padding: calc(10px * var(--psx-ui)) calc(12px * var(--psx-ui));
+  top: calc(48px * var(--psx-ui));
+  width: min(calc(20rem * var(--psx-ui)), calc(48vw - 1rem));
+  padding: calc(4px * var(--psx-ui)) calc(6px * var(--psx-ui)) calc(5px * var(--psx-ui));
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  height: auto;
+  max-height: none;
+}
+
+.psx-intro-panel--lineup .psx-intro-panel-head {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: calc(2px * var(--psx-ui));
+  margin-bottom: calc(4px * var(--psx-ui));
 }
 
 .psx-intro-panel--lineup.psx-intro-panel--home {
@@ -1066,71 +1278,89 @@ body,
 
 .psx-intro-panel-kicker {
   display: inline-block;
+  align-self: flex-start;
   padding: calc(2px * var(--psx-ui)) calc(6px * var(--psx-ui));
-  font-size: calc(16px * var(--psx-ui));
-  line-height: 1;
-  color: #141414;
-  letter-spacing: 0.2em;
+  border-radius: var(--pes-radius-pill);
+  font-family: var(--font-ui);
+  font-size: calc(9px * var(--psx-ui));
+  font-weight: var(--pes-font-medium);
+  line-height: 1.1;
+  color: #111;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  text-shadow: calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.22);
+  text-shadow: none;
 }
 
 .psx-intro-panel-title {
-  margin-top: calc(6px * var(--psx-ui));
-  padding: calc(3px * var(--psx-ui)) calc(6px * var(--psx-ui));
-  font-size: calc(22px * var(--psx-ui));
-  line-height: 1.15;
-  color: #141414;
+  padding: calc(2px * var(--psx-ui)) calc(6px * var(--psx-ui));
+  border-radius: var(--pes-radius-sm);
+  font-family: var(--font-score);
+  font-size: calc(13px * var(--psx-ui));
+  font-weight: var(--pes-font-medium);
+  line-height: 1.1;
+  color: #111;
   letter-spacing: 0.04em;
-  text-shadow: calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.22);
-  white-space: normal;
+  text-shadow: none;
+  white-space: nowrap;
 }
 
 .psx-intro-formation {
-  display: inline-block;
-  margin-left: calc(6px * var(--psx-ui));
-  color: rgba(20, 20, 20, 0.55);
-  font-size: calc(16px * var(--psx-ui));
+  display: inline;
+  margin-left: calc(4px * var(--psx-ui));
+  color: #333;
+  font-size: calc(11px * var(--psx-ui));
 }
 
 .psx-intro-lineup {
   list-style: none;
-  margin-top: calc(6px * var(--psx-ui));
-  flex: 1;
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+  overflow: visible;
 }
 
 .psx-intro-lineup li {
   display: grid;
-  grid-template-columns: calc(26px * var(--psx-ui)) calc(38px * var(--psx-ui)) minmax(0, 1fr);
-  gap: calc(5px * var(--psx-ui));
+  grid-template-columns: calc(20px * var(--psx-ui)) calc(28px * var(--psx-ui)) minmax(0, 1fr);
+  gap: calc(3px * var(--psx-ui));
   align-items: center;
-  font-size: calc(16px * var(--psx-ui));
-  line-height: 1.2;
-  color: #f2f2f2;
-  padding: calc(2px * var(--psx-ui)) calc(5px * var(--psx-ui));
-  margin-bottom: calc(2px * var(--psx-ui));
+  font-family: var(--font-ui);
+  font-size: calc(12px * var(--psx-ui));
+  font-weight: var(--pes-font-regular);
+  line-height: 1.15;
+  color: #e4e4e7;
+  padding: calc(2px * var(--psx-ui)) calc(3px * var(--psx-ui));
+  margin-bottom: 1px;
   border-radius: var(--pes-radius-xs);
-  border-bottom: none;
-  background: rgba(0, 0, 0, 0.12);
-  box-shadow: inset 0 calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.04);
+  background: rgba(0, 0, 0, 0.28);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.45);
+}
+
+.psx-intro-lineup li:nth-child(even) {
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .psx-intro-lineup-num {
-  color: #f0d030;
+  font-family: var(--font-digits);
+  font-size: calc(13px * var(--psx-ui));
+  color: #fafafa;
   text-align: right;
   flex-shrink: 0;
 }
 
 .psx-intro-lineup-pos {
-  color: rgba(255, 255, 255, 0.5);
+  font-family: var(--font-ui);
+  font-size: calc(10px * var(--psx-ui));
+  font-weight: var(--pes-font-medium);
+  color: #888;
   letter-spacing: 0.04em;
   flex-shrink: 0;
 }
 
 .psx-intro-lineup-name {
+  font-family: var(--font-hud);
+  font-size: calc(14px * var(--psx-ui));
+  font-weight: var(--pes-font-medium);
   min-width: 0;
   overflow: visible;
   white-space: nowrap;
@@ -1236,7 +1466,7 @@ body,
 
 .replay-tv-brand-name {
   font-size: 0.78rem;
-  font-weight: 800;
+  font-weight: var(--pes-font-medium);
   letter-spacing: 0.18em;
   color: #fff;
 }
@@ -1248,7 +1478,7 @@ body,
   padding: 0.35rem 0.75rem;
   background: rgba(0, 0, 0, 0.55);
   font-size: 0.72rem;
-  font-weight: 700;
+  font-weight: var(--pes-font-medium);
   letter-spacing: 0.12em;
 }
 
@@ -1284,7 +1514,7 @@ body,
   align-items: center;
   gap: 0.45rem;
   font-size: 0.68rem;
-  font-weight: 800;
+  font-weight: var(--pes-font-medium);
   letter-spacing: 0.2em;
   color: #fca5a5;
   margin-bottom: 0.25rem;
@@ -1300,7 +1530,7 @@ body,
 
 .replay-tv-event {
   font-size: 1.05rem;
-  font-weight: 700;
+  font-weight: var(--pes-font-medium);
   letter-spacing: 0.04em;
   color: #fff;
 }

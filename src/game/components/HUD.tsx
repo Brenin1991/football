@@ -4,6 +4,11 @@ import { formatTimeScale } from '../systems/gameTime'
 import { HudPlayerCards } from './HudPlayerCards'
 import { ShotPowerBar } from './ShotPowerBar'
 
+const TEAM_ABBR = {
+  home: 'BRA',
+  away: 'VIS',
+} as const
+
 export function HUD() {
   const half = useGameStore((s) => s.half)
   const scoreHome = useGameStore((s) => s.scoreHome)
@@ -26,13 +31,32 @@ export function HUD() {
   return (
     <div className={`psx-hud pes-hud-shell${hideHud ? ' psx-hud-hidden' : ''}`}>
       {!hideScoreboard && (
-        <div className="psx-scoreboard pes-hud-surface pes-hud-surface--header">
-          <span className="psx-scoreboard-team">{TEAM_NAMES.home}</span>
-          <span className="psx-scoreboard-score pes-hud-highlight">{scoreHome} : {scoreAway}</span>
-          <span className="psx-scoreboard-team">{TEAM_NAMES.away}</span>
-          <span className="psx-scoreboard-time">{formatMatchTime(matchTime)}</span>
-          <span className="psx-scoreboard-half">{half === 1 ? '1T' : '2T'}</span>
-        </div>
+        <>
+          <div className="we-scoreboard pes-hud-surface" aria-label="Placar">
+            <div className="we-scoreboard-side we-scoreboard-side--home">
+              <span className="we-scoreboard-team" title={TEAM_NAMES.home}>
+                {TEAM_ABBR.home}
+              </span>
+            </div>
+            <div className="we-scoreboard-center pes-hud-highlight">
+              <span className="we-scoreboard-digit">{scoreHome}</span>
+              <span className="we-scoreboard-sep" aria-hidden>
+                -
+              </span>
+              <span className="we-scoreboard-digit">{scoreAway}</span>
+            </div>
+            <div className="we-scoreboard-side we-scoreboard-side--away">
+              <span className="we-scoreboard-team" title={TEAM_NAMES.away}>
+                {TEAM_ABBR.away}
+              </span>
+            </div>
+          </div>
+
+          <div className="we-clock pes-hud-surface" aria-label="Tempo de jogo">
+            <span className="we-clock-half">{half === 1 ? '1st' : '2nd'}</span>
+            <span className="we-clock-time">{formatMatchTime(matchTime)}</span>
+          </div>
+        </>
       )}
 
       {timeScale !== 1 && !isReplay && (
