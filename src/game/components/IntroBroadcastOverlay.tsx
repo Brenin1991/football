@@ -30,11 +30,11 @@ function LineupPanel({
 
   return (
     <div
-      className={`psx-intro-panel psx-intro-panel--lineup psx-intro-panel--${team}`}
+      className={`psx-intro-panel pes-hud-surface pes-hud-surface--${team} psx-intro-panel--lineup psx-intro-panel--${team}`}
       style={{ opacity }}
     >
-      <div className="psx-intro-panel-kicker">Escalação</div>
-      <div className="psx-intro-panel-title">
+      <div className="psx-intro-panel-kicker pes-hud-highlight">Escalação</div>
+      <div className="psx-intro-panel-title pes-hud-highlight">
         {getTeamBroadcastName(team)}
         <span className="psx-intro-formation">{FORMATION_LABEL}</span>
       </div>
@@ -73,19 +73,22 @@ export function IntroBroadcastOverlay() {
   const officialsOpacity = getIntroPanelFade(elapsed, 'officials')
 
   return (
-    <div className="psx-intro-broadcast" aria-hidden>
+    <div className="psx-intro-broadcast pes-hud-shell" aria-hidden>
       <div className="psx-intro-scanlines" />
 
-      <div className="psx-intro-live-tag">
+      <div className="psx-intro-live-tag pes-hud-surface pes-hud-surface--header">
         <span className="psx-intro-live-dot" />
         AO VIVO
       </div>
 
-      <div className="psx-intro-network">SPORTV</div>
+      <div className="psx-intro-network pes-hud-surface">SPORTV</div>
 
       {panel === 'match' && (
-        <div className="psx-intro-panel psx-intro-panel--match" style={{ opacity: matchOpacity }}>
-          <div className="psx-intro-stadium">{STADIUM_NAME}</div>
+        <div
+          className="psx-intro-panel pes-hud-surface psx-intro-panel--match"
+          style={{ opacity: matchOpacity }}
+        >
+          <div className="psx-intro-stadium pes-hud-highlight">{STADIUM_NAME}</div>
           <div className="psx-intro-match-type">{MATCH_TYPE_LABEL}</div>
           <div className="psx-intro-fixture">
             <span>{TEAM_NAMES.home.toUpperCase()}</span>
@@ -99,8 +102,11 @@ export function IntroBroadcastOverlay() {
       {panel === 'away-lineup' && <LineupPanel team="away" elapsed={elapsed} />}
 
       {panel === 'officials' && (
-        <div className="psx-intro-panel psx-intro-panel--officials" style={{ opacity: officialsOpacity }}>
-          <div className="psx-intro-panel-kicker">Arbitragem</div>
+        <div
+          className="psx-intro-panel pes-hud-surface psx-intro-panel--officials"
+          style={{ opacity: officialsOpacity }}
+        >
+          <div className="psx-intro-panel-kicker pes-hud-highlight">Arbitragem</div>
           <ul className="psx-intro-officials">
             <li>
               <span>Árbitro</span>

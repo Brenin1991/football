@@ -11,7 +11,7 @@ export function ShotPowerBar() {
     power < 0.33 ? 'weak' : power < 0.66 ? 'mid' : 'strong'
 
   return (
-    <div className="shot-power" aria-hidden>
+    <div className="shot-power pes-hud-surface" aria-hidden>
       <span className="shot-power-label">Força</span>
       <div className="shot-power-track">
         <div className="shot-power-zones">

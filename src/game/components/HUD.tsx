@@ -15,6 +15,7 @@ export function HUD() {
 
   const isReplay = phase === 'replay'
   const hideHud = phase === 'goal-celebration' || phase === 'intro'
+  const hideScoreboard = hideHud || isReplay
   const showToast =
     message &&
     phase !== 'playing' &&
@@ -23,26 +24,26 @@ export function HUD() {
     phase !== 'intro'
 
   return (
-    <div className={`psx-hud${hideHud ? ' psx-hud-hidden' : ''}`}>
-      <div className="psx-scoreboard">
-        <span className="psx-scoreboard-team">{TEAM_NAMES.home}</span>
-        <span className="psx-scoreboard-score">
-          {scoreHome} : {scoreAway}
-        </span>
-        <span className="psx-scoreboard-team">{TEAM_NAMES.away}</span>
-        <span className="psx-scoreboard-time">{formatMatchTime(matchTime)}</span>
-        <span className="psx-scoreboard-half">{half === 1 ? '1T' : '2T'}</span>
-      </div>
+    <div className={`psx-hud pes-hud-shell${hideHud ? ' psx-hud-hidden' : ''}`}>
+      {!hideScoreboard && (
+        <div className="psx-scoreboard pes-hud-surface pes-hud-surface--header">
+          <span className="psx-scoreboard-team">{TEAM_NAMES.home}</span>
+          <span className="psx-scoreboard-score pes-hud-highlight">{scoreHome} : {scoreAway}</span>
+          <span className="psx-scoreboard-team">{TEAM_NAMES.away}</span>
+          <span className="psx-scoreboard-time">{formatMatchTime(matchTime)}</span>
+          <span className="psx-scoreboard-half">{half === 1 ? '1T' : '2T'}</span>
+        </div>
+      )}
 
       {timeScale !== 1 && !isReplay && (
-        <div className={`psx-speed${timeScale === 0 ? ' paused' : ''}`}>
+        <div className={`psx-speed pes-hud-surface${timeScale === 0 ? ' paused' : ''}`}>
           {formatTimeScale(timeScale)}
         </div>
       )}
 
       {!isReplay && <HudPlayerCards />}
 
-      {showToast && <div className="psx-toast">{message}</div>}
+      {showToast && <div className="psx-toast pes-hud-surface">{message}</div>}
 
       {!isReplay && <ShotPowerBar />}
     </div>

@@ -388,7 +388,7 @@ export function callFoul(call: FoulCall) {
     }
   }
 
-  replaySystem.requestFoulReplay(call.fouledTeam, call.position, finishFoul)
+  replaySystem.requestFoulReplay(call.fouledTeam, call.position, call.foulerId, finishFoul)
 }
 
 export function reportSlideFoul(
@@ -485,6 +485,7 @@ export function callOffside(flag: OffsidePassFlag, _bounds: FieldBounds) {
     defendingTeam,
     spot,
     flag.lineZAtPass,
+    flag.receiverId,
     finishOffside,
   )
 }

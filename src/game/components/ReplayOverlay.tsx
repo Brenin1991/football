@@ -20,19 +20,27 @@ export function ReplayOverlay() {
   if (!tvVisible) return null
 
   const label = replaySystem.getEventLabel()
+  const highlight = replaySystem.getReplayHighlight()
   const progress = Math.round(replaySystem.getPlaybackProgress() * 100)
 
   return (
-    <div className="psx-replay-overlay" aria-hidden>
+    <div className="psx-replay-overlay pes-hud-shell" aria-hidden>
       <div className="psx-replay-scanlines" />
 
-      <div className="psx-replay-tag">
+      <div className="psx-replay-tag pes-hud-surface pes-hud-surface--header">
         <span className="psx-replay-dot" />
         REPLAY
       </div>
 
-      <div className="psx-replay-lower">
-        <div className="psx-replay-event">{label}</div>
+      <div className="psx-replay-lower pes-hud-surface">
+        {highlight ? (
+          <div className="psx-replay-highlight">
+            <div className="psx-replay-player">{highlight.playerName}</div>
+            <div className="psx-replay-action">{highlight.action}</div>
+          </div>
+        ) : (
+          <div className="psx-replay-event">{label}</div>
+        )}
         <div className="psx-replay-progress">
           <div className="psx-replay-progress-fill" style={{ width: `${progress}%` }} />
         </div>

@@ -11,7 +11,7 @@ export function HudPlayerCard({ playerId, team }: HudPlayerCardProps) {
   const tiredStart = Math.max(55, staminaPct - 8)
 
   return (
-    <div className={`psx-player-card psx-player-card--${team}`} aria-hidden>
+    <div className={`psx-player-card pes-hud-surface pes-hud-surface--${team} psx-player-card--${team}`} aria-hidden>
       <div className="psx-player-card-icon" title="Condição">
         <span />
         <span />
@@ -19,7 +19,7 @@ export function HudPlayerCard({ playerId, team }: HudPlayerCardProps) {
       </div>
 
       <div className="psx-player-card-body">
-        <div className="psx-player-card-header">
+        <div className={`psx-player-card-header pes-hud-highlight pes-hud-highlight--accent-${team === 'home' ? 'left' : 'right'}`}>
           <span className="psx-player-card-role">{info.position}</span>
           <span className="psx-player-card-name">{info.name}</span>
         </div>
@@ -28,7 +28,7 @@ export function HudPlayerCard({ playerId, team }: HudPlayerCardProps) {
             className="psx-player-card-stamina-fill"
             style={{
               width: `${staminaPct}%`,
-              background: `linear-gradient(90deg, #facc15 0%, #eab308 ${tiredStart}%, #ef4444 100%)`,
+              background: `linear-gradient(180deg, #fff878 0%, #fff878 42%, #facc15 43%, #eab308 ${tiredStart}%, #dc2626 100%)`,
             }}
           />
         </div>

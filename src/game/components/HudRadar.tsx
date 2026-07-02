@@ -9,7 +9,6 @@ export const RADAR_W = 322
 export const RADAR_H = 220
 const PAD = 10
 
-const BG_ALPHA = 0.32
 const BORDER_ALPHA = 0.42
 const LINE_ALPHA = 0.72
 
@@ -91,7 +90,11 @@ export function HudRadar() {
 
       ctx.clearRect(0, 0, RADAR_W, RADAR_H)
 
-      ctx.fillStyle = `rgba(16, 16, 20, ${BG_ALPHA})`
+      const bgGrad = ctx.createLinearGradient(0, 0, 0, RADAR_H)
+      bgGrad.addColorStop(0, 'rgba(48, 52, 60, 0.28)')
+      bgGrad.addColorStop(0.45, 'rgba(28, 32, 38, 0.32)')
+      bgGrad.addColorStop(1, 'rgba(14, 16, 20, 0.38)')
+      ctx.fillStyle = bgGrad
       ctx.fillRect(0, 0, RADAR_W, RADAR_H)
 
       ctx.strokeStyle = `rgba(90, 90, 96, ${BORDER_ALPHA})`
@@ -132,7 +135,7 @@ export function HudRadar() {
   if (!fieldBounds) return null
 
   return (
-    <div className="psx-radar-wrap" aria-hidden>
+    <div className="psx-radar-wrap pes-hud-surface" aria-hidden>
       <canvas
         ref={canvasRef}
         className="psx-radar"

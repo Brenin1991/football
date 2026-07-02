@@ -8,6 +8,7 @@ import { useGameStore, formatMatchTime } from '../store/gameStore'
 import { getGoalkeeperId } from '../constants'
 import { FIELD_SCALE } from './fieldData'
 import { runFadeIn, runFadeOut } from './screenTransition'
+import { getPlayerDisplayName, parsePlayerIndex } from '../data/playerRoster'
 
 export type ReplayEventType = 'goal' | 'shot' | 'foul' | 'save' | 'offside'
 
@@ -58,10 +59,10 @@ const LOOKBACK: Record<ReplayEventType, number> = {
 }
 
 const EVENT_LABEL: Record<ReplayEventType, string> = {
-  goal: 'GOL',
-  shot: 'CHUTE A GOL',
-  save: 'DEFESA DO GOLEIRO',
-  foul: 'LANCE IRREGULAR',
+  goal: 'MARCOU GOL',
+  shot: 'CHUTOU A GOL',
+  save: 'DEFENDEU O CHUTE',
+  foul: 'COMETEU FALTA',
   offside: 'IMPEDIMENTO',
 }
 
@@ -73,6 +74,7 @@ interface PendingShot {
   goalZ: number
   interesting: boolean
   resolved: boolean
+  shooterId: string | null
 }
 
 interface ReplaySegment {
@@ -86,6 +88,7 @@ interface ReplayMeta {
   goalZ?: number
   foulSpot?: Vec3
   offsideLineZ?: number
+  focusPlayerId?: string | null
 }
 
 class ReplaySystem {
@@ -104,6 +107,7 @@ class ReplaySystem {
 
   private focusGoalZ = 0
   private focusTeam: TeamId = 'home'
+  private focusPlayerId: string | null = null
   private foulSpot: Vec3 | null = null
   private offsideLineZ: number | null = null
   private celebrationTeam: TeamId | null = null
@@ -139,6 +143,53 @@ class ReplaySystem {
 
   getEventLabel() {
     return EVENT_LABEL[this.eventType]
+  }
+
+  getReplayHighlight(): { playerName: string; action: string } | null {
+    if (!this.focusPlayerId) return null
+    const team: TeamId = this.focusPlayerId.startsWith('away-') ? 'away' : 'home'
+    const index = parsePlayerIndex(this.focusPlayerId)
+    return {
+      playerName: getPlayerDisplayName(team, index).toUpperCase(),
+      action: EVENT_LABEL[this.eventType],
+    }
+  }
+
+  private resolveFocusPlayerId(
+    type: ReplayEventType,
+    frames: ReplayFrame[],
+    meta: ReplayMeta,
+  ): string | null {
+    if (meta.focusPlayerId) return meta.focusPlayerId
+
+    const team = meta.team ?? this.focusTeam
+    if (type === 'save') {
+      const defending = team === 'home' ? 'away' : 'home'
+      return getGoalkeeperId(defending)
+    }
+
+    return this.nearestPlayerToBall(frames, team)
+  }
+
+  private nearestPlayerToBall(frames: ReplayFrame[], team: TeamId): string | null {
+    const last = frames[frames.length - 1]
+    if (!last) return null
+
+    const { x, z } = last.ball
+    let bestId: string | null = null
+    let bestDist = Infinity
+
+    for (const p of last.players) {
+      const ref = playerRegistry.get(p.id)
+      if (!ref || ref.team !== team) continue
+      const dist = (p.x - x) ** 2 + (p.z - z) ** 2
+      if (dist < bestDist) {
+        bestDist = dist
+        bestId = p.id
+      }
+    }
+
+    return bestId
   }
 
   getEventType() {
@@ -256,6 +307,7 @@ class ReplaySystem {
     this.segments = this.buildSegments(type)
     this.focusTeam = meta.team ?? 'home'
     this.focusGoalZ = meta.goalZ ?? 0
+    this.focusPlayerId = this.resolveFocusPlayerId(type, frames, meta)
     this.foulSpot = meta.foulSpot ?? null
     this.offsideLineZ = meta.offsideLineZ ?? null
     this.lastReplayAt = performance.now()
@@ -319,6 +371,7 @@ class ReplaySystem {
     this.interpFrame = null
     this.playerSnapMap.clear()
     this.offsideLineZ = null
+    this.focusPlayerId = null
 
     if (this.eventType !== 'goal' && this.liveSnapshot) {
       this.applyFrame(this.liveSnapshot)
@@ -359,14 +412,19 @@ class ReplaySystem {
     this.startCelebration(scoringTeam)
   }
 
-  requestFoulReplay(fouledTeam: TeamId, spot: Vec3, onComplete: () => void) {
+  requestFoulReplay(
+    fouledTeam: TeamId,
+    spot: Vec3,
+    foulerId: string,
+    onComplete: () => void,
+  ) {
     const bounds = useGameStore.getState().fieldBounds
     const goalZ = bounds ? getAttackingGoalZ(fouledTeam, bounds) : spot.z
     const frames = this.sliceLookback(LOOKBACK.foul)
     this.runReplayWithFades(
       'foul',
       frames,
-      { team: fouledTeam, goalZ, foulSpot: spot },
+      { team: fouledTeam, goalZ, foulSpot: spot, focusPlayerId: foulerId },
       onComplete,
     )
   }
@@ -375,6 +433,7 @@ class ReplaySystem {
     defendingTeam: TeamId,
     spot: Vec3,
     lineZAtPass: number,
+    receiverId: string,
     onComplete: () => void,
   ) {
     const bounds = useGameStore.getState().fieldBounds
@@ -383,7 +442,13 @@ class ReplaySystem {
     this.runReplayWithFades(
       'offside',
       frames,
-      { team: defendingTeam, goalZ, foulSpot: spot, offsideLineZ: lineZAtPass },
+      {
+        team: defendingTeam,
+        goalZ,
+        foulSpot: spot,
+        offsideLineZ: lineZAtPass,
+        focusPlayerId: receiverId,
+      },
       onComplete,
     )
   }
@@ -393,11 +458,17 @@ class ReplaySystem {
     team: TeamId,
     onComplete: () => void,
     force = false,
+    focusPlayerId?: string | null,
   ) {
     const bounds = useGameStore.getState().fieldBounds
     const goalZ = bounds ? getAttackingGoalZ(team, bounds) : 0
     const frames = this.sliceLookback(LOOKBACK[type])
-    this.runReplayWithFades(type, frames, { team, goalZ, force }, onComplete)
+    this.runReplayWithFades(
+      type,
+      frames,
+      { team, goalZ, force, focusPlayerId: focusPlayerId ?? null },
+      onComplete,
+    )
   }
 
   notifyGoalkeeperSave(_defendingTeam: TeamId) {
@@ -410,12 +481,15 @@ class ReplaySystem {
   notifyShot(team: TeamId) {
     const bounds = useGameStore.getState().fieldBounds
     if (!bounds) return
+    const poss = useGameStore.getState().ballPossession
+    const shooterId = poss?.team === team ? poss.playerId : null
     this.pendingShot = {
       team,
       at: performance.now(),
       goalZ: getAttackingGoalZ(team, bounds),
       interesting: false,
       resolved: false,
+      shooterId,
     }
   }
 
@@ -475,7 +549,7 @@ class ReplaySystem {
       return false
     }
     pending.resolved = true
-    this.requestShotReplay('shot', pending.team, onComplete, true)
+    this.requestShotReplay('shot', pending.team, onComplete, true, pending.shooterId)
     return true
   }
 

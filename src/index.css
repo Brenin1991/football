@@ -1,6 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;500;600;700&display=swap');
 
 :root {
+  --psx-font: 'Pixelify Sans', 'Courier New', monospace;
   /* Sombra dura em degraus — estilo PS1, sem blur */
   --psx-text-shadow:
     1px 0 0 #000,
@@ -9,6 +10,171 @@
     0 2px 0 #000,
     1px 1px 0 #000,
     2px 2px 0 #000;
+
+  /* Degradês retro PES 2006 — transparentes (todos os HUDs) */
+  --pes-header-grad: linear-gradient(
+    180deg,
+    rgba(158, 192, 224, 0.5) 0%,
+    rgba(158, 192, 224, 0.5) 18%,
+    rgba(74, 120, 168, 0.46) 19%,
+    rgba(74, 120, 168, 0.46) 58%,
+    rgba(58, 104, 152, 0.48) 59%,
+    rgba(104, 152, 184, 0.42) 100%
+  );
+  --pes-panel-grad: linear-gradient(
+    180deg,
+    rgba(88, 92, 102, 0.36) 0%,
+    rgba(88, 92, 102, 0.36) 30%,
+    rgba(58, 62, 72, 0.32) 31%,
+    rgba(58, 62, 72, 0.32) 62%,
+    rgba(24, 26, 32, 0.4) 63%,
+    rgba(24, 26, 32, 0.4) 100%
+  );
+  --pes-panel-home-grad: linear-gradient(
+    180deg,
+    rgba(72, 82, 108, 0.38) 0%,
+    rgba(72, 82, 108, 0.38) 42%,
+    rgba(26, 30, 44, 0.4) 43%,
+    rgba(26, 30, 44, 0.4) 100%
+  );
+  --pes-panel-away-grad: linear-gradient(
+    180deg,
+    rgba(108, 72, 72, 0.38) 0%,
+    rgba(108, 72, 72, 0.38) 42%,
+    rgba(44, 26, 26, 0.4) 43%,
+    rgba(44, 26, 26, 0.4) 100%
+  );
+  --pes-highlight-grad: linear-gradient(
+    180deg,
+    rgba(255, 248, 120, 0.7) 0%,
+    rgba(255, 248, 120, 0.7) 38%,
+    rgba(245, 208, 48, 0.64) 39%,
+    rgba(232, 168, 24, 0.6) 72%,
+    rgba(200, 120, 16, 0.55) 73%,
+    rgba(200, 120, 16, 0.55) 100%
+  );
+  --pes-gold-border: rgba(200, 160, 32, 0.62);
+  --pes-header-border: rgba(42, 64, 96, 0.55);
+  --pes-radius: calc(10px * var(--psx-ui, 1.85));
+  --pes-radius-sm: calc(6px * var(--psx-ui, 1.85));
+  --pes-radius-xs: calc(4px * var(--psx-ui, 1.85));
+  /* Degradês em faixas — menos suave, mais PS2 */
+  --pes-gloss: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.16) 0%,
+    rgba(255, 255, 255, 0.16) 22%,
+    transparent 23%,
+    transparent 100%
+  );
+  --pes-inset-shadow:
+    inset 0 calc(2px * var(--psx-ui, 1.85)) 0 rgba(0, 0, 0, 0.22),
+    inset 0 calc(1px * var(--psx-ui, 1.85)) 0 rgba(255, 255, 255, 0.1);
+  --pes-frame-shadow:
+    calc(2px * var(--psx-ui, 1.85)) calc(2px * var(--psx-ui, 1.85)) 0 rgba(0, 0, 0, 0.5),
+    0 0 0 calc(1px * var(--psx-ui, 1.85)) rgba(0, 0, 0, 0.55);
+  --pes-dither: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.05) 2px,
+    rgba(0, 0, 0, 0.05) 3px
+  );
+}
+
+/* —— Superfície genérica PES (painéis HUD) —— */
+.pes-hud-surface {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--pes-radius);
+  background: var(--pes-panel-grad);
+  border: calc(3px * var(--psx-ui, 1.85)) solid var(--pes-gold-border);
+  box-shadow: var(--pes-frame-shadow), var(--pes-inset-shadow);
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+.pes-hud-surface::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--pes-gloss);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.pes-hud-surface::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--pes-dither);
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0.65;
+}
+
+.pes-hud-surface > * {
+  position: relative;
+  z-index: 1;
+}
+
+.pes-hud-surface--header {
+  background: var(--pes-header-grad);
+  border-color: var(--pes-header-border);
+}
+
+.pes-hud-surface--home {
+  background: var(--pes-panel-home-grad);
+}
+
+.pes-hud-surface--away {
+  background: var(--pes-panel-away-grad);
+}
+
+.pes-hud-highlight {
+  border-radius: var(--pes-radius-xs);
+  background: var(--pes-highlight-grad);
+  box-shadow:
+    inset 0 calc(1px * var(--psx-ui, 1.85)) 0 rgba(255, 255, 255, 0.22),
+    inset 0 calc(-2px * var(--psx-ui, 1.85)) 0 rgba(0, 0, 0, 0.14),
+    calc(1px * var(--psx-ui, 1.85)) calc(1px * var(--psx-ui, 1.85)) 0 rgba(0, 0, 0, 0.35);
+  image-rendering: pixelated;
+}
+
+.pes-hud-highlight--accent-left {
+  border-left: calc(3px * var(--psx-ui, 1.85)) solid rgba(184, 24, 24, 0.85);
+}
+
+.pes-hud-highlight--accent-right {
+  border-right: calc(3px * var(--psx-ui, 1.85)) solid rgba(184, 24, 24, 0.85);
+}
+
+/* Shell compartilhado — tipografia e escala em todos os overlays */
+.pes-hud-shell {
+  --psx-font: 'Pixelify Sans', 'Courier New', monospace;
+  --pes-radius: calc(10px * var(--psx-ui));
+  --pes-radius-sm: calc(6px * var(--psx-ui));
+  --pes-radius-xs: calc(4px * var(--psx-ui));
+  font-family: var(--psx-font);
+  font-weight: 500;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+  --psx-ui: 1.85;
+  --psx-edge: calc(14px * var(--psx-ui));
+  --psx-text-shadow:
+    calc(1px * var(--psx-ui)) 0 0 #000,
+    calc(2px * var(--psx-ui)) 0 0 #000,
+    0 calc(1px * var(--psx-ui)) 0 #000,
+    0 calc(2px * var(--psx-ui)) 0 #000,
+    calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 #000,
+    calc(2px * var(--psx-ui)) calc(2px * var(--psx-ui)) 0 #000;
+}
+
+.pes-hud-shell,
+.pes-hud-shell * {
+  text-shadow: var(--psx-text-shadow);
 }
 
 * {
@@ -58,27 +224,9 @@ body,
   inset: 0;
   pointer-events: none;
   z-index: 10;
-  font-family: 'VT323', 'Courier New', monospace;
-  -webkit-font-smoothing: none;
-  font-smooth: never;
-  text-rendering: geometricPrecision;
   transition: opacity 0.35s ease;
-  --psx-ui: 1.85;
-  --psx-edge: calc(14px * var(--psx-ui));
   --psx-radar-w: 322;
   --psx-radar-h: 220;
-  --psx-text-shadow:
-    calc(1px * var(--psx-ui)) 0 0 #000,
-    calc(2px * var(--psx-ui)) 0 0 #000,
-    0 calc(1px * var(--psx-ui)) 0 #000,
-    0 calc(2px * var(--psx-ui)) 0 #000,
-    calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 #000,
-    calc(2px * var(--psx-ui)) calc(2px * var(--psx-ui)) 0 #000;
-}
-
-.psx-hud,
-.psx-hud * {
-  text-shadow: var(--psx-text-shadow);
 }
 
 .psx-hud-hidden {
@@ -90,56 +238,76 @@ body,
   top: var(--psx-edge);
   left: var(--psx-edge);
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 0;
-  height: calc(28px * var(--psx-ui));
-  padding: 0 calc(10px * var(--psx-ui)) 0 calc(12px * var(--psx-ui));
-  background: rgba(24, 24, 28, 0.68);
-  border: 2px solid #d4b429;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+  height: calc(30px * var(--psx-ui));
+  padding: 0;
   image-rendering: pixelated;
 }
 
 .psx-scoreboard-team {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
   font-size: calc(22px * var(--psx-ui));
   line-height: 1;
-  color: #f2f2f2;
+  color: #f8fafc;
   letter-spacing: 0.04em;
   white-space: nowrap;
-  padding: 0 calc(12px * var(--psx-ui)) 0 0;
+  padding: 0 calc(12px * var(--psx-ui)) 0 calc(12px * var(--psx-ui));
 }
 
 .psx-scoreboard-team:last-of-type {
-  padding: 0 calc(14px * var(--psx-ui)) 0 0;
+  padding: 0 calc(14px * var(--psx-ui)) 0 calc(12px * var(--psx-ui));
 }
 
 .psx-scoreboard-score {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: calc(24px * var(--psx-ui));
   line-height: 1;
-  color: #f0d030;
+  color: #141414;
   letter-spacing: 0.08em;
   padding: 0 calc(14px * var(--psx-ui));
   min-width: calc(4.5rem * var(--psx-ui));
   text-align: center;
   font-variant-numeric: tabular-nums;
+  border-left: calc(2px * var(--psx-ui)) solid rgba(0, 0, 0, 0.22);
+  border-right: calc(2px * var(--psx-ui)) solid rgba(0, 0, 0, 0.22);
+  margin: calc(2px * var(--psx-ui)) 0;
+  border-radius: var(--pes-radius-xs);
+  text-shadow: calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.22);
 }
 
 .psx-scoreboard-time {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
   font-size: calc(24px * var(--psx-ui));
   line-height: 1;
-  color: #f0d030;
+  color: #fff878;
   letter-spacing: 0.06em;
-  padding: 0 calc(10px * var(--psx-ui)) 0 calc(6px * var(--psx-ui));
+  padding: 0 calc(10px * var(--psx-ui)) 0 calc(8px * var(--psx-ui));
   font-variant-numeric: tabular-nums;
-  border-left: 2px solid rgba(255, 255, 255, 0.14);
+  border-left: 2px solid rgba(0, 0, 0, 0.32);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.08) 0%, rgba(0, 0, 0, 0.22) 100%);
 }
 
 .psx-scoreboard-half {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
   font-size: calc(16px * var(--psx-ui));
   line-height: 1;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(255, 255, 255, 0.72);
   letter-spacing: 0.1em;
-  padding-left: 4px;
+  padding: 0 calc(8px * var(--psx-ui)) 0 calc(4px * var(--psx-ui));
 }
 
 .psx-speed {
@@ -147,9 +315,7 @@ body,
   top: calc(44px * var(--psx-ui));
   left: var(--psx-edge);
   padding: calc(4px * var(--psx-ui)) calc(10px * var(--psx-ui));
-  background: rgba(24, 24, 28, 0.72);
-  border: 2px solid rgba(212, 180, 41, 0.45);
-  color: #f0d030;
+  color: #fff878;
   font-size: calc(18px * var(--psx-ui));
   line-height: 1;
 }
@@ -159,9 +325,11 @@ body,
 }
 
 .psx-radar-wrap {
+  position: relative;
   display: flex;
   justify-content: center;
   align-self: end;
+  padding: calc(3px * var(--psx-ui));
 }
 
 .psx-bottom-bar {
@@ -199,48 +367,58 @@ body,
   width: calc(198px * var(--psx-ui));
   min-height: calc(34px * var(--psx-ui));
   padding: calc(3px * var(--psx-ui));
-  background: rgba(36, 18, 18, 0.58);
-  border: 2px solid rgba(212, 180, 41, 0.45);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
 }
 
 .psx-radar {
+  position: relative;
+  z-index: 2;
   display: block;
   width: calc(var(--psx-radar-w) * 1px * var(--psx-ui));
   height: calc(var(--psx-radar-h) * 1px * var(--psx-ui));
   aspect-ratio: var(--psx-radar-w) / var(--psx-radar-h);
+  border-radius: var(--pes-radius-sm);
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
 
-.psx-player-card--home {
-  background: rgba(18, 22, 36, 0.58);
-}
-
 .psx-player-card--away {
   flex-direction: row-reverse;
-  background: rgba(36, 18, 18, 0.58);
 }
 
 .psx-player-card-icon {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: calc(2px * var(--psx-ui));
   width: calc(14px * var(--psx-ui));
   padding: calc(2px * var(--psx-ui)) calc(3px * var(--psx-ui));
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--pes-radius-xs);
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.5) 0%,
+    rgba(0, 0, 0, 0.5) 45%,
+    rgba(0, 0, 0, 0.78) 46%,
+    rgba(0, 0, 0, 0.78) 100%
+  );
+  border: calc(2px * var(--psx-ui)) solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.08),
+    calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(0, 0, 0, 0.4);
 }
 
 .psx-player-card-icon span {
   display: block;
   height: calc(3px * var(--psx-ui));
-  background: #facc15;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  border-radius: calc(1px * var(--psx-ui));
+  background: linear-gradient(180deg, #fff878 0%, #fff878 50%, #e8a818 51%, #e8a818 100%);
+  box-shadow: 0 0 0 calc(1px * var(--psx-ui)) rgba(0, 0, 0, 0.4);
 }
 
 .psx-player-card-body {
+  position: relative;
+  z-index: 1;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -253,6 +431,7 @@ body,
   align-items: center;
   gap: calc(6px * var(--psx-ui));
   min-height: calc(22px * var(--psx-ui));
+  padding: calc(1px * var(--psx-ui)) calc(4px * var(--psx-ui));
 }
 
 .psx-player-card--away .psx-player-card-header {
@@ -263,23 +442,29 @@ body,
   flex-shrink: 0;
   min-width: calc(28px * var(--psx-ui));
   padding: calc(2px * var(--psx-ui)) calc(4px * var(--psx-ui));
-  background: rgba(0, 0, 0, 0.82);
+  border-radius: var(--pes-radius-xs);
+  background: linear-gradient(180deg, #2a2a2a 0%, #2a2a2a 48%, #0a0a0a 49%, #0a0a0a 100%);
   color: #f2f2f2;
   font-size: calc(14px * var(--psx-ui));
   line-height: 1;
   letter-spacing: 0.08em;
   text-align: center;
+  border: calc(2px * var(--psx-ui)) solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    inset 0 calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.08),
+    calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(0, 0, 0, 0.45);
 }
 
 .psx-player-card-name {
   flex: 1;
-  color: #fff;
+  color: #141414;
   font-size: calc(20px * var(--psx-ui));
   line-height: 1;
   letter-spacing: 0.03em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-shadow: calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.28);
 }
 
 .psx-player-card--away .psx-player-card-name {
@@ -287,29 +472,33 @@ body,
 }
 
 .psx-player-card-stamina-track {
-  height: calc(5px * var(--psx-ui));
+  height: calc(6px * var(--psx-ui));
   margin-top: calc(3px * var(--psx-ui));
-  background: rgba(0, 0, 0, 0.45);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--pes-radius-xs);
+  background: linear-gradient(180deg, #0a0a0a 0%, #0a0a0a 48%, #222 49%, #222 100%);
+  border: calc(2px * var(--psx-ui)) solid rgba(0, 0, 0, 0.55);
+  box-shadow: inset 0 calc(2px * var(--psx-ui)) 0 rgba(0, 0, 0, 0.55);
   overflow: hidden;
 }
 
 .psx-player-card-stamina-fill {
   height: 100%;
   min-width: 2px;
+  border-radius: calc(1px * var(--psx-ui));
   transition: width 0.35s ease;
+  box-shadow: inset 0 calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.28);
+  image-rendering: pixelated;
 }
 
 /* —— Nome do jogador selecionado (acima da cabeça) —— */
 .psx-player-selection-name {
-  font-family: 'VT323', 'Courier New', monospace;
+  font-family: var(--psx-font, 'Pixelify Sans', 'Courier New', monospace);
+  font-weight: 600;
   color: #fff;
   font-size: 22px;
   line-height: 1;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.03em;
   white-space: nowrap;
-  -webkit-font-smoothing: none;
-  font-smooth: never;
   text-shadow: var(--psx-text-shadow);
 }
 
@@ -323,13 +512,10 @@ body,
   left: var(--psx-edge);
   max-width: min(calc(22rem * var(--psx-ui)), calc(100vw - 2rem));
   padding: calc(6px * var(--psx-ui)) calc(12px * var(--psx-ui));
-  background: rgba(24, 24, 28, 0.82);
-  border: 2px solid #d4b429;
   color: #f2f2f2;
   font-size: calc(20px * var(--psx-ui));
   line-height: 1.2;
   letter-spacing: 0.03em;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
 }
 
 .scoreboard-wrap {
@@ -488,12 +674,9 @@ body,
   align-items: center;
   gap: calc(4px * var(--psx-ui, 1.85));
   padding: calc(8px * var(--psx-ui, 1.85)) calc(10px * var(--psx-ui, 1.85));
-  background: rgba(24, 24, 28, 0.72);
-  border: 2px solid rgba(212, 180, 41, 0.55);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
   pointer-events: none;
-  font-family: 'VT323', 'Courier New', monospace;
-  -webkit-font-smoothing: none;
+  font-family: var(--psx-font, 'Pixelify Sans', 'Courier New', monospace);
+  font-weight: 500;
 }
 
 .shot-power-label {
@@ -509,8 +692,12 @@ body,
   width: calc(14px * var(--psx-ui, 1.85));
   height: calc(88px * var(--psx-ui, 1.85));
   overflow: hidden;
-  background: rgba(0, 0, 0, 0.35);
-  border: 2px solid rgba(255, 255, 255, 0.28);
+  border-radius: var(--pes-radius-sm, calc(6px * var(--psx-ui, 1.85)));
+  background: linear-gradient(180deg, #0a0a0a 0%, #0a0a0a 48%, #2a2a2a 49%, #2a2a2a 100%);
+  border: calc(3px * var(--psx-ui, 1.85)) solid rgba(255, 255, 255, 0.18);
+  box-shadow:
+    inset 0 calc(2px * var(--psx-ui, 1.85)) 0 rgba(0, 0, 0, 0.55),
+    calc(1px * var(--psx-ui, 1.85)) calc(1px * var(--psx-ui, 1.85)) 0 rgba(0, 0, 0, 0.45);
   image-rendering: pixelated;
 }
 
@@ -649,24 +836,6 @@ body,
   pointer-events: none;
   z-index: 12;
   overflow: hidden;
-  font-family: 'VT323', 'Courier New', monospace;
-  -webkit-font-smoothing: none;
-  font-smooth: never;
-  text-rendering: geometricPrecision;
-  --psx-ui: 1.85;
-  --psx-edge: calc(14px * var(--psx-ui));
-  --psx-text-shadow:
-    calc(1px * var(--psx-ui)) 0 0 #000,
-    calc(2px * var(--psx-ui)) 0 0 #000,
-    0 calc(1px * var(--psx-ui)) 0 #000,
-    0 calc(2px * var(--psx-ui)) 0 #000,
-    calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 #000,
-    calc(2px * var(--psx-ui)) calc(2px * var(--psx-ui)) 0 #000;
-}
-
-.psx-replay-overlay,
-.psx-replay-overlay * {
-  text-shadow: var(--psx-text-shadow);
 }
 
 .psx-replay-scanlines {
@@ -692,22 +861,40 @@ body,
   display: flex;
   align-items: center;
   gap: calc(8px * var(--psx-ui));
-  height: calc(28px * var(--psx-ui));
+  height: calc(30px * var(--psx-ui));
   padding: 0 calc(12px * var(--psx-ui));
-  background: rgba(24, 24, 28, 0.72);
-  border: 2px solid #d4b429;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
-  color: #f0d030;
+  color: #fff878;
   font-size: calc(22px * var(--psx-ui));
   line-height: 1;
   letter-spacing: 0.14em;
 }
 
-.psx-replay-dot {
+.psx-replay-dot,
+.psx-intro-live-dot {
   width: calc(8px * var(--psx-ui));
   height: calc(8px * var(--psx-ui));
+  border-radius: calc(2px * var(--psx-ui));
   background: #ef4444;
+  box-shadow: calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(0, 0, 0, 0.55);
   animation: psx-replay-blink 0.9s step-end infinite;
+}
+
+.psx-replay-progress {
+  margin-top: calc(8px * var(--psx-ui));
+  height: calc(6px * var(--psx-ui));
+  border-radius: var(--pes-radius-xs);
+  background: rgba(0, 0, 0, 0.35);
+  border: calc(2px * var(--psx-ui)) solid rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 calc(2px * var(--psx-ui)) 0 rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.psx-replay-progress-fill {
+  height: 100%;
+  border-radius: calc(1px * var(--psx-ui));
+  background: linear-gradient(180deg, #fff878 0%, #fff878 45%, #f0d030 46%, #f0d030 100%);
+  transition: width 0.08s linear;
+  image-rendering: pixelated;
 }
 
 .psx-replay-lower {
@@ -717,9 +904,6 @@ body,
   bottom: var(--psx-edge);
   z-index: 2;
   padding: calc(8px * var(--psx-ui)) calc(12px * var(--psx-ui)) calc(10px * var(--psx-ui));
-  background: rgba(24, 24, 28, 0.72);
-  border: 2px solid #d4b429;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
 }
 
 .psx-replay-event {
@@ -729,17 +913,26 @@ body,
   letter-spacing: 0.04em;
 }
 
-.psx-replay-progress {
-  margin-top: calc(8px * var(--psx-ui));
-  height: calc(5px * var(--psx-ui));
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+.psx-replay-highlight {
+  display: flex;
+  flex-direction: column;
+  gap: calc(2px * var(--psx-ui));
 }
 
-.psx-replay-progress-fill {
-  height: 100%;
-  background: #f0d030;
-  transition: width 0.08s linear;
+.psx-replay-player {
+  font-size: calc(26px * var(--psx-ui));
+  line-height: 1.1;
+  color: #fff878;
+  letter-spacing: 0.06em;
+  text-shadow: calc(2px * var(--psx-ui)) calc(2px * var(--psx-ui)) 0 rgba(0, 0, 0, 0.65);
+}
+
+.psx-replay-action {
+  font-size: calc(18px * var(--psx-ui));
+  line-height: 1.15;
+  color: #f2f2f2;
+  letter-spacing: 0.08em;
+  opacity: 0.92;
 }
 
 @keyframes psx-replay-blink {
@@ -759,24 +952,6 @@ body,
   pointer-events: none;
   z-index: 101;
   overflow: hidden;
-  font-family: 'VT323', 'Courier New', monospace;
-  -webkit-font-smoothing: none;
-  font-smooth: never;
-  text-rendering: geometricPrecision;
-  --psx-ui: 1.85;
-  --psx-edge: calc(14px * var(--psx-ui));
-  --psx-text-shadow:
-    calc(1px * var(--psx-ui)) 0 0 #000,
-    calc(2px * var(--psx-ui)) 0 0 #000,
-    0 calc(1px * var(--psx-ui)) 0 #000,
-    0 calc(2px * var(--psx-ui)) 0 #000,
-    calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 #000,
-    calc(2px * var(--psx-ui)) calc(2px * var(--psx-ui)) 0 #000;
-}
-
-.psx-intro-broadcast,
-.psx-intro-broadcast * {
-  text-shadow: var(--psx-text-shadow);
 }
 
 .psx-intro-scanlines {
@@ -802,22 +977,12 @@ body,
   display: flex;
   align-items: center;
   gap: calc(8px * var(--psx-ui));
-  height: calc(28px * var(--psx-ui));
+  height: calc(30px * var(--psx-ui));
   padding: 0 calc(12px * var(--psx-ui));
-  background: rgba(24, 24, 28, 0.72);
-  border: 2px solid #d4b429;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
-  color: #f0d030;
+  color: #fff878;
   font-size: calc(22px * var(--psx-ui));
   line-height: 1;
   letter-spacing: 0.14em;
-}
-
-.psx-intro-live-dot {
-  width: calc(8px * var(--psx-ui));
-  height: calc(8px * var(--psx-ui));
-  background: #ef4444;
-  animation: psx-replay-blink 0.9s step-end infinite;
 }
 
 .psx-intro-network {
@@ -826,9 +991,6 @@ body,
   left: var(--psx-edge);
   z-index: 2;
   padding: calc(4px * var(--psx-ui)) calc(10px * var(--psx-ui));
-  background: rgba(24, 24, 28, 0.72);
-  border: 2px solid rgba(212, 180, 41, 0.55);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
   color: #f2f2f2;
   font-size: calc(20px * var(--psx-ui));
   line-height: 1;
@@ -838,9 +1000,6 @@ body,
 .psx-intro-panel {
   position: absolute;
   z-index: 2;
-  background: rgba(24, 24, 28, 0.78);
-  border: 2px solid #d4b429;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
 }
 
 .psx-intro-panel--match {
@@ -853,10 +1012,13 @@ body,
 }
 
 .psx-intro-stadium {
+  display: inline-block;
+  padding: calc(4px * var(--psx-ui)) calc(10px * var(--psx-ui));
   font-size: calc(30px * var(--psx-ui));
   line-height: 1;
-  color: #f2f2f2;
+  color: #141414;
   letter-spacing: 0.06em;
+  text-shadow: calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.22);
 }
 
 .psx-intro-match-type {
@@ -886,8 +1048,8 @@ body,
 
 .psx-intro-panel--lineup {
   top: calc(52px * var(--psx-ui));
-  bottom: calc(12% + var(--psx-edge));
-  width: min(calc(17.5rem * var(--psx-ui)), calc(44vw - 1rem));
+  bottom: calc(10% + var(--psx-edge));
+  width: min(calc(23rem * var(--psx-ui)), calc(52vw - 1rem));
   padding: calc(10px * var(--psx-ui)) calc(12px * var(--psx-ui));
   display: flex;
   flex-direction: column;
@@ -903,60 +1065,75 @@ body,
 }
 
 .psx-intro-panel-kicker {
+  display: inline-block;
+  padding: calc(2px * var(--psx-ui)) calc(6px * var(--psx-ui));
   font-size: calc(16px * var(--psx-ui));
   line-height: 1;
-  color: rgba(255, 255, 255, 0.58);
+  color: #141414;
   letter-spacing: 0.2em;
   text-transform: uppercase;
+  text-shadow: calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.22);
 }
 
 .psx-intro-panel-title {
-  margin-top: calc(4px * var(--psx-ui));
-  font-size: calc(24px * var(--psx-ui));
-  line-height: 1.1;
-  color: #f0d030;
-  letter-spacing: 0.05em;
+  margin-top: calc(6px * var(--psx-ui));
+  padding: calc(3px * var(--psx-ui)) calc(6px * var(--psx-ui));
+  font-size: calc(22px * var(--psx-ui));
+  line-height: 1.15;
+  color: #141414;
+  letter-spacing: 0.04em;
+  text-shadow: calc(1px * var(--psx-ui)) calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.22);
+  white-space: normal;
 }
 
 .psx-intro-formation {
-  margin-left: calc(8px * var(--psx-ui));
-  color: rgba(255, 255, 255, 0.55);
-  font-size: calc(18px * var(--psx-ui));
+  display: inline-block;
+  margin-left: calc(6px * var(--psx-ui));
+  color: rgba(20, 20, 20, 0.55);
+  font-size: calc(16px * var(--psx-ui));
 }
 
 .psx-intro-lineup {
   list-style: none;
-  margin-top: calc(8px * var(--psx-ui));
-  overflow: hidden;
+  margin-top: calc(6px * var(--psx-ui));
   flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .psx-intro-lineup li {
   display: grid;
-  grid-template-columns: calc(22px * var(--psx-ui)) calc(30px * var(--psx-ui)) 1fr;
-  gap: calc(6px * var(--psx-ui));
-  align-items: baseline;
-  font-size: calc(18px * var(--psx-ui));
-  line-height: 1.15;
+  grid-template-columns: calc(26px * var(--psx-ui)) calc(38px * var(--psx-ui)) minmax(0, 1fr);
+  gap: calc(5px * var(--psx-ui));
+  align-items: center;
+  font-size: calc(16px * var(--psx-ui));
+  line-height: 1.2;
   color: #f2f2f2;
-  padding: calc(2px * var(--psx-ui)) 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: calc(2px * var(--psx-ui)) calc(5px * var(--psx-ui));
+  margin-bottom: calc(2px * var(--psx-ui));
+  border-radius: var(--pes-radius-xs);
+  border-bottom: none;
+  background: rgba(0, 0, 0, 0.12);
+  box-shadow: inset 0 calc(1px * var(--psx-ui)) 0 rgba(255, 255, 255, 0.04);
 }
 
 .psx-intro-lineup-num {
   color: #f0d030;
   text-align: right;
+  flex-shrink: 0;
 }
 
 .psx-intro-lineup-pos {
   color: rgba(255, 255, 255, 0.5);
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
 }
 
 .psx-intro-lineup-name {
+  min-width: 0;
+  overflow: visible;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .psx-intro-panel--officials {
@@ -978,8 +1155,11 @@ body,
   font-size: calc(20px * var(--psx-ui));
   line-height: 1.25;
   color: #f2f2f2;
-  padding: calc(3px * var(--psx-ui)) 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: calc(4px * var(--psx-ui)) calc(6px * var(--psx-ui));
+  margin-bottom: calc(3px * var(--psx-ui));
+  border-radius: var(--pes-radius-xs);
+  border-bottom: none;
+  background: rgba(0, 0, 0, 0.14);
 }
 
 .psx-intro-officials li span:first-child {
