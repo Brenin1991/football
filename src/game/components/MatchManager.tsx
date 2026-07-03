@@ -20,7 +20,7 @@ import {
 import { beginSetPiece, executeSetPieceKick, isActiveSetPiecePhase, isKickerReadyForSetPiece, pickSetPieceKicker, initAiSetPieceAim } from '../systems/setPiece'
 import { setupKickoff } from '../systems/kickoff'
 import { isScreenTransitionActive, runScreenTransition } from '../systems/screenTransition'
-import { USER_TEAM } from '../store/gameStore'
+import { getUserTeam } from '../store/gameStore'
 import { getAiSetPieceKickDelay } from './GameInput'
 import { crowdSfx } from '../systems/crowdSfx'
 import { narrationSfx } from '../systems/narrationSfx'
@@ -106,25 +106,25 @@ export function MatchManager() {
           if (setPhase === 'throw-in') {
             position = resolveThrowIn(ball, fieldBounds)
             message =
-              team === USER_TEAM
+              team === getUserTeam()
                 ? `Lateral — ← → mirar · Espaço chutar`
                 : `Lateral — Visitante`
           } else if (setPhase === 'corner') {
             position = resolveCorner(ball, fieldBounds, team)
             message =
-              team === USER_TEAM
+              team === getUserTeam()
                 ? `Escanteio — ← → mirar · Espaço chutar`
                 : `Escanteio — Visitante`
           } else {
             position = resolveGoalKick(fieldBounds, team)
-            if (lastTouchTeam === USER_TEAM && team !== USER_TEAM) {
+            if (lastTouchTeam === getUserTeam() && team !== getUserTeam()) {
               crowdSfx.notifyHomeMiss()
             }
             if (lastTouchTeam && lastTouchTeam !== team) {
               narrationSfx.playKickError()
             }
             message =
-              team === USER_TEAM
+              team === getUserTeam()
                 ? `Tiro de meta — ← → mirar · Espaço chutar`
                 : `Tiro de meta — Visitante`
           }
@@ -185,7 +185,7 @@ export function MatchManager() {
           store.setPieceAimAngle,
         )
       const autoKickAway =
-        store.setPieceTeam !== USER_TEAM &&
+        store.setPieceTeam !== getUserTeam() &&
         kickerReady &&
         setPieceTimerRef.current >= kickDelay
 

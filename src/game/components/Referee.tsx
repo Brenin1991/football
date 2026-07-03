@@ -3,7 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { SkeletonUtils } from 'three-stdlib'
-import { PLAYER_HEIGHT } from '../constants'
+import { PLAYER_HEIGHT, PLAYER_SPRINT_SPEED } from '../constants'
 import { usePlayerAssets } from '../context/PlayerAssetsContext'
 import type { PlayerAnim } from '../types'
 import { entranceSystem } from '../systems/teamEntrance'
@@ -12,9 +12,9 @@ import { useGameStore } from '../store/gameStore'
 import { refereeState } from '../systems/referee'
 import { getPlayerBodyY } from '../systems/fieldData'
 import { getSimDelta } from '../systems/gameTime'
-import { distance2D } from '../systems/rules'
-
-import { applyRefereeMaterials } from '../psx/psxMaterials'
+import { distance2D, rotateTowardAngle } from '../systems/rules'
+import { smoothVelocity2D } from '../systems/playerLocomotion'
+import { applyRefereeMaterials } from '../graphics/graphicsMaterials'
 import { alignPlayerModelToCapsule } from '../systems/animationClips'
 
 const LOCOMOTION_ANIMS: PlayerAnim[] = ['idle', 'run']
@@ -25,6 +25,7 @@ export function Referee() {
   const modelRootRef = useRef<THREE.Group>(null)
   const pos = useRef({ x: 2.8, z: -2.4 })
   const rot = useRef(0)
+  const moveVel = useRef({ x: 0, z: 0 })
 
   const cloned = useMemo(() => {
     const model = SkeletonUtils.clone(scene) as THREE.Group
@@ -111,14 +112,41 @@ export function Referee() {
     if (dist > 0.15) {
       const dx = targetX - pos.current.x
       const dz = targetZ - pos.current.z
-      rot.current = Math.atan2(dx, dz)
-      const speed = 4.2
-      const step = Math.min(dist, speed * simDelta)
       const len = Math.hypot(dx, dz) || 1
-      pos.current.x += (dx / len) * step
-      pos.current.z += (dz / len) * step
+      const ndx = dx / len
+      const ndz = dz / len
+      const speed = PLAYER_SPRINT_SPEED * 0.92
+      const nextVel = smoothVelocity2D(
+        moveVel.current,
+        ndx * speed,
+        ndz * speed,
+        simDelta,
+        true,
+      )
+      moveVel.current.x = nextVel.x
+      moveVel.current.z = nextVel.z
+      const stepX = moveVel.current.x * simDelta
+      const stepZ = moveVel.current.z * simDelta
+      const stepDist = Math.hypot(stepX, stepZ)
+      if (stepDist > dist) {
+        pos.current.x = targetX
+        pos.current.z = targetZ
+        moveVel.current.x = 0
+        moveVel.current.z = 0
+      } else {
+        pos.current.x += stepX
+        pos.current.z += stepZ
+      }
+      rot.current = rotateTowardAngle(
+        rot.current,
+        Math.atan2(ndx, ndz),
+        6.5,
+        simDelta,
+      )
       playAnim('run')
     } else {
+      moveVel.current.x = 0
+      moveVel.current.z = 0
       playAnim('idle')
     }
 

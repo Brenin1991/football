@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { EntityImage } from '../../components/EntityImage'
 import { replaySystem } from '../systems/replaySystem'
 import { subscribeScreenFade } from '../systems/screenTransition'
 import { useGameStore } from '../store/gameStore'
@@ -27,16 +28,31 @@ export function ReplayOverlay() {
     <div className="psx-replay-overlay pes-hud-shell" aria-hidden>
       <div className="psx-replay-scanlines" />
 
-      <div className="psx-replay-tag pes-hud-surface pes-hud-surface--header">
+      <div className="psx-replay-tag pes-hud-surface pes-hud-surface--header hud-anim hud-anim--replay-tag">
         <span className="psx-replay-dot" />
         REPLAY
       </div>
 
-      <div className="psx-replay-lower pes-hud-surface">
+      <div className="psx-replay-lower pes-hud-surface hud-anim hud-anim--replay-lower">
         {highlight ? (
           <div className="psx-replay-highlight">
-            <div className="psx-replay-player">{highlight.playerName}</div>
-            <div className="psx-replay-action">{highlight.action}</div>
+            <div className="psx-replay-photo-wrap">
+              {highlight.editionPlayerId ? (
+                <EntityImage
+                  entityType="player"
+                  entityId={highlight.editionPlayerId}
+                  alt={highlight.playerName}
+                  className="psx-replay-photo"
+                  fallback={<div className="psx-replay-photo psx-replay-photo--fallback" />}
+                />
+              ) : (
+                <div className="psx-replay-photo psx-replay-photo--fallback" />
+              )}
+            </div>
+            <div className="psx-replay-highlight-text">
+              <div className="psx-replay-player">{highlight.playerName}</div>
+              <div className="psx-replay-action">{highlight.action}</div>
+            </div>
           </div>
         ) : (
           <div className="psx-replay-event">{label}</div>

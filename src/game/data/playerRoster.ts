@@ -1,4 +1,5 @@
 import type { TeamId } from '../types'
+import { getPlayerNameFromSession, getPlayerPositionFromSession, getEditionPlayerId } from '../matchRuntime'
 
 export const FORMATION_POSITION_LABELS = [
   'GK',
@@ -50,11 +51,15 @@ export function parsePlayerIndex(id: string): number {
 }
 
 export function getPlayerDisplayName(team: TeamId, index: number): string {
+  const fromSession = getPlayerNameFromSession(team, index)
+  if (fromSession) return fromSession
   const names = team === 'home' ? HOME_NAMES : AWAY_NAMES
   return names[index] ?? `Jogador ${index + 1}`
 }
 
-export function getPlayerPositionLabel(index: number): string {
+export function getPlayerPositionLabel(team: TeamId, index: number): string {
+  const fromSession = getPlayerPositionFromSession(team, index)
+  if (fromSession) return fromSession
   return FORMATION_POSITION_LABELS[index] ?? 'CM'
 }
 
@@ -86,7 +91,8 @@ export function getPlayerCardInfo(playerId: string) {
     team,
     index,
     name: getPlayerDisplayName(team, index),
-    position: getPlayerPositionLabel(index),
+    position: getPlayerPositionLabel(team, index),
     stamina: mockStamina(playerId),
+    editionPlayerId: getEditionPlayerId(team, index),
   }
 }

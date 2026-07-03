@@ -10,6 +10,14 @@ export const FIELD_SCALE = 1.5
 const BASE_HALF_X = 6.5
 const BASE_HALF_Z = 9.5
 
+/** Volume ortográfico da shadow map — ajustado ao campo para não desperdiçar resolução */
+export const SHADOW_CAMERA = {
+  halfX: BASE_HALF_X * FIELD_SCALE * 1.1,
+  halfZ: BASE_HALF_Z * FIELD_SCALE * 1.1,
+  near: 2,
+  far: 90,
+}
+
 /** Fallback se field_area não existir no GLB */
 export const PITCH_LIMITS = {
   minX: -BASE_HALF_X * FIELD_SCALE,

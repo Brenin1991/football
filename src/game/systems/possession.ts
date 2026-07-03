@@ -1,6 +1,7 @@
 import type { PassIntent } from '../store/gameStore'
 import type { FieldBounds, TeamId, Vec3 } from '../types'
 import type { PlayerRef } from './entityRegistry'
+import { ballRef } from './entityRegistry'
 import {
   BALL_RADIUS,
   BALL_FOOT_OFFSET,
@@ -149,6 +150,15 @@ export function getBallAtFeet(player: PlayerRef) {
     y: ballRestY(BALL_RADIUS),
     z: player.position.z + fz * BALL_FOOT_OFFSET,
   }
+}
+
+/** Posição real da bola com posse; evita snap no pivot do jogador */
+export function getHeldBallPoint(holder: PlayerRef, possessedPlayerId?: string | null) {
+  if (possessedPlayerId === holder.id) {
+    return { x: ballRef.current.x, z: ballRef.current.z }
+  }
+  const foot = getBallAtFeet(holder)
+  return { x: foot.x, z: foot.z }
 }
 
 export function findNearestTeammate(

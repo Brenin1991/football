@@ -1,38 +1,43 @@
 import { getGoalkeeperId } from '../constants'
 import { ballRef, playerRegistry } from '../systems/entityRegistry'
 import { getCachedTeamMarker } from '../systems/dynamicFormation'
-import { USER_TEAM, useGameStore } from '../store/gameStore'
+import { getOpponent, getUserTeam, useGameStore } from '../store/gameStore'
 import { HudPlayerCard } from './HudPlayerCard'
 import { HudRadar } from './HudRadar'
+import type { TeamId } from '../types'
 
 const DEFAULT_HOME_OUTFIELD = 'home-9'
 const DEFAULT_AWAY_OUTFIELD = 'away-10'
 
-function resolveHomePlayerId(activeId: string): string {
-  if (activeId && activeId !== getGoalkeeperId(USER_TEAM)) {
+function resolveUserPlayerId(activeId: string): string {
+  const userTeam = getUserTeam()
+  if (activeId.startsWith(`${userTeam}-`) && activeId !== getGoalkeeperId(userTeam)) {
     return activeId
   }
-  return DEFAULT_HOME_OUTFIELD
+  return userTeam === 'home' ? DEFAULT_HOME_OUTFIELD : DEFAULT_AWAY_OUTFIELD
 }
 
-function resolveAwayPlayerId(
+function resolveOpponentPlayerId(
+  team: TeamId,
   possession: { playerId: string; team: string } | null,
 ): string {
-  if (possession?.team === 'away' && possession.playerId) {
+  const defaultId = team === 'home' ? DEFAULT_HOME_OUTFIELD : DEFAULT_AWAY_OUTFIELD
+
+  if (possession?.team === team && possession.playerId) {
     return possession.playerId
   }
 
-  const marker = getCachedTeamMarker('away')
-  if (marker && marker !== getGoalkeeperId('away')) {
+  const marker = getCachedTeamMarker(team)
+  if (marker && marker !== getGoalkeeperId(team)) {
     return marker
   }
 
-  if (possession?.team === 'home') {
-    let nearest = DEFAULT_AWAY_OUTFIELD
+  if (possession?.team === getOpponent(team)) {
+    let nearest = defaultId
     let minDist = Infinity
     const ball = ballRef.current
     for (const p of playerRegistry.values()) {
-      if (p.team !== 'away' || p.id === getGoalkeeperId('away')) continue
+      if (p.team !== team || p.id === getGoalkeeperId(team)) continue
       const dx = p.position.x - ball.x
       const dz = p.position.z - ball.z
       const d = dx * dx + dz * dz
@@ -44,7 +49,7 @@ function resolveAwayPlayerId(
     return nearest
   }
 
-  return DEFAULT_AWAY_OUTFIELD
+  return defaultId
 }
 
 export function HudPlayerCards() {
@@ -60,14 +65,21 @@ export function HudPlayerCards() {
     return null
   }
 
-  const homeId = resolveHomePlayerId(activePlayerId)
-  const awayId = resolveAwayPlayerId(ballPossession)
+  const userTeam = getUserTeam()
+  const homeId =
+    userTeam === 'home'
+      ? resolveUserPlayerId(activePlayerId)
+      : resolveOpponentPlayerId('home', ballPossession)
+  const awayId =
+    userTeam === 'away'
+      ? resolveUserPlayerId(activePlayerId)
+      : resolveOpponentPlayerId('away', ballPossession)
 
   return (
     <div className="psx-bottom-bar">
-      <HudPlayerCard playerId={homeId} team="home" />
+      <HudPlayerCard playerId={homeId} team="home" controlled={userTeam === 'home'} />
       <HudRadar />
-      <HudPlayerCard playerId={awayId} team="away" />
+      <HudPlayerCard playerId={awayId} team="away" controlled={userTeam === 'away'} />
     </div>
   )
 }

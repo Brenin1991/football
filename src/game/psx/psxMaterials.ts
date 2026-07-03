@@ -1,10 +1,9 @@
 import * as THREE from 'three'
-import type { TeamId, PlayerRole } from '../types'
-import { GK_COLORS, TEAM_COLORS } from '../constants'
+import type { PlayerAppearance } from '../matchRuntime'
 import { applyMeshShadows, applyPsxMaterialToMesh, toPsxStandard } from './psxMaterial'
 import { PSX_CLASSIC } from './psxSettings'
 
-type PlayerPart = 'shirt' | 'shorts' | 'skin' | 'hair' | 'boots' | 'other'
+type PlayerPart = 'shirt' | 'shorts' | 'socks' | 'body' | 'skin' | 'hair' | 'boots' | 'other'
 
 function hasAlbedoMap(src: THREE.Material): boolean {
   return (
@@ -13,14 +12,21 @@ function hasAlbedoMap(src: THREE.Material): boolean {
   )
 }
 
+/** Meshes do modelo Ch38 — prioridade sobre classificação genérica */
 function classifyPlayerMesh(name: string): PlayerPart {
+  if (name.includes('Ch38_Shirt')) return 'shirt'
+  if (name.includes('Ch38_Shorts')) return 'shorts'
+  if (name.includes('Ch38_Socks')) return 'socks'
+  if (name.includes('Ch38_Body') || name.includes('BRACO') || name.includes('Braco')) return 'body'
+
   const n = name.toLowerCase()
+  if (n.includes('braco')) return 'body'
   if (n.includes('shirt')) return 'shirt'
   if (n.includes('short') || n.includes('pant') || n.includes('trunk')) return 'shorts'
+  if (n.includes('sock')) return 'socks'
   if (n.includes('shoe') || n.includes('boot') || n.includes('sneaker')) return 'boots'
   if (n.includes('hair')) return 'hair'
   if (
-    n.includes('body') ||
     n.includes('head') ||
     n.includes('hand') ||
     n.includes('arm') ||
@@ -49,6 +55,25 @@ function upgradeMesh(
   const sources = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
   const upgraded = sources.map((src) => build(src))
   mesh.material = upgraded.length === 1 ? upgraded[0] : upgraded
+}
+
+function paintMesh(
+  mesh: THREE.Mesh,
+  color: THREE.Color,
+  highlighted: boolean,
+  playerSnap: number,
+  characterTexture: typeof PSX_CLASSIC.material.texture.character,
+  emissiveScale = 0.06,
+) {
+  upgradeMesh(mesh, (src) =>
+    toPsxStandard(src, {
+      vertexSnap: playerSnap,
+      textureProfile: characterTexture,
+      color,
+      emissive: color.clone().multiplyScalar(highlighted ? 0.25 : emissiveScale),
+      emissiveIntensity: highlighted ? 0.9 : 0.45,
+    }),
+  )
 }
 
 /** Gramado, linhas e traves com material PSX matte */
@@ -101,11 +126,14 @@ export function applyFieldGraphics(scene: THREE.Object3D) {
 
 export function applyPlayerMaterials(
   model: THREE.Group,
-  team: TeamId,
-  role: PlayerRole,
+  appearance: PlayerAppearance,
   highlighted = false,
 ) {
-  const kitColor = new THREE.Color(role === 'gk' ? GK_COLORS[team] : TEAM_COLORS[team])
+  const { kit, skinColor } = appearance
+  const shirt = new THREE.Color(kit.shirt)
+  const shorts = new THREE.Color(kit.shorts)
+  const socks = new THREE.Color(kit.socks)
+  const skin = new THREE.Color(skinColor)
   const playerSnap = PSX_CLASSIC.material.playerVertexSnap
   const characterTexture = PSX_CLASSIC.material.texture.character
 
@@ -120,28 +148,22 @@ export function applyPlayerMaterials(
     const part = classifyPlayerMesh(mesh.name)
 
     if (part === 'shirt') {
-      upgradeMesh(mesh, (src) =>
-        toPsxStandard(src, {
-          vertexSnap: playerSnap,
-          textureProfile: characterTexture,
-          color: kitColor,
-          emissive: kitColor.clone().multiplyScalar(highlighted ? 0.25 : 0.06),
-          emissiveIntensity: highlighted ? 0.9 : 0.45,
-        }),
-      )
+      paintMesh(mesh, shirt, highlighted, playerSnap, characterTexture)
       return
     }
 
     if (part === 'shorts') {
-      upgradeMesh(mesh, (src) =>
-        toPsxStandard(src, {
-          vertexSnap: playerSnap,
-          textureProfile: characterTexture,
-          color: hasAlbedoMap(src)
-            ? kitColor.clone().multiplyScalar(0.85)
-            : kitColor.clone().multiplyScalar(0.72),
-        }),
-      )
+      paintMesh(mesh, shorts, false, playerSnap, characterTexture, 0)
+      return
+    }
+
+    if (part === 'socks') {
+      paintMesh(mesh, socks, false, playerSnap, characterTexture, 0)
+      return
+    }
+
+    if (part === 'body') {
+      paintMesh(mesh, skin, false, playerSnap, characterTexture, 0.02)
       return
     }
 

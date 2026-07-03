@@ -10,7 +10,7 @@ import {
 import type { ControlState } from '../hooks/useKeyboardControls'
 import { ballRef, playerRegistry } from '../systems/entityRegistry'
 import { distance2D } from '../systems/rules'
-import { useGameStore, USER_TEAM } from '../store/gameStore'
+import { useGameStore, getUserTeam } from '../store/gameStore'
 import { startKickoff } from '../systems/kickoff'
 import { executeSetPieceKick, isActiveSetPiecePhase } from '../systems/setPiece'
 import {
@@ -47,11 +47,11 @@ function canChargeOpenPlay(store: ReturnType<typeof useGameStore.getState>) {
     }
   }
   const pos = store.ballPossession
-  return pos?.team === USER_TEAM && pos.playerId === store.activePlayerId
+  return pos?.team === getUserTeam() && pos.playerId === store.activePlayerId
 }
 
 function canChargeSetPiece(store: ReturnType<typeof useGameStore.getState>) {
-  return isActiveSetPiecePhase(store.phase) && store.ballFrozen && store.setPieceTeam === USER_TEAM
+  return isActiveSetPiecePhase(store.phase) && store.ballFrozen && store.setPieceTeam === getUserTeam()
 }
 
 function activePassButton(c: ControlState): PassChargeKind | null {
@@ -83,7 +83,7 @@ function updateStrikeAim(
 
   const possession = store.ballPossession
   if (
-    possession?.team !== USER_TEAM ||
+    possession?.team !== getUserTeam() ||
     possession.playerId !== store.activePlayerId
   ) {
     store.setStrikeAim(null)
@@ -147,7 +147,7 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
     cornerKickTimerRef.current = 0
 
     if (store.phase === 'kickoff' && store.ballFrozen) {
-      if (store.kickoffTeam !== USER_TEAM) {
+      if (store.kickoffTeam !== getUserTeam()) {
         kickoffTimerRef.current += simDelta
         if (kickoffTimerRef.current >= SET_PIECE_DELAY) {
           startKickoff()

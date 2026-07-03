@@ -5,7 +5,7 @@ import * as THREE from 'three'
 import { PsxCompositeEffect } from '../../psx/PsxCompositeEffect'
 import { updatePsxShaderTime } from '../../psx/psxMaterial'
 import { PSX_CLASSIC } from '../../psx/psxSettings'
-import { FIELD_SCALE } from '../../systems/fieldData'
+import { FIELD_SCALE, SHADOW_CAMERA } from '../../systems/fieldData'
 
 function PsxEffectPass() {
   const effect = useMemo(() => new PsxCompositeEffect(), [])
@@ -42,11 +42,12 @@ export function PsxPipeline() {
         color="#fff4e0"
         castShadow={shadow.enabled}
         shadow-mapSize={[shadow.mapSize, shadow.mapSize]}
-        shadow-camera-far={80 * FIELD_SCALE}
-        shadow-camera-left={-24 * FIELD_SCALE}
-        shadow-camera-right={24 * FIELD_SCALE}
-        shadow-camera-top={24 * FIELD_SCALE}
-        shadow-camera-bottom={-24 * FIELD_SCALE}
+        shadow-camera-near={SHADOW_CAMERA.near}
+        shadow-camera-far={SHADOW_CAMERA.far}
+        shadow-camera-left={-SHADOW_CAMERA.halfX}
+        shadow-camera-right={SHADOW_CAMERA.halfX}
+        shadow-camera-top={SHADOW_CAMERA.halfZ}
+        shadow-camera-bottom={-SHADOW_CAMERA.halfZ}
         shadow-bias={shadow.bias}
         shadow-normalBias={shadow.normalBias}
       />

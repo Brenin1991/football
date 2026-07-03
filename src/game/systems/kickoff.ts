@@ -1,4 +1,4 @@
-import { useGameStore, USER_TEAM } from '../store/gameStore'
+import { getUserTeam, useGameStore } from '../store/gameStore'
 import type { FieldBounds, TeamId, Vec3 } from '../types'
 import { getKickoffPlayerId as kickoffId } from '../constants'
 import { playerRegistry, type PlayerRef } from './entityRegistry'
@@ -101,7 +101,7 @@ export function setupKickoff(team: TeamId, center: Vec3, message?: string) {
     passIntent: null,
     lastTouchTeam: null,
     kickoffResetVersion: store.kickoffResetVersion + 1,
-    activePlayerId: team === USER_TEAM ? kickerId : store.activePlayerId,
+    activePlayerId: team === getUserTeam() ? kickerId : store.activePlayerId,
     message: message ?? 'Saída de bola — pressione Espaço para iniciar',
   })
 }
@@ -115,7 +115,7 @@ export function startKickoff(): boolean {
   store.setPhase('playing')
   store.setBallFrozen(false)
   store.setMessage('')
-  if (store.kickoffTeam === USER_TEAM) store.setActivePlayer(kickerId)
+  if (store.kickoffTeam === getUserTeam()) store.setActivePlayer(kickerId)
   useGameStore.setState({
     kickoffStrikeAnim: { kickerId, at: performance.now() },
   })

@@ -2,7 +2,7 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { useRef } from 'react'
 import * as THREE from 'three'
 import { PLAYER_HEIGHT } from '../constants'
-import { useGameStore, USER_TEAM } from '../store/gameStore'
+import { useGameStore, getUserTeam } from '../store/gameStore'
 import { ballRef, playerRegistry } from '../systems/entityRegistry'
 import { updateCameraBasis } from '../systems/cameraState'
 import { getIntroCameraState, getIntroFadeOpacity } from '../systems/introCamera'
@@ -108,7 +108,7 @@ export function GameCamera() {
     const userSetPieceThirdPerson =
       (store.phase === 'corner' || store.phase === 'penalty') &&
       store.ballFrozen &&
-      store.setPieceTeam === USER_TEAM &&
+      store.setPieceTeam === getUserTeam() &&
       !store.setPieceKickPending &&
       kicker != null &&
       store.setPiecePosition != null

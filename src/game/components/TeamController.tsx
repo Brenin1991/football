@@ -11,8 +11,9 @@ import {
 } from '../constants'
 import { CROSS_RECEIVE_MAX_SPEED_MUL } from '../systems/cross'
 import { THROUGH_RECEIVE_MAX_SPEED_MUL } from '../systems/throughPass'
-import { useGameStore, USER_TEAM } from '../store/gameStore'
+import { getOpponent, useGameStore, getUserTeam } from '../store/gameStore'
 import { ballRef, playerRegistry } from '../systems/entityRegistry'
+import { clearDribbleState } from '../systems/ballDribble'
 import { applyBallVelocity, ensureBallDynamic, kickBall } from '../systems/ballPhysics'
 import {
   CLAIM_DISTANCE,
@@ -68,7 +69,7 @@ export function TeamController() {
         return
       }
 
-      if (possession.team === USER_TEAM && holder.role !== 'gk') {
+      if (possession.team === getUserTeam() && holder.role !== 'gk') {
         store.setActivePlayer(possession.playerId)
       }
 
@@ -119,7 +120,7 @@ export function TeamController() {
         if (
           passIntent.passType === 'cross' &&
           rid === passIntent.receiverId &&
-          receiver.team === USER_TEAM &&
+          receiver.team === getUserTeam() &&
           store.crossOneTouchActive &&
           toBall < 3.4
         ) {
@@ -134,7 +135,7 @@ export function TeamController() {
             return
           }
           store.setPossession(receiver.id, receiver.team)
-          if (receiver.team === USER_TEAM && receiver.role !== 'gk') {
+          if (receiver.team === getUserTeam() && receiver.role !== 'gk') {
             store.setActivePlayer(receiver.id)
           }
           return
@@ -178,11 +179,11 @@ export function TeamController() {
         store.lastTouchTeam &&
         store.lastTouchTeam !== contestant.team
       if (recoveredFromOpponent) {
-        if (contestant.team === USER_TEAM && store.lastTouchTeam === 'away') {
+        if (contestant.team === getUserTeam() && store.lastTouchTeam === getOpponent(getUserTeam())) {
           crowdSfx.notifyHomeSteal()
         }
       }
-      if (contestant.team === USER_TEAM && contestant.role !== 'gk') {
+      if (contestant.team === getUserTeam() && contestant.role !== 'gk') {
         store.setActivePlayer(contestant.id)
       }
     }
@@ -200,11 +201,12 @@ export function releaseBallFromFeet(
 ) {
   const store = useGameStore.getState()
   store.clearPossession()
+  clearDribbleState()
 
   if (passerId) {
     store.blockPasserClaim(passerId, 380)
     store.setLastTouch(
-      playerRegistry.get(passerId)?.team ?? USER_TEAM,
+      playerRegistry.get(passerId)?.team ?? getUserTeam(),
     )
   }
 
@@ -216,7 +218,7 @@ export function releaseBallFromFeet(
     const passer = passerId ? playerRegistry.get(passerId) : null
     const loft = opts?.loft ?? (vy > 0.5 ? vy / speed : 0)
     if (passer) {
-      if (passer.team === USER_TEAM && opts?.releaseKind === 'shot') {
+      if (passer.team === getUserTeam() && opts?.releaseKind === 'shot') {
         crowdSfx.notifyHomeShot()
       }
       if (opts?.releaseKind === 'shot') {

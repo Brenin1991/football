@@ -1,8 +1,8 @@
 import { STEAL_COOLDOWN_MS } from '../constants'
-import { USER_TEAM, useGameStore } from '../store/gameStore'
+import { getOpponent, getUserTeam, useGameStore } from '../store/gameStore'
 import { ballRef, playerRegistry } from './entityRegistry'
 import { isTeamMarker } from './dynamicFormation'
-import { canStealFromHolder, getBallAtFeet } from './possession'
+import { canStealFromHolder, getHeldBallPoint } from './possession'
 import { isBallShielding } from './ballShield'
 import { crowdSfx } from './crowdSfx'
 
@@ -21,7 +21,7 @@ export function tryStandingSteal(stealerId: string): boolean {
   if (isBallShielding(possession.playerId)) return false
 
   const isUserActive =
-    stealer.team === USER_TEAM && stealerId === store.activePlayerId
+    stealer.team === getUserTeam() && stealerId === store.activePlayerId
   if (
     !isUserActive &&
     !isTeamMarker(stealerId, stealer.team, possession, ballRef.current)
@@ -29,14 +29,14 @@ export function tryStandingSteal(stealerId: string): boolean {
     return false
   }
 
-  const foot = getBallAtFeet(holder)
-  if (!canStealFromHolder(stealer, holder, foot)) return false
+  const held = getHeldBallPoint(holder, possession.playerId)
+  if (!canStealFromHolder(stealer, holder, held)) return false
 
   store.setPossession(stealerId, stealer.team)
-  if (stealer.team === USER_TEAM && possession.team === 'away') {
+  if (stealer.team === getUserTeam() && possession.team === getOpponent(getUserTeam())) {
     crowdSfx.notifyHomeSteal()
   }
-  if (stealer.team === USER_TEAM && stealer.role !== 'gk') {
+  if (stealer.team === getUserTeam() && stealer.role !== 'gk') {
     store.setActivePlayer(stealerId)
   }
   return true

@@ -1,6 +1,6 @@
 import { BallCollider, RigidBody, type RapierRigidBody } from '@react-three/rapier'
 import { useEffect, useMemo, useRef } from 'react'
-import { createBallMaterial } from '../psx/psxMaterials'
+import { createBallMaterial } from '../graphics/graphicsMaterials'
 import { useFrame } from '@react-three/fiber'
 import {
   BALL_ANGULAR_DAMPING,
@@ -12,8 +12,13 @@ import {
 } from '../constants'
 import { useGameStore } from '../store/gameStore'
 import { ballBodyRef, ballRef, playerRegistry } from '../systems/entityRegistry'
+import {
+  clearDribbleState,
+  syncDribblePossession,
+  updatePossessedBall,
+} from '../systems/ballDribble'
 import { ensureBallKinematic, isSetPieceLaunchActive, syncBallFromBody } from '../systems/ballPhysics'
-import { getBallAtFeet } from '../systems/possession'
+import { getSimDelta } from '../systems/gameTime'
 import { ballRestY } from '../systems/fieldData'
 import { isActiveSetPiecePhase } from '../systems/setPiece'
 
@@ -30,9 +35,10 @@ export function Ball() {
     if (bodyRef.current) ballBodyRef.current = bodyRef.current
   }, [])
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     if (!bodyRef.current) return
 
+    const simDelta = getSimDelta(delta)
     const store = useGameStore.getState()
     if (store.phase === 'replay' || store.phase === 'goal-celebration') return
 
@@ -73,10 +79,10 @@ export function Ball() {
       if (possessed) {
         const holder = playerRegistry.get(possessed.playerId)
         if (holder) {
-          const foot = getBallAtFeet(holder)
-          bodyRef.current.setTranslation(foot, true)
-          ballRef.current = foot
-          ballRef.velocity = { x: 0, y: 0, z: 0 }
+          syncDribblePossession(possessed.playerId, store.possessionSince)
+          if (simDelta > 0) {
+            updatePossessedBall(bodyRef.current, holder, simDelta, restY)
+          }
           return
         }
       }
@@ -91,11 +97,13 @@ export function Ball() {
       return
     }
 
+    clearDribbleState()
+
     if (bodyRef.current.bodyType() !== 0) {
       bodyRef.current.setBodyType(0, true)
     }
     syncBallFromBody(bodyRef.current)
-  })
+  }, 50)
 
   return (
     <RigidBody

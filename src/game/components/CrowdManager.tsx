@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react'
 import { ATTACK_THIRD_DIST, crowdSfx } from '../systems/crowdSfx'
 import { ballRef } from '../systems/entityRegistry'
 import { getAttackingGoalZ, getAttackSign } from '../systems/teamField'
-import { useGameStore, USER_TEAM } from '../store/gameStore'
+import { useGameStore, getUserTeam } from '../store/gameStore'
 import { getSimDelta } from '../systems/gameTime'
 
 const STAND_PHASES = new Set([
@@ -37,7 +37,7 @@ export function CrowdManager() {
       const nextPoss = state.ballPossession
 
       if (
-        nextPoss?.team === USER_TEAM &&
+        nextPoss?.team === getUserTeam() &&
         prevPoss?.team === 'away' &&
         state.phase === 'playing'
       ) {
@@ -62,7 +62,7 @@ export function CrowdManager() {
     const simDelta = getSimDelta(delta)
 
     const possession = store.ballPossession
-    if (possession?.team !== USER_TEAM) {
+    if (possession?.team !== getUserTeam()) {
       attackResetTimer.current += simDelta
       if (attackResetTimer.current > 2.5) {
         crowdSfx.resetAttackCheerArm()
@@ -73,8 +73,8 @@ export function CrowdManager() {
     }
 
     attackResetTimer.current = 0
-    const goalZ = getAttackingGoalZ(USER_TEAM, fieldBounds)
-    const sign = getAttackSign(USER_TEAM, fieldBounds)
+    const goalZ = getAttackingGoalZ(getUserTeam(), fieldBounds)
+    const sign = getAttackSign(getUserTeam(), fieldBounds)
     const distToGoal = (goalZ - ballRef.current.z) * sign
 
     if (distToGoal > 0 && distToGoal < ATTACK_THIRD_DIST) {

@@ -5,9 +5,9 @@ import {
   SLIDE_DURATION_MS,
   SLIDE_REACH,
 } from '../constants'
-import { USER_TEAM, useGameStore } from '../store/gameStore'
+import { getUserTeam, useGameStore } from '../store/gameStore'
 import { playerRegistry, type PlayerRef } from './entityRegistry'
-import { getBallAtFeet, STEAL_COOLDOWN_MS } from './possession'
+import { getHeldBallPoint, STEAL_COOLDOWN_MS } from './possession'
 import { isBallShielding } from './ballShield'
 import { reportSlideFoul, canPlayerPlay } from './referee'
 import { crowdSfx } from './crowdSfx'
@@ -167,10 +167,10 @@ function claimSlideSteal(slider: PlayerRef) {
   const store = useGameStore.getState()
   store.setPossession(slider.id, slider.team)
   store.setLastTouch(slider.team)
-  if (slider.team === USER_TEAM) {
+  if (slider.team === getUserTeam()) {
     crowdSfx.notifyHomeSteal()
   }
-  if (slider.team === USER_TEAM && slider.id !== getGoalkeeperId(USER_TEAM)) {
+  if (slider.team === getUserTeam() && slider.id !== getGoalkeeperId(getUserTeam())) {
     store.setActivePlayer(slider.id)
   }
 }
@@ -199,9 +199,9 @@ export function processSlideContacts(sliderId: string) {
   if (possession && !slide.resolvedHolder) {
     const holder = playerRegistry.get(possession.playerId)
     if (holder && holder.team !== slider.team) {
-      const foot = getBallAtFeet(holder)
+      const held = getHeldBallPoint(holder, possession.playerId)
       const hitsBody = canSlideReachTarget(slider, slide, holder.position)
-      const hitsFoot = canSlideReachTarget(slider, slide, foot)
+      const hitsFoot = canSlideReachTarget(slider, slide, held)
 
       if (hitsBody || hitsFoot) {
         slide.resolvedHolder = true

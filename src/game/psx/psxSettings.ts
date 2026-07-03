@@ -19,8 +19,8 @@ export type PsxToneMapping = 'none' | 'linear' | 'reinhard' | 'cineon' | 'aces' 
 export const PSX_CLASSIC = {
   /** Efeitos retro na tela */
   post: {
-    pixelSize: 1.8,
-    resolutionScale: 0.7,
+    pixelSize: 1,
+    resolutionScale: 0.8,
     colorDepth: 32,
     ditherIntensity: 0.7,
     bands: 16,
@@ -61,7 +61,7 @@ export const PSX_CLASSIC = {
   /** Materiais 3D */
   material: {
     vertexSnap: 8,
-    playerVertexSnap: 24,
+    playerVertexSnap: 1024,
     flatShading: true,
     /** Texturas estilo PS1 */
     texture: {

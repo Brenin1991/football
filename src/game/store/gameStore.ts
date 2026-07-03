@@ -158,8 +158,15 @@ interface GameStore {
   setStealImmunity: (playerId: string, ms: number) => void
   isStealImmune: (playerId: string) => boolean
   setStrikeAim: (aim: StrikeAimState | null) => void
+  userTeam: TeamId
+  setUserTeam: (team: TeamId) => void
 }
 
+export function getUserTeam(): TeamId {
+  return useGameStore.getState().userTeam
+}
+
+/** @deprecated Use getUserTeam() */
 export const USER_TEAM: TeamId = 'home'
 
 export const useGameStore = create<GameStore>((set, get) => ({
@@ -206,6 +213,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
   refereeSignal: null,
   timeScale: 1,
   resumeTimeScale: 1,
+  userTeam: 'home',
+
+  setUserTeam: (team) => {
+    set({ userTeam: team, activePlayerId: `${team}-9` })
+  },
 
   setFieldData: (bounds, goals) => set({ fieldBounds: bounds, goalZones: goals }),
 
@@ -244,14 +256,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setLastTouch: (team) => set({ lastTouchTeam: team }),
 
   setActivePlayer: (id) => {
-    if (id === getGoalkeeperId(USER_TEAM)) return
+    if (id === getGoalkeeperId(get().userTeam)) return
     if (get().sentOffPlayers.includes(id)) return
     set({ activePlayerId: id })
   },
 
   setPossession: (playerId, team) => {
+    const userTeam = get().userTeam
     const switchActive =
-      team === USER_TEAM && playerId !== getGoalkeeperId(USER_TEAM)
+      team === userTeam && playerId !== getGoalkeeperId(userTeam)
     set({
       ballPossession: { playerId, team },
       possessionSince: performance.now(),
@@ -270,9 +283,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
 
     const receiverId = intent.receiverId
+    const userTeam = get().userTeam
     const selectReceiver =
-      receiverId.startsWith(`${USER_TEAM}-`) &&
-      receiverId !== getGoalkeeperId(USER_TEAM) &&
+      receiverId.startsWith(`${userTeam}-`) &&
+      receiverId !== getGoalkeeperId(userTeam) &&
       !get().sentOffPlayers.includes(receiverId)
 
     set({

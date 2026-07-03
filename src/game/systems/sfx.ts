@@ -1,5 +1,6 @@
 import { crowdSfx } from './crowdSfx'
 import { narrationSfx } from './narrationSfx'
+import { menuSfx } from '../../menu/menuSfx'
 
 const WHISTLE_SRC = '/sfx/apito.mp3'
 const KICK_SRC = '/sfx/kick.mp3'
@@ -12,6 +13,7 @@ class SfxManager {
   unlock() {
     if (this.unlocked) return
     this.unlocked = true
+    menuSfx.unlock()
     crowdSfx.unlock()
     narrationSfx.unlock()
     this.whistle = new Audio(WHISTLE_SRC)

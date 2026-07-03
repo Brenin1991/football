@@ -8,6 +8,7 @@ import { useGameStore, formatMatchTime } from '../store/gameStore'
 import { getGoalkeeperId } from '../constants'
 import { FIELD_SCALE } from './fieldData'
 import { runFadeIn, runFadeOut } from './screenTransition'
+import { getEditionPlayerId } from '../matchRuntime'
 import { getPlayerDisplayName, parsePlayerIndex } from '../data/playerRoster'
 
 export type ReplayEventType = 'goal' | 'shot' | 'foul' | 'save' | 'offside'
@@ -145,13 +146,20 @@ class ReplaySystem {
     return EVENT_LABEL[this.eventType]
   }
 
-  getReplayHighlight(): { playerName: string; action: string } | null {
+  getReplayHighlight(): {
+    playerId: string
+    playerName: string
+    action: string
+    editionPlayerId: string | null
+  } | null {
     if (!this.focusPlayerId) return null
     const team: TeamId = this.focusPlayerId.startsWith('away-') ? 'away' : 'home'
     const index = parsePlayerIndex(this.focusPlayerId)
     return {
+      playerId: this.focusPlayerId,
       playerName: getPlayerDisplayName(team, index).toUpperCase(),
       action: EVENT_LABEL[this.eventType],
+      editionPlayerId: getEditionPlayerId(team, index),
     }
   }
 

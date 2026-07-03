@@ -5,8 +5,6 @@ export const PLAYERS_PER_TEAM = 11
 export const KICKOFF_PLAYER_INDEX = 9 // atacante na saída de bola
 
 export const MATCH_DURATION = 90 * 60
-/** 5 min reais ≈ 45 min de jogo (2700s sim / 300s real = 9) */
-export const REAL_SECONDS_PER_GAME_MINUTE = 9
 export const HALF_DURATION = MATCH_DURATION / 2
 export const HALF_TIME_EXIT_HOLD = 1.2
 export const HALF_TIME_ENTER_HOLD = 2
@@ -17,12 +15,18 @@ export const REF_PLAYER_HEIGHT = 0.89
 export const PLAYER_HEIGHT = 0.68
 export const WORLD_SCALE = PLAYER_HEIGHT / REF_PLAYER_HEIGHT
 
+/** Ritmo geral — movimento, bola e relógio (+12% sobre o original) */
+export const GAME_PACE = 1.12
+
+/** ~4,7 min reais ≈ 45 min de jogo */
+export const REAL_SECONDS_PER_GAME_MINUTE = 9 / GAME_PACE
+
 export const PLAYER_RADIUS = 0.11 * WORLD_SCALE
-export const PLAYER_SPEED = 2.1 * WORLD_SCALE
-export const PLAYER_SPRINT_SPEED = 3.35 * WORLD_SCALE
-export const GK_SPEED = 1.85 * WORLD_SCALE
-export const GK_RUSH_SPEED = 3.35 * WORLD_SCALE
-export const GK_TURN_SPEED = 12
+export const PLAYER_SPEED = 2.1 * WORLD_SCALE * GAME_PACE
+export const PLAYER_SPRINT_SPEED = 3.35 * WORLD_SCALE * GAME_PACE
+export const GK_SPEED = 1.85 * WORLD_SCALE * GAME_PACE
+export const GK_RUSH_SPEED = 3.35 * WORLD_SCALE * GAME_PACE
+export const GK_TURN_SPEED = 7
 
 /** Alcance do goleiro (m) */
 export const GK_REACH_STANDING = 1.38 * WORLD_SCALE
@@ -34,9 +38,9 @@ export const GK_SAVE_COOLDOWN_MS = 420
 export const GK_HOLD_MS = 1100
 export const GK_DISTRIBUTE_DELAY_MS = 900
 
-/** Rotação no próprio eixo (rad/s) */
-export const PLAYER_TURN_SPEED_AI = 13
-export const PLAYER_TURN_SPEED_CONTROLLED = 22
+/** Rotação no próprio eixo (rad/s) — valores menores = giro mais humano */
+export const PLAYER_TURN_SPEED_AI = 7
+export const PLAYER_TURN_SPEED_CONTROLLED = 8.5
 
 /** ~11 cm real na escala do personagem (metade do tuning anterior) */
 export const BALL_RADIUS = 0.055 * WORLD_SCALE
@@ -47,17 +51,17 @@ export const BALL_FRICTION = 0.48
 export const BALL_LINEAR_DAMPING = 0.14
 export const BALL_ANGULAR_DAMPING = 0.22
 
-export const KICK_POWER = 2.2 * WORLD_SCALE
-export const SHOT_SPEED = 11.5 * WORLD_SCALE
+export const KICK_POWER = 2.2 * WORLD_SCALE * GAME_PACE
+export const SHOT_SPEED = 11.5 * WORLD_SCALE * GAME_PACE
 export const SHOT_LOFT = 0.42
-export const PASS_SPEED_MIN = 5 * WORLD_SCALE
-export const PASS_SPEED_MAX = 9.5 * WORLD_SCALE
+export const PASS_SPEED_MIN = 5 * WORLD_SCALE * GAME_PACE
+export const PASS_SPEED_MAX = 9.5 * WORLD_SCALE * GAME_PACE
 export const PASS_SPEED_DIST_FACTOR = 0.72
-export const PASS_SPEED_BASE = 3.85 * WORLD_SCALE
+export const PASS_SPEED_BASE = 3.85 * WORLD_SCALE * GAME_PACE
 export const DRIBBLE_TOUCH_POWER = 0.35 * WORLD_SCALE
 
-export const LOOSE_BALL_MAX_SPEED = 5.5 * WORLD_SCALE
-export const PASS_RECEIVE_MAX_SPEED = 9 * WORLD_SCALE
+export const LOOSE_BALL_MAX_SPEED = 5.5 * WORLD_SCALE * GAME_PACE
+export const PASS_RECEIVE_MAX_SPEED = 9 * WORLD_SCALE * GAME_PACE
 export const PASS_INTENT_TIMEOUT_MS = 4500
 
 export const POSSESSION_DISTANCE = 0.45 * WORLD_SCALE

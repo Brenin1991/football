@@ -30,7 +30,7 @@ export function ShotPowerBar() {
   const hint = mode ? HINTS[mode] ?? HINTS.shot : HINTS.shot
 
   return (
-    <div className="shot-power" aria-hidden>
+    <div className="shot-power pes-hud-surface" aria-hidden>
       <span className="shot-power-label">{label}</span>
       <div className="shot-power-track">
         <div className="shot-power-zones">

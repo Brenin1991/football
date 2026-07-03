@@ -1,13 +1,9 @@
-import { TEAM_NAMES } from '../constants'
+import { getTeamAbbr, getTeamDbId, getTeamName } from '../matchRuntime'
+import { EntityImage } from '../../components/EntityImage'
 import { formatMatchTime, useGameStore } from '../store/gameStore'
 import { formatTimeScale } from '../systems/gameTime'
 import { HudPlayerCards } from './HudPlayerCards'
 import { ShotPowerBar } from './ShotPowerBar'
-
-const TEAM_ABBR = {
-  home: 'BRA',
-  away: 'VIS',
-} as const
 
 export function HUD() {
   const half = useGameStore((s) => s.half)
@@ -17,6 +13,9 @@ export function HUD() {
   const phase = useGameStore((s) => s.phase)
   const message = useGameStore((s) => s.message)
   const timeScale = useGameStore((s) => s.timeScale)
+
+  const homeAbbr = getTeamAbbr('home')
+  const awayAbbr = getTeamAbbr('away')
 
   const isReplay = phase === 'replay'
   const hideHud = phase === 'goal-celebration' || phase === 'intro'
@@ -34,8 +33,15 @@ export function HUD() {
         <>
           <div className="we-scoreboard pes-hud-surface" aria-label="Placar">
             <div className="we-scoreboard-side we-scoreboard-side--home">
-              <span className="we-scoreboard-team" title={TEAM_NAMES.home}>
-                {TEAM_ABBR.home}
+              <EntityImage
+                entityType="team"
+                entityId={getTeamDbId('home')}
+                alt={getTeamName('home')}
+                className="we-scoreboard-crest"
+                fallback={null}
+              />
+              <span className="we-scoreboard-team" title={getTeamName('home')}>
+                {homeAbbr}
               </span>
             </div>
             <div className="we-scoreboard-center pes-hud-highlight">
@@ -46,8 +52,15 @@ export function HUD() {
               <span className="we-scoreboard-digit">{scoreAway}</span>
             </div>
             <div className="we-scoreboard-side we-scoreboard-side--away">
-              <span className="we-scoreboard-team" title={TEAM_NAMES.away}>
-                {TEAM_ABBR.away}
+              <EntityImage
+                entityType="team"
+                entityId={getTeamDbId('away')}
+                alt={getTeamName('away')}
+                className="we-scoreboard-crest"
+                fallback={null}
+              />
+              <span className="we-scoreboard-team" title={getTeamName('away')}>
+                {awayAbbr}
               </span>
             </div>
           </div>
@@ -67,7 +80,7 @@ export function HUD() {
 
       {!isReplay && <HudPlayerCards />}
 
-      {showToast && <div className="psx-toast pes-hud-surface">{message}</div>}
+      {showToast && <div className="psx-toast pes-hud-surface hud-anim">{message}</div>}
 
       {!isReplay && <ShotPowerBar />}
     </div>

@@ -1,10 +1,10 @@
-import { Suspense } from 'react'
+import { Suspense, useEffect } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Ball } from './components/Ball'
 import { Field } from './components/Field'
 import { GameCamera } from './components/GameCamera'
 import { GameInput } from './components/GameInput'
-import { PsxPipeline } from './components/graphics/PsxPipeline'
+import { GraphicsPipeline } from './components/graphics/GraphicsPipeline'
 import { HUD } from './components/HUD'
 import { MarkerCacheUpdater } from './components/MarkerCacheUpdater'
 import { ScreenFade } from './components/ScreenFade'
@@ -29,9 +29,12 @@ import { GameTimeController } from './components/GameTimeController'
 import { FORMATION_442, PLAYERS_PER_TEAM, playerId } from './constants'
 import { PlayerAssetsProvider } from './context/PlayerAssetsContext'
 import { useKeyboardControls } from './hooks/useKeyboardControls'
-import { useGameStore } from './store/gameStore'
-import { configurePsxRenderer, configurePsxScene } from './psx/configurePsxRenderer'
+import { getUserTeam, useGameStore } from './store/gameStore'
+import { configureGraphicsRenderer, configureGraphicsScene } from './graphics/configureGraphicsRenderer'
+import { AAA_CLASSIC } from './graphics/aaaSettings'
 import { PSX_CLASSIC } from './psx/psxSettings'
+import { useGraphicsStore } from '../store/graphicsStore'
+import { useMatchSetupStore } from '../store/matchSetupStore'
 import { getFormationSpawn } from './systems/teamField'
 import { FIELD_SCALE } from './systems/fieldData'
 import { sfx } from './systems/sfx'
@@ -62,6 +65,8 @@ function TeamPlayers({
 }) {
   const fieldBounds = useGameStore((s) => s.fieldBounds)
   const half = useGameStore((s) => s.half)
+  const userTeam = useGameStore((s) => s.userTeam)
+  const isUserTeam = team === userTeam
   if (!fieldBounds) return null
 
   return (
@@ -76,9 +81,9 @@ function TeamPlayers({
             role={slot.role}
             formation={slot}
             spawn={{ x: spawn.x, y: spawn.y, z: spawn.z }}
-            controls={team === 'home' ? controls : undefined}
-            consumeAction={team === 'home' ? consumeAction : undefined}
-            consumePassPress={team === 'home' ? consumePassPress : undefined}
+            controls={isUserTeam ? controls : undefined}
+            consumeAction={isUserTeam ? consumeAction : undefined}
+            consumePassPress={isUserTeam ? consumePassPress : undefined}
           />
         )
       })}
@@ -95,7 +100,12 @@ function Players(props: SceneProps) {
         consumeAction={props.consumeAction}
         consumePassPress={props.consumePassPress}
       />
-      <TeamPlayers team="away" />
+      <TeamPlayers
+        team="away"
+        controls={props.controls}
+        consumeAction={props.consumeAction}
+        consumePassPress={props.consumePassPress}
+      />
     </>
   )
 }
@@ -103,7 +113,7 @@ function Players(props: SceneProps) {
 function Scene(props: SceneProps) {
   return (
     <>
-      <PsxPipeline />
+      <GraphicsPipeline />
 
       <GameInput
         controls={props.controls}
@@ -139,8 +149,18 @@ function Scene(props: SceneProps) {
   )
 }
 
-export function Game() {
+export function Game({ onExit: _onExit }: { onExit?: () => void }) {
   const keyboard = useKeyboardControls()
+  const graphicsMode = useGraphicsStore((s) => s.mode)
+  const gfx = graphicsMode === 'aaa' ? AAA_CLASSIC : PSX_CLASSIC
+  const setUserTeam = useGameStore((s) => s.setUserTeam)
+
+  useEffect(() => {
+    const playerSide = useMatchSetupStore.getState().session?.playerSide
+    if (playerSide && playerSide !== getUserTeam()) {
+      setUserTeam(playerSide)
+    }
+  }, [setUserTeam])
 
   return (
     <div
@@ -154,7 +174,9 @@ export function Game() {
         canvas?.focus()
       }}
     >
-      <div className="game-ui-layer game-ui-layer--retro">
+      <div
+        className={`game-ui-layer${graphicsMode === 'psx' ? ' game-ui-layer--retro' : ''}`}
+      >
         <HUD />
         <ReplayOverlay />
         <IntroBroadcastOverlay />
@@ -162,16 +184,17 @@ export function Game() {
       <GameTimeController />
       <ScreenFade />
       <Canvas
+        key={graphicsMode}
         shadows
         tabIndex={0}
-        dpr={[PSX_CLASSIC.renderer.dprMin, PSX_CLASSIC.renderer.dprMax]}
+        dpr={[gfx.renderer.dprMin, gfx.renderer.dprMax]}
         gl={{
-          antialias: PSX_CLASSIC.renderer.antialias,
+          antialias: gfx.renderer.antialias,
           powerPreference: 'high-performance',
         }}
         onCreated={({ gl, scene }) => {
-          configurePsxRenderer(gl)
-          configurePsxScene(scene)
+          configureGraphicsRenderer(gl, graphicsMode)
+          configureGraphicsScene(scene, graphicsMode)
           gl.domElement.focus()
         }}
         camera={{
@@ -184,9 +207,9 @@ export function Game() {
         <fog
           attach="fog"
           args={[
-            PSX_CLASSIC.fog.color,
-            PSX_CLASSIC.fog.near * FIELD_SCALE,
-            PSX_CLASSIC.fog.far * FIELD_SCALE,
+            gfx.fog.color,
+            gfx.fog.near * FIELD_SCALE,
+            gfx.fog.far * FIELD_SCALE,
           ]}
         />
         <Scene {...keyboard} />

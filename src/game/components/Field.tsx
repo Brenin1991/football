@@ -2,7 +2,7 @@ import { useGLTF } from '@react-three/drei'
 import { CuboidCollider, RigidBody } from '@react-three/rapier'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useGameStore } from '../store/gameStore'
-import { applyFieldGraphics } from '../psx/psxMaterials'
+import { applyFieldGraphics } from '../graphics/graphicsMaterials'
 import {
   extractFieldData,
   FIELD_SCALE,

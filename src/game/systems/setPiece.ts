@@ -1,5 +1,5 @@
 import { getGoalkeeperId, SHOT_SPEED, WORLD_SCALE } from '../constants'
-import { USER_TEAM, useGameStore } from '../store/gameStore'
+import { getUserTeam, useGameStore } from '../store/gameStore'
 import type { FieldBounds, FormationSlot, MatchPhase, TeamId, Vec3 } from '../types'
 import { playerRegistry } from './entityRegistry'
 import { applyBallVelocity, ensureBallDynamic, markSetPieceLaunch } from './ballPhysics'
@@ -746,7 +746,7 @@ export function executeSetPieceKick(power = 1): boolean {
         startedAt: performance.now(),
         runnerIds: receivers.runnerIds,
       })
-      if (setPieceTeam === USER_TEAM && primary.role !== 'gk') {
+      if (setPieceTeam === getUserTeam() && primary.role !== 'gk') {
         store.setActivePlayer(receivers.receiverId)
       }
     }

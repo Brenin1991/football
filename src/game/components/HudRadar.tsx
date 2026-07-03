@@ -1,8 +1,8 @@
 import { useEffect, useRef } from 'react'
 import type { FieldBounds } from '../types'
-import { TEAM_COLORS } from '../constants'
+import { getTeamPrimaryColor } from '../matchRuntime'
 import { ballRef, playerRegistry } from '../systems/entityRegistry'
-import { useGameStore, USER_TEAM } from '../store/gameStore'
+import { useGameStore, getUserTeam } from '../store/gameStore'
 
 /** Paisagem: comprimento horizontal, largura vertical */
 export const RADAR_W = 320
@@ -109,14 +109,14 @@ export function HudRadar() {
         const pt = toRadar(p.position.x, p.position.z)
         const px = Math.round(pt.x)
         const py = Math.round(pt.y)
-        const isActive = p.team === USER_TEAM && p.id === activePlayerId
+        const isActive = p.team === getUserTeam() && p.id === activePlayerId
 
         if (isActive) {
           ctx.fillStyle = '#facc15'
           ctx.fillRect(px - 3, py - 3, 7, 7)
         }
 
-        ctx.fillStyle = p.team === 'home' ? TEAM_COLORS.home : '#f2f2f2'
+        ctx.fillStyle = p.team === 'home' ? getTeamPrimaryColor('home') : '#f2f2f2'
         ctx.fillRect(px - 2, py - 2, 5, 5)
       }
 

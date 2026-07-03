@@ -21,8 +21,11 @@ import { passSpeedForDistance, releaseBallFromFeet } from './TeamController'
 import { computeStrikeDirection } from '../systems/strikeAim'
 import { PlayerSelectionLabel } from './PlayerSelectionLabel'
 import { usePlayerAssets } from '../context/PlayerAssetsContext'
-import { useGameStore, USER_TEAM } from '../store/gameStore'
-import { applyPlayerMaterials } from '../psx/psxMaterials'
+import { useGameStore, getUserTeam } from '../store/gameStore'
+import { applyPlayerMaterials } from '../graphics/graphicsMaterials'
+import { getTeamDbId, getPlayerAppearance, getTeamMatchKit } from '../matchRuntime'
+import { attachTeamShirtTexture, detachTeamShirtTexture } from '../psx/shirtTextureApply'
+import { parsePlayerIndex } from '../data/playerRoster'
 import type { FormationSlot, PlayerAnim, PlayerRole, TeamId, Vec3 } from '../types'
 import {
   ballRef,
@@ -32,6 +35,15 @@ import {
   type PlayerRef,
 } from '../systems/entityRegistry'
 import { findNearestTeammate, findPassTargetInFacingDirection, getPassInterceptTarget, getPassReceiveTarget } from '../systems/possession'
+import {
+  applyPlayerFacing,
+  facingFromMovement,
+  PLAYER_DIR_SMOOTH_AI,
+  PLAYER_DIR_SMOOTH_AI_DIRECT,
+  PLAYER_DIR_SMOOTH_CONTROLLED,
+  smoothDirection2D,
+  smoothVelocity2D,
+} from '../systems/playerLocomotion'
 import { distance2D, normalize2D, rotateTowardAngle } from '../systems/rules'
 import {
   decideCarrierAction,
@@ -170,7 +182,7 @@ function setOpenSpacePassIntent(
     return
   }
 
-  if (team === USER_TEAM) {
+  if (team === getUserTeam()) {
     store.setActivePlayer(receiver.id)
   }
 
@@ -199,13 +211,35 @@ export function Player({
   const bodyRef = useRef<RapierRigidBody>(null)
   const modelFootY = useRef(-PLAYER_HEIGHT / 2)
 
+  const slotIndex = parsePlayerIndex(id)
+
   const cloned = useMemo(() => {
     const model = SkeletonUtils.clone(scene) as THREE.Group
-    applyPlayerMaterials(model, team, role, false)
+    applyPlayerMaterials(model, getPlayerAppearance(team, slotIndex, role), false)
     alignPlayerModelToCapsule(model)
     modelFootY.current = model.position.y
     return model
-  }, [scene, team, role])
+  }, [scene, team, role, slotIndex])
+
+  useLayoutEffect(() => {
+    if (role === 'gk') {
+      detachTeamShirtTexture(cloned)
+      return
+    }
+    const teamDbId = getTeamDbId(team)
+    const kitNumber = getTeamMatchKit(team)
+    let cancelled = false
+
+    void attachTeamShirtTexture(cloned, teamDbId, kitNumber).then(() => {
+      if (cancelled) return
+    })
+
+    return () => {
+      cancelled = true
+      detachTeamShirtTexture(cloned)
+    }
+  }, [cloned, team, role])
+
   const { actions, mixer } = usePlayerMixer(animations, modelRootRef)
   const animCtrl = useRef<PlayerAnimController | null>(null)
 
@@ -216,7 +250,8 @@ export function Player({
   const gkTarget = useRef({ x: spawn.x, z: spawn.z })
   const ballAnchor = useRef({ x: spawn.x, z: spawn.z })
   const locoMoving = useRef(false)
-  const aiMoveDir = useRef({ x: 0, z: 0 })
+  const inputDir = useRef({ x: 0, z: 1 })
+  const moveVel = useRef({ x: 0, z: 0 })
   const aiDirectMove = useRef(false)
   const aiThinkTimer = useRef(0)
   const aiSlideTimer = useRef(0)
@@ -240,7 +275,7 @@ export function Player({
   const half = useGameStore((s) => s.half)
 
   const isGoalkeeper = role === 'gk'
-  const isActive = !isGoalkeeper && team === USER_TEAM && id === activePlayerId
+  const isActive = !isGoalkeeper && team === getUserTeam() && id === activePlayerId
   const hasBall = ballPossession?.playerId === id
 
   useEffect(() => {
@@ -258,6 +293,10 @@ export function Player({
     gkTarget.current = { x: spot.x, z: spot.z }
     ballAnchor.current = { x: spot.x, z: spot.z }
     rotation.current = getFieldFacingRotation(team, fieldBounds)
+    moveVel.current.x = 0
+    moveVel.current.z = 0
+    inputDir.current.x = 0
+    inputDir.current.z = 1
     bodyRef.current?.setTranslation(
       { x: spot.x, y: getPlayerBodyY(), z: spot.z },
       true,
@@ -565,7 +604,7 @@ export function Player({
       if (animFree) ctrl?.forceIdle()
 
       const isKickerActive =
-        team === USER_TEAM ? isActive : team === storeState.kickoffTeam
+        team === getUserTeam() ? isActive : team === storeState.kickoffTeam
       if (
         isKickerActive &&
         consumeAction?.('kick') &&
@@ -612,6 +651,8 @@ export function Player({
         z: position.current.z,
       })
       velocity.current.set(0, 0, 0)
+      moveVel.current.x = 0
+      moveVel.current.z = 0
       syncRegistry(position.current, {
         velocity: { x: 0, y: 0, z: 0 },
       })
@@ -658,7 +699,7 @@ export function Player({
       }
       if (
         isActive &&
-        team === USER_TEAM &&
+        team === getUserTeam() &&
         storeState.passIntent?.passType === 'cross' &&
         storeState.passIntent.receiverId === id &&
         !hasBall &&
@@ -819,13 +860,13 @@ export function Player({
 
     const storePoss = storeState.ballPossession
     const isLiveActive =
-      team === USER_TEAM && !isGoalkeeper && storeState.activePlayerId === id
+      team === getUserTeam() && !isGoalkeeper && storeState.activePlayerId === id
     if (
       storePoss?.playerId === id &&
       storeState.possessionSince !== lastPossessionSince.current
     ) {
       lastPossessionSince.current = storeState.possessionSince
-      if (!isLiveActive && team !== USER_TEAM) {
+      if (!isLiveActive && team !== getUserTeam()) {
         aiThinkTimer.current =
           AI_THINK_MIN_S * (0.55 + Math.random() * 0.65)
       }
@@ -962,24 +1003,25 @@ export function Player({
 
     const playerControlled =
       isActive && controls?.current && canMove && !bodyActionLocked
-    if (!playerControlled && canMove && !bodyActionLocked && !aiDirectMove.current) {
-      const rawLen = Math.hypot(dirX, dirZ)
-      if (rawLen > 0.025) {
-        const blend = 1 - Math.exp(-10 * simDelta)
-        aiMoveDir.current.x += (dirX - aiMoveDir.current.x) * blend
-        aiMoveDir.current.z += (dirZ - aiMoveDir.current.z) * blend
-        const smLen = Math.hypot(aiMoveDir.current.x, aiMoveDir.current.z)
-        if (smLen > 0.02) {
-          dirX = aiMoveDir.current.x / smLen
-          dirZ = aiMoveDir.current.z / smLen
-        }
-      } else {
-        aiMoveDir.current.x = 0
-        aiMoveDir.current.z = 0
+
+    const rawDirLen = Math.hypot(dirX, dirZ)
+    const dirSmooth = playerControlled
+      ? PLAYER_DIR_SMOOTH_CONTROLLED
+      : aiDirectMove.current
+        ? PLAYER_DIR_SMOOTH_AI_DIRECT
+        : PLAYER_DIR_SMOOTH_AI
+    const smoothedDir = smoothDirection2D(inputDir.current, dirX, dirZ, dirSmooth, simDelta)
+    inputDir.current.x = smoothedDir.x
+    inputDir.current.z = smoothedDir.z
+    if (rawDirLen > 0.02) {
+      const smLen = Math.hypot(smoothedDir.x, smoothedDir.z)
+      if (smLen > 0.02) {
+        dirX = smoothedDir.x / smLen
+        dirZ = smoothedDir.z / smLen
       }
     } else {
-      aiMoveDir.current.x = dirX
-      aiMoveDir.current.z = dirZ
+      dirX = 0
+      dirZ = 0
     }
 
     if (isGoalkeeper && animFree) {
@@ -990,7 +1032,12 @@ export function Player({
         ctrl?.forceIdle()
       }
       if (gkState?.faceAngle != null) {
-        rotation.current = gkState.faceAngle
+        rotation.current = rotateTowardAngle(
+          rotation.current,
+          gkState.faceAngle,
+          GK_TURN_SPEED,
+          simDelta,
+        )
       }
     }
 
@@ -1002,48 +1049,62 @@ export function Player({
         ? PLAYER_SPRINT_SPEED
         : PLAYER_SPEED
     const intentLen = Math.hypot(dirX, dirZ)
-    let moveX = 0
-    let moveZ = 0
-    const projectedMove = intentLen > 0.02 ? speed * simDelta * moveScale : 0
+    const targetVelX = intentLen > 0.02 && !bodyActionLocked ? (dirX / intentLen) * speed * moveScale : 0
+    const targetVelZ = intentLen > 0.02 && !bodyActionLocked ? (dirZ / intentLen) * speed * moveScale : 0
+    const accelerating = intentLen > 0.02 && !bodyActionLocked
+    const nextVel = smoothVelocity2D(moveVel.current, targetVelX, targetVelZ, simDelta, accelerating)
+    moveVel.current.x = nextVel.x
+    moveVel.current.z = nextVel.z
 
-    if (intentLen > 0.02) {
-      dirX /= intentLen
-      dirZ /= intentLen
-      // Gira só com deslocamento real (alinha com run) ou já em corrida — evita girar em idle/T-pose
-      // e preserva pose durante chute/carrinho (bodyActionLocked).
-      if (
-        !passFacingLocked &&
-        !bodyActionLocked &&
-        !shielding &&
-        (locoMoving.current || projectedMove > RUN_STOP_THRESHOLD)
-      ) {
-        const targetYaw = Math.atan2(dirX, dirZ)
-        const turnSpeed =
-          isActive && controls?.current
-            ? PLAYER_TURN_SPEED_CONTROLLED
-            : isGoalkeeper
-              ? GK_TURN_SPEED
-              : moveScale < 0.6
-                ? PLAYER_TURN_SPEED_AI * 0.78
-                : PLAYER_TURN_SPEED_AI
-        rotation.current = rotateTowardAngle(
-          rotation.current,
-          targetYaw,
-          turnSpeed,
-          simDelta,
-        )
-      }
-      moveX = dirX * speed * simDelta * moveScale
-      moveZ = dirZ * speed * simDelta * moveScale
+    let moveX = moveVel.current.x * simDelta
+    let moveZ = moveVel.current.z * simDelta
+    const actualSpeed = Math.hypot(moveVel.current.x, moveVel.current.z)
+    const projectedMove = actualSpeed * simDelta
+
+    if (
+      intentLen > 0.02 &&
+      !passFacingLocked &&
+      !bodyActionLocked &&
+      !shielding &&
+      (locoMoving.current || actualSpeed > RUN_STOP_THRESHOLD || projectedMove > RUN_STOP_THRESHOLD)
+    ) {
+      const targetYaw = facingFromMovement(
+        moveVel.current.x,
+        moveVel.current.z,
+        dirX,
+        dirZ,
+        rotation.current,
+      )
+      const baseTurn =
+        playerControlled
+          ? PLAYER_TURN_SPEED_CONTROLLED
+          : isGoalkeeper
+            ? GK_TURN_SPEED
+            : moveScale < 0.6
+              ? PLAYER_TURN_SPEED_AI * 0.82
+              : PLAYER_TURN_SPEED_AI
+      rotation.current = applyPlayerFacing(
+        rotation.current,
+        targetYaw,
+        baseTurn,
+        actualSpeed,
+        speed,
+        !!playerControlled,
+        simDelta,
+      )
     }
 
     if (bodyActionLocked) {
       moveX = 0
       moveZ = 0
+      moveVel.current.x = 0
+      moveVel.current.z = 0
     } else if (ctrl?.isStriking()) {
       const strikeMul = ctrl.getStrikeMoveMultiplier()
       moveX *= strikeMul
       moveZ *= strikeMul
+      moveVel.current.x *= strikeMul
+      moveVel.current.z *= strikeMul
     }
 
     const prevX = position.current.x
@@ -1064,20 +1125,23 @@ export function Player({
         locoMoving.current = false
         ctrl?.forceIdle()
         velocity.current.set(0, 0, 0)
+        moveVel.current.x = 0
+        moveVel.current.z = 0
       } else {
       const wantsRun =
         !bodyActionLocked &&
         (moved > RUN_START_THRESHOLD ||
-          (intentLen > 0.04 && projectedMove > RUN_STOP_THRESHOLD * 1.4))
+          actualSpeed > RUN_STOP_THRESHOLD * 2 ||
+          (intentLen > 0.04 && projectedMove > RUN_STOP_THRESHOLD * 1.2))
       if (wantsRun) {
         locoMoving.current = true
-      } else if (intentLen < 0.015 && moved < RUN_STOP_THRESHOLD) {
+      } else if (intentLen < 0.015 && moved < RUN_STOP_THRESHOLD && actualSpeed < 0.12) {
         locoMoving.current = false
       }
 
       if (locoMoving.current) {
         ctrl?.setLocomotion(true, sprint || moveScale > 0.55)
-        velocity.current.set((nx - prevX) / Math.max(simDelta, 1e-6), 0, (nz - prevZ) / Math.max(simDelta, 1e-6))
+        velocity.current.set(moveVel.current.x, 0, moveVel.current.z)
       } else {
         ctrl?.setLocomotion(false, false)
         velocity.current.set(0, 0, 0)
@@ -1085,6 +1149,8 @@ export function Player({
       }
     } else if (bodyActionLocked) {
       velocity.current.set(0, 0, 0)
+      moveVel.current.x = 0
+      moveVel.current.z = 0
     }
 
     syncRegistry({ x: nx, z: nz }, {
@@ -1700,7 +1766,7 @@ export function Player({
     let loft = crossLoftFromPower(power, CROSS_LOFT)
 
     if (mate) {
-      if (team === USER_TEAM) {
+      if (team === getUserTeam()) {
         store.setActivePlayer(mate.id)
       }
 
@@ -1788,7 +1854,7 @@ export function Player({
       : passSpeedFromPower(baseSpeed, power)
 
     if (mate) {
-      if (team === USER_TEAM) {
+      if (team === getUserTeam()) {
         store.setActivePlayer(mate.id)
       }
 

@@ -1,5 +1,5 @@
 import { BALL_RADIUS } from '../constants'
-import { useGameStore, USER_TEAM } from '../store/gameStore'
+import { useGameStore, getUserTeam } from '../store/gameStore'
 import { ballRestY } from '../systems/fieldData'
 
 import { isActiveSetPiecePhase } from '../systems/setPiece'
@@ -16,7 +16,7 @@ export function SetPieceAim() {
   const show =
     isActiveSetPiecePhase(phase) &&
     ballFrozen &&
-    setPieceTeam === USER_TEAM &&
+    setPieceTeam === getUserTeam() &&
     position != null
 
   if (!show || !position) return null

@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
-import { TEAM_NAMES } from '../constants'
+import { EntityImage } from '../../components/EntityImage'
+import { getTeamDbId, getTeamName } from '../matchRuntime'
 import {
   FORMATION_LABEL,
+  getMatchType,
+  getStadiumName,
   getTeamBroadcastName,
   getTeamLineup,
   MATCH_OFFICIALS,
-  MATCH_TYPE_LABEL,
-  STADIUM_NAME,
 } from '../data/matchBroadcast'
 import {
   getIntroBroadcastPanel,
@@ -27,17 +28,35 @@ function LineupPanel({
   const panel: IntroBroadcastPanel = team === 'home' ? 'home-lineup' : 'away-lineup'
   const opacity = getIntroPanelFade(elapsed, panel)
   const lineup = getTeamLineup(team)
+  const teamDbId = getTeamDbId(team)
 
   return (
     <div
-      className={`psx-intro-panel pes-hud-surface pes-hud-surface--${team} psx-intro-panel--lineup psx-intro-panel--${team}`}
+      className={`psx-intro-panel pes-hud-surface pes-hud-surface--${team} psx-intro-panel--lineup psx-intro-panel--${team} hud-anim hud-anim--intro-lineup-${team}`}
       style={{ opacity }}
     >
       <div className="psx-intro-panel-head">
-        <div className="psx-intro-panel-kicker pes-hud-highlight">Escalação</div>
-        <div className="psx-intro-panel-title pes-hud-highlight">
-          {getTeamBroadcastName(team)}
-          <span className="psx-intro-formation">{FORMATION_LABEL}</span>
+          <div
+            className={`psx-intro-lineup-head-row${team === 'away' ? ' psx-intro-lineup-head-row--away' : ''}`}
+          >
+            <div className="psx-intro-lineup-crest-wrap pes-hud-surface">
+              <EntityImage
+                entityType="team"
+                entityId={teamDbId}
+                alt={getTeamName(team)}
+                className="psx-intro-lineup-crest"
+                fallback={
+                  <div className="entity-image-fallback entity-image-fallback--crest psx-intro-lineup-crest" />
+                }
+              />
+            </div>
+          <div className="psx-intro-lineup-head-text">
+            <div className="psx-intro-panel-kicker pes-hud-highlight">Escalação</div>
+            <div className="psx-intro-panel-title pes-hud-highlight">
+              {getTeamBroadcastName(team)}
+              <span className="psx-intro-formation">{FORMATION_LABEL}</span>
+            </div>
+          </div>
         </div>
       </div>
       <ul className="psx-intro-lineup">
@@ -78,24 +97,24 @@ export function IntroBroadcastOverlay() {
     <div className="psx-intro-broadcast pes-hud-shell" aria-hidden>
       <div className="psx-intro-scanlines" />
 
-      <div className="psx-intro-live-tag pes-hud-surface pes-hud-surface--header">
+      <div className="psx-intro-live-tag pes-hud-surface pes-hud-surface--header hud-anim hud-anim--intro-tag">
         <span className="psx-intro-live-dot" />
         AO VIVO
       </div>
 
-      <div className="psx-intro-network pes-hud-surface">SPORTV</div>
+      <div className="psx-intro-network pes-hud-surface hud-anim hud-anim--intro-network">SPORTV</div>
 
       {panel === 'match' && (
         <div
-          className="psx-intro-panel pes-hud-surface psx-intro-panel--match"
+          className="psx-intro-panel pes-hud-surface psx-intro-panel--match hud-anim hud-anim--intro-match"
           style={{ opacity: matchOpacity }}
         >
-          <div className="psx-intro-stadium pes-hud-highlight">{STADIUM_NAME}</div>
-          <div className="psx-intro-match-type">{MATCH_TYPE_LABEL}</div>
+          <div className="psx-intro-stadium pes-hud-highlight">{getStadiumName()}</div>
+          <div className="psx-intro-match-type">{getMatchType()}</div>
           <div className="psx-intro-fixture">
-            <span>{TEAM_NAMES.home.toUpperCase()}</span>
+            <span>{getTeamName('home').toUpperCase()}</span>
             <span className="psx-intro-vs">x</span>
-            <span>{TEAM_NAMES.away.toUpperCase()}</span>
+            <span>{getTeamName('away').toUpperCase()}</span>
           </div>
         </div>
       )}
@@ -105,7 +124,7 @@ export function IntroBroadcastOverlay() {
 
       {panel === 'officials' && (
         <div
-          className="psx-intro-panel pes-hud-surface psx-intro-panel--officials"
+          className="psx-intro-panel pes-hud-surface psx-intro-panel--officials hud-anim hud-anim--intro-officials"
           style={{ opacity: officialsOpacity }}
         >
           <div className="psx-intro-panel-kicker pes-hud-highlight">Arbitragem</div>
