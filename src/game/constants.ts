@@ -38,6 +38,19 @@ export const GK_SAVE_COOLDOWN_MS = 420
 export const GK_HOLD_MS = 1100
 export const GK_DISTRIBUTE_DELAY_MS = 900
 
+/** Esfera de contato em torno dos ossos mixamorig5:LeftHand / RightHand */
+export const GK_HAND_RADIUS = 0.24 * WORLD_SCALE
+/** Atacante com bola dentro desta distância → body save */
+export const GK_CLOSE_ATTACKER_DIST = 2.35 * WORLD_SCALE
+/** Quanto o goleiro pode avançar da linha do gol (posicionamento normal) */
+export const GK_MAX_STEP_FROM_LINE = 1.05 * WORLD_SCALE
+/** Avanço máximo em 1v1 (body save) */
+export const GK_BODY_SAVE_STEP = 2.55 * WORLD_SCALE
+/** Limite de rotação em relação ao campo (rad) — não olha para trás */
+export const GK_FACING_CLAMP = 1.12
+/** Chance de pegar vs espalmar — legado, não usado (decisão é determinística) */
+export const GK_CATCH_CHANCE = 0.44
+
 /** Rotação no próprio eixo (rad/s) — valores menores = giro mais humano */
 export const PLAYER_TURN_SPEED_AI = 7
 export const PLAYER_TURN_SPEED_CONTROLLED = 8.5

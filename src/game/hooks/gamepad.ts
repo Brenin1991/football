@@ -77,6 +77,7 @@ export function pollXboxGamepad(
     slide: boolean
     switchPlayer: boolean
     shieldHeld: boolean
+    cancelCharge: boolean
     aimLeft: boolean
     aimRight: boolean
   },
@@ -93,7 +94,7 @@ export function pollXboxGamepad(
   out.moveX = -lx
   out.moveZ = -ly
 
-  out.sprint = triggerValue(pad, XBOX.RT) > TRIGGER_SPRINT
+  out.sprint = buttonPressed(pad, XBOX.RB)
 
   out.passHeld = buttonPressed(pad, XBOX.A)
   out.throughHeld = buttonPressed(pad, XBOX.Y)
@@ -103,7 +104,9 @@ export function pollXboxGamepad(
   if (buttonJustPressed(pad, XBOX.X, edge)) out.kickJustPressed = true
   if (buttonJustPressed(pad, XBOX.B, edge)) out.slide = true
   if (buttonJustPressed(pad, XBOX.LB, edge)) out.switchPlayer = true
-  out.shieldHeld = buttonPressed(pad, XBOX.RB)
+  const lbPressed = buttonPressed(pad, XBOX.LB)
+  out.shieldHeld = triggerValue(pad, XBOX.LT) > TRIGGER_SPRINT
+  out.cancelCharge = lbPressed && !edge.prevButtons[XBOX.LB]
 
   const rx = applyDeadzone(pad.axes[XBOX.AXIS_RX] ?? 0, 0.22)
   out.aimLeft =

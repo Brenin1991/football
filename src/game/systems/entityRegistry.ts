@@ -8,7 +8,9 @@ export interface PlayerRef {
   rotation: number
   velocity: Vec3
   isControlled: boolean
+  isSprinting?: boolean
   anim: PlayerAnim
+  dribbleBallOffset?: { x: number; z: number }
 }
 
 export const playerRegistry: Map<string, PlayerRef> = new Map()

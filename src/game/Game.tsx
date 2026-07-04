@@ -174,9 +174,7 @@ export function Game({ onExit: _onExit }: { onExit?: () => void }) {
         canvas?.focus()
       }}
     >
-      <div
-        className={`game-ui-layer${graphicsMode === 'psx' ? ' game-ui-layer--retro' : ''}`}
-      >
+      <div className="game-ui-layer">
         <HUD />
         <ReplayOverlay />
         <IntroBroadcastOverlay />

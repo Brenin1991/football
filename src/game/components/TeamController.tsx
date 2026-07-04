@@ -22,6 +22,7 @@ import {
 } from '../systems/possession'
 import { resolveLooseBallChaser } from '../systems/dynamicFormation'
 import { distance2D } from '../systems/rules'
+import { shouldDelayPassClaim } from '../systems/passReceiveAnim'
 import { tryCallOffsideOnReceive } from '../systems/referee'
 import { crowdSfx } from '../systems/crowdSfx'
 import { narrationSfx } from '../systems/narrationSfx'
@@ -128,6 +129,9 @@ export function TeamController() {
         }
 
         if (toBall < PASS_RECEIVE_DISTANCE && ballSpeed < receiveMaxSpeed) {
+          if (shouldDelayPassClaim(receiver.anim, toBall, ballSpeed)) {
+            continue
+          }
           if (
             passIntent.offsideFlag &&
             tryCallOffsideOnReceive(passIntent.offsideFlag, receiver.id)

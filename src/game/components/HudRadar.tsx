@@ -135,7 +135,7 @@ export function HudRadar() {
   if (!fieldBounds) return null
 
   return (
-    <div className="psx-radar-wrap pes-hud-surface" aria-hidden>
+    <div className="psx-radar-wrap" aria-hidden>
       <canvas
         ref={canvasRef}
         className="psx-radar"

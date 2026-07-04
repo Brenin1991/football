@@ -1,9 +1,16 @@
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import type { AnimationClip } from 'three'
-import type { PlayerAnim } from '../types'
+import type { GoalkeeperAnim, PlayerAnim } from '../types'
+import {
+  buildClipNameSet,
+  PLAYER_CLIP_ALIASES,
+  resolveClipName,
+} from './playerClipRegistry'
 
-/** Mixer manual — sem useFrame interno; o jogo atualiza com simDelta */
+export type ClipAnimName = PlayerAnim | GoalkeeperAnim
+
+/** Mixer manual — mapeia clips GLB → animações lógicas player_* */
 export function usePlayerMixer(
   clips: AnimationClip[],
   rootRef: React.RefObject<THREE.Object3D | null>,
@@ -14,22 +21,37 @@ export function usePlayerMixer(
   )
   const lazy = useRef<Partial<Record<string, THREE.AnimationAction>>>({})
 
+  const animToClip = useMemo(() => {
+    const available = buildClipNameSet(clips)
+    const map = new Map<string, AnimationClip>()
+    for (const anim of Object.keys(PLAYER_CLIP_ALIASES) as PlayerAnim[]) {
+      const resolved = resolveClipName(anim, available)
+      if (!resolved) continue
+      const clip = clips.find((c) => c.name === resolved)
+      if (clip) map.set(anim, clip)
+    }
+    for (const clip of clips) {
+      if (clip.name.startsWith('gk_')) map.set(clip.name, clip)
+    }
+    return map
+  }, [clips])
+
   useLayoutEffect(() => {
-    // mixer root é definido por clipAction(clip, root) a cada getter
     void rootRef.current
   })
 
   const actions = useMemo(() => {
     lazy.current = {}
-    const map: Partial<Record<PlayerAnim, THREE.AnimationAction>> = {}
-    for (const clip of clips) {
-      Object.defineProperty(map, clip.name, {
+    const map: Partial<Record<ClipAnimName, THREE.AnimationAction>> = {}
+
+    for (const [animName, clip] of animToClip) {
+      Object.defineProperty(map, animName, {
         enumerable: true,
         configurable: true,
         get() {
           const root = rootRef.current
           if (!root) return undefined
-          const key = clip.name
+          const key = `${animName}:${clip.name}`
           if (!lazy.current[key]) {
             lazy.current[key] = mixer.clipAction(clip, root)
           }
@@ -37,8 +59,9 @@ export function usePlayerMixer(
         },
       })
     }
+
     return map
-  }, [clips, mixer])
+  }, [animToClip, mixer])
 
   return { mixer, actions }
 }

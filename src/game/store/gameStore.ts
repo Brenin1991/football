@@ -9,6 +9,7 @@ export interface StrikeAimState {
   dirX: number
   dirZ: number
   angle: number
+  facingDot: number
   mode: PowerBarMode | null
   power: number
   charging: boolean
@@ -495,6 +496,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         prev.originZ === aim.originZ &&
         prev.dirX === aim.dirX &&
         prev.dirZ === aim.dirZ &&
+        prev.facingDot === aim.facingDot &&
         prev.mode === aim.mode &&
         prev.power === aim.power &&
         prev.charging === aim.charging)

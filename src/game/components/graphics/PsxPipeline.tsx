@@ -1,11 +1,14 @@
-import { EffectComposer } from '@react-three/postprocessing'
-import { useFrame } from '@react-three/fiber'
-import { useMemo, useRef } from 'react'
+import { EffectComposer, Bloom } from '@react-three/postprocessing'
+import { useFrame, useLoader, useThree } from '@react-three/fiber'
+import { useMemo, useRef, useEffect, useLayoutEffect } from 'react'
 import * as THREE from 'three'
 import { PsxCompositeEffect } from '../../psx/PsxCompositeEffect'
 import { updatePsxShaderTime } from '../../psx/psxMaterial'
 import { PSX_CLASSIC } from '../../psx/psxSettings'
 import { FIELD_SCALE, SHADOW_CAMERA } from '../../systems/fieldData'
+// @ts-ignore: three example loader types not present
+import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader'
+import { CubeCamera } from '@react-three/drei'
 
 function PsxEffectPass() {
   const effect = useMemo(() => new PsxCompositeEffect(), [])
@@ -14,8 +17,25 @@ function PsxEffectPass() {
 
 /** Iluminação + pós-processamento estilo PSX */
 export function PsxPipeline() {
-  const { shadow, background } = PSX_CLASSIC
+  const { shadow, background, post } = PSX_CLASSIC
   const lightRef = useRef<THREE.DirectionalLight>(null)
+  const exr = useLoader(EXRLoader, '/ambient/sky.exr')
+  const { gl, scene } = useThree()
+
+  useEffect(() => {
+    if (!exr || !gl) return
+    exr.mapping = THREE.EquirectangularReflectionMapping
+    const pmrem = new THREE.PMREMGenerator(gl)
+    pmrem.compileEquirectangularShader()
+    const envRT = pmrem.fromEquirectangular(exr)
+    scene.environment = envRT.texture
+    // keep the original EXR as background for higher fidelity
+    scene.background = exr
+    pmrem.dispose()
+    return () => {
+      // do not dispose scene.environment since it may be reused
+    }
+  }, [exr, gl, scene])
 
   useFrame((state) => {
     updatePsxShaderTime(state.clock.elapsedTime)
@@ -30,10 +50,56 @@ export function PsxPipeline() {
     texture.needsUpdate = true
   })
 
+  // Ensure the directional light targets the field center so the shadow
+  // orthographic camera covers the whole pitch instead of only center.
+  useEffect(() => {
+    const light = lightRef.current
+    if (!light) return
+    const fieldArea = (scene as THREE.Scene).getObjectByName('field_area')
+    if (fieldArea) {
+      const pos = new THREE.Vector3()
+      fieldArea.getWorldPosition(pos)
+      light.target.position.copy(pos)
+      // Make sure the target is part of the scene so the light's shadow camera follows it
+      scene.add(light.target)
+      light.target.updateMatrixWorld()
+    } else {
+      // fallback: center at origin
+      light.target.position.set(0, 0, 0)
+      scene.add(light.target)
+    }
+  }, [scene])
+
+  // Configure shadow camera extents and map size to cover the whole pitch
+  useLayoutEffect(() => {
+    const light = lightRef.current
+    if (!light || !light.shadow) return
+    // shadow settings from PSX_CLASSIC
+    light.shadow.mapSize.set(shadow.mapSize, shadow.mapSize)
+    light.shadow.bias = shadow.bias
+    light.shadow.normalBias = shadow.normalBias
+
+    const cam = light.shadow.camera as THREE.OrthographicCamera
+    cam.left = -SHADOW_CAMERA.halfX
+    cam.right = SHADOW_CAMERA.halfX
+    cam.top = SHADOW_CAMERA.halfZ
+    cam.bottom = -SHADOW_CAMERA.halfZ
+    cam.near = SHADOW_CAMERA.near
+    cam.far = SHADOW_CAMERA.far
+    cam.updateProjectionMatrix()
+
+    const map = light.shadow.map?.texture
+    if (map) {
+      map.minFilter = THREE.NearestFilter
+      map.magFilter = THREE.NearestFilter
+      map.needsUpdate = true
+    }
+  }, [shadow.mapSize, shadow.bias, shadow.normalBias])
+
   return (
     <>
       <color attach="background" args={[background]} />
-      <ambientLight color="#8899aa" intensity={0.58} />
+      <ambientLight color="#18635a" intensity={0.58} />
       <hemisphereLight args={['#a8c4e0', '#3a5a40', 0.28]} />
       <directionalLight
         ref={lightRef}
@@ -53,8 +119,28 @@ export function PsxPipeline() {
       />
 
       <EffectComposer multisampling={0}>
-        <PsxEffectPass />
+          <PsxEffectPass />
+          <Bloom
+            intensity={post.bloom.intensity}
+            luminanceThreshold={post.bloom.threshold}
+            luminanceSmoothing={post.bloom.smoothing}
+            radius={post.bloom.radius}
+            mipmapBlur={post.bloom.mipmapBlur}
+          />
+        {/* Reflection probe: capture environment for dynamic reflections (updates once) */}
+        <CubeCamera frames={1} resolution={256} position={[0, 1.5, 0]}>
+          {(texture) => <SetReflection texture={texture} />}
+        </CubeCamera>
       </EffectComposer>
     </>
   )
+}
+
+function SetReflection({ texture }: { texture: THREE.Texture | null }) {
+  const { scene } = useThree()
+  useEffect(() => {
+    if (!texture) return
+    scene.environment = texture
+  }, [texture, scene])
+  return null
 }

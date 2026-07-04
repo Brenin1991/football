@@ -21,6 +21,8 @@ export type ControlState = {
   switchPlayer: boolean
   /** Segurar RB / F — protege a bola (parado, imune a roubo) */
   shield: boolean
+  /** Cancela o carregamento de chute/passe/cruzamento (LT / Esc) */
+  cancelCharge: boolean
   /** Analógico esquerdo — eixo X (-1..1) */
   moveX: number
   /** Analógico esquerdo — eixo Z (-1..1), para frente = positivo */
@@ -47,6 +49,7 @@ const DEFAULT: ControlState = {
   slide: false,
   switchPlayer: false,
   shield: false,
+  cancelCharge: false,
   moveX: 0,
   moveZ: 0,
 }
@@ -62,6 +65,7 @@ export function useKeyboardControls() {
   const keyboardCross = useRef(false)
   const keyboardKick = useRef(false)
   const keyboardShield = useRef(false)
+  const keyboardCancel = useRef(false)
   const kickPressEdge = useRef(false)
   const kickReleased = useRef(false)
   const prevKickHeld = useRef(false)
@@ -83,6 +87,8 @@ export function useKeyboardControls() {
       KeyR: 'throughPass',
       KeyQ: 'cross',
       KeyF: 'shield',
+      Escape: 'cancelCharge',
+      Backspace: 'cancelCharge',
       Space: 'kick',
       Tab: 'switchPlayer',
     }
@@ -106,6 +112,7 @@ export function useKeyboardControls() {
         kickPressEdge.current = true
       }
       if (action === 'shield') keyboardShield.current = true
+      if (action === 'cancelCharge') keyboardCancel.current = true
       controls.current[action] = true
     }
 
@@ -123,6 +130,7 @@ export function useKeyboardControls() {
         kickReleased.current = true
       }
       if (action === 'shield') keyboardShield.current = false
+      if (action === 'cancelCharge') keyboardCancel.current = false
       controls.current[action] = false
     }
 
@@ -151,6 +159,7 @@ export function useKeyboardControls() {
         slide: false,
         switchPlayer: false,
         shieldHeld: false,
+        cancelCharge: false,
         aimLeft: false,
         aimRight: false,
       }
@@ -170,6 +179,7 @@ export function useKeyboardControls() {
       if (gp.passJustPressed) passPressEdge.current = true
 
       c.shield = keyboardShield.current || gp.shieldHeld
+      c.cancelCharge = keyboardCancel.current || gp.cancelCharge
       c.kick = keyboardKick.current || gp.kickHeld
 
       if (prevKickHeld.current && !c.kick) {

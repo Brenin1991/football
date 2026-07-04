@@ -3,7 +3,6 @@ import { EntityImage } from '../../components/EntityImage'
 import { formatMatchTime, useGameStore } from '../store/gameStore'
 import { formatTimeScale } from '../systems/gameTime'
 import { HudPlayerCards } from './HudPlayerCards'
-import { ShotPowerBar } from './ShotPowerBar'
 
 export function HUD() {
   const half = useGameStore((s) => s.half)
@@ -81,8 +80,6 @@ export function HUD() {
       {!isReplay && <HudPlayerCards />}
 
       {showToast && <div className="psx-toast pes-hud-surface hud-anim">{message}</div>}
-
-      {!isReplay && <ShotPowerBar />}
     </div>
   )
 }

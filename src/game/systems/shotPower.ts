@@ -1,7 +1,11 @@
 import { SHOT_SPEED } from '../constants'
 
-/** Velocidade de preenchimento da barra (0→1 por segundo) — estilo FIFA */
-export const POWER_FILL_SPEED = 2.35
+/** Tempo de preparação até o chute/passe/cruzamento ser executado */
+export const SHOT_POWER_CHARGE_DURATION_SEC = 0.72
+export const PASS_POWER_CHARGE_DURATION_SEC = 0.42
+
+/** Velocidade de preenchimento da barra (0→1 por segundo) */
+export const POWER_FILL_SPEED = 1 / SHOT_POWER_CHARGE_DURATION_SEC
 
 /** Força mínima ao soltar rápido (toque curto) */
 export const POWER_MIN_ON_RELEASE = 0.22
@@ -27,10 +31,23 @@ export function createShotChargeState(): ShotChargeState {
   return { active: false, power: 0 }
 }
 
-/** Preenche linearmente enquanto segura o botão (FIFA) */
-export function updatePowerFill(state: ShotChargeState, delta: number) {
+export function getPowerChargeDuration(mode: PowerBarMode | null): number {
+  if (mode === 'shot') return SHOT_POWER_CHARGE_DURATION_SEC
+  if (mode === 'pass' || mode === 'through' || mode === 'cross') {
+    return PASS_POWER_CHARGE_DURATION_SEC
+  }
+  return SHOT_POWER_CHARGE_DURATION_SEC
+}
+
+export function getPowerFillSpeed(mode: PowerBarMode | null): number {
+  const duration = getPowerChargeDuration(mode)
+  return duration > 0 ? 1 / duration : POWER_FILL_SPEED
+}
+
+/** Preenche linearmente enquanto a carga estiver ativa */
+export function updatePowerFill(state: ShotChargeState, delta: number, speed = POWER_FILL_SPEED) {
   if (!state.active) return
-  state.power += POWER_FILL_SPEED * delta
+  state.power += speed * delta
   if (state.power >= 1) state.power = 1
 }
 

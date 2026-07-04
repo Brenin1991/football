@@ -12,7 +12,13 @@ const AIM_COLORS: Record<NonNullable<PowerBarMode>, string> = {
   cross: '#bef264',
 }
 
-const MAX_DASHES = 8
+const MAX_DASHES = 10
+
+function getPrecisionColor(baseColor: string, facingDot: number) {
+  if (facingDot > 0.25) return baseColor
+  if (facingDot < -0.25) return '#ef4444'
+  return '#fbbf24'
+}
 
 function buildAimDashes(length: number) {
   const dashes: { z: number; len: number }[] = []
@@ -46,10 +52,10 @@ export function StrikeAimIndicator() {
     }
 
     const y = getPitchGroundY() + 0.035
-    const length = 0.9 + aim.power * 0.75
+    const length = 1.15 + aim.power * 0.95
     const dashes = buildAimDashes(length)
-    const color = AIM_COLORS[aim.mode]
-    const dashWidth = aim.mode === 'cross' ? 0.06 : 0.05
+    const color = getPrecisionColor(AIM_COLORS[aim.mode], aim.facingDot)
+    const dashWidth = aim.mode === 'cross' ? 0.09 : 0.075
 
     group.visible = true
     group.position.set(aim.originX, y, aim.originZ)
@@ -74,11 +80,11 @@ export function StrikeAimIndicator() {
     dashMats.current.forEach((mat) => {
       if (!mat) return
       mat.color.set(color)
-      mat.opacity = 0.62
+      mat.opacity = 0.95
     })
     if (tipMat.current) {
       tipMat.current.color.set(color)
-      tipMat.current.opacity = 0.7
+      tipMat.current.opacity = 0.98
     }
   })
 

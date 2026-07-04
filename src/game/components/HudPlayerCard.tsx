@@ -1,3 +1,4 @@
+import { useGameStore } from '../store/gameStore'
 import { getPlayerCardInfo, getPlayerRoleAbbrev, getPlayerRoleGroup } from '../data/playerRoster'
 
 type HudPlayerCardProps = {
@@ -11,6 +12,11 @@ export function HudPlayerCard({ playerId, team, controlled = false }: HudPlayerC
   const staminaPct = Math.round(info.stamina * 100)
   const roleGroup = getPlayerRoleGroup(info.position)
   const roleLabel = getPlayerRoleAbbrev(info.position)
+  const shotChargeActive = useGameStore((s) => s.shotChargeActive)
+  const shotChargePower = useGameStore((s) => s.shotChargePower)
+
+  const showShotBar = controlled && shotChargeActive
+  const powerPct = Math.max(0, Math.min(100, shotChargePower * 100))
 
   return (
     <div
@@ -22,6 +28,13 @@ export function HudPlayerCard({ playerId, team, controlled = false }: HudPlayerC
           {roleLabel}
         </div>
         <div className="psx-player-card-main">
+          {showShotBar && (
+            <div className="psx-player-card-shot" aria-hidden>
+              <div className="psx-player-card-shot-track">
+                <div className="psx-player-card-shot-fill" style={{ width: `${powerPct}%` }} />
+              </div>
+            </div>
+          )}
           <div className="psx-player-card-nameplate">
             <span key={playerId} className="psx-player-card-name psx-player-card-name--change">
               {info.name}

@@ -1,61 +1,69 @@
 import * as THREE from 'three'
-import type { PlayerAnim } from '../types'
+import type { PlayerAnim, PlayerLocoAnim, PlayerStrikeAnim } from '../types'
+import { resolveStrafeLocoClip, resolveDirectLocoClip } from './playerLocomotion'
+import { resolveCarrierLocoClip } from './playerDribbleControl'
+import {
+  PLAYER_ACTION_ANIMS,
+  PLAYER_LOCO_ANIMS,
+  PLAYER_STRIKE_ANIMS,
+} from './playerClipRegistry'
 
-const LOCO: PlayerAnim[] = ['idle', 'run']
-const ONE_SHOT: PlayerAnim[] = ['kick', 'pass', 'shoot']
-const ACTION: PlayerAnim[] = ['kick', 'pass', 'shoot', 'carrinho', 'cair']
+const LOCO_BLEND = 0.22
+const ACTION_BLEND = 0.16
+const SPRINT_TIME_SCALE = 1.14
+const RECEIVE_TIME_SCALE = 1.18
+const HEADER_TIME_SCALE = 1.08
+const WALK_TIME_SCALE = 1
+const WALK_FALLBACK_TIME_SCALE = 0.65
 
-const LOCO_BLEND = 0.28
-const ACTION_BLEND = 0.18
-/** Sprint corre um pouco mais rápido que corrida normal */
-const SPRINT_TIME_SCALE = 1.12
-/** Clipes de passe/chute mais rápidos — sensação FIFA */
-const STRIKE_TIME_SCALE: Partial<Record<PlayerAnim, number>> = {
-  pass: 1.42,
-  kick: 1.28,
-  shoot: 1.32,
+const STRIKE_TIME_SCALE: Partial<Record<PlayerStrikeAnim, number>> = {
+  player_pass: 1.42,
+  player_kick: 1.28,
+  player_shoot: 1.32,
 }
 
-const STRIKE_MOVE_MUL: Partial<Record<PlayerAnim, number>> = {
-  pass: 0.74,
-  kick: 0.62,
-  shoot: 0.58,
+const STRIKE_MOVE_MUL: Partial<Record<PlayerStrikeAnim, number>> = {
+  player_pass: 0.74,
+  player_kick: 0.62,
+  player_shoot: 0.58,
 }
 
-const STRIKE_CONTACT_RATIO: Partial<Record<PlayerAnim, number>> = {
-  pass: 0.24,
-  kick: 0.26,
-  shoot: 0.22,
+const STRIKE_CONTACT_RATIO: Partial<Record<PlayerStrikeAnim, number>> = {
+  player_pass: 0.24,
+  player_kick: 0.26,
+  player_shoot: 0.22,
 }
 
 type AnimMap = Partial<Record<PlayerAnim, THREE.AnimationAction>>
 
-function isLoco(name: PlayerAnim) {
-  return LOCO.includes(name)
+function isLoco(name: PlayerAnim): name is PlayerLocoAnim {
+  return PLAYER_LOCO_ANIMS.includes(name as PlayerLocoAnim)
 }
 
-function isOneShot(name: PlayerAnim) {
-  return ONE_SHOT.includes(name)
+function isStrike(name: PlayerAnim | null): name is PlayerStrikeAnim {
+  return name != null && PLAYER_STRIKE_ANIMS.includes(name as PlayerStrikeAnim)
 }
 
 function isActionClip(name: PlayerAnim) {
-  return ACTION.includes(name)
+  return PLAYER_ACTION_ANIMS.includes(name)
 }
 
-function isMovingStrike(name: PlayerAnim | null) {
-  return name === 'pass' || name === 'kick' || name === 'shoot'
+export type StrafeLocoInput = {
+  moving: boolean
+  sprint: boolean
+  localForward: number
+  localRight: number
 }
 
 export class PlayerAnimController {
-  /** Clip dominante no mixer (sempre crossfade, nunca stop bruto) */
-  private current: PlayerAnim = 'idle'
-  /** Ação one-shot / tackle ativa (null = só locomoção) */
+  private current: PlayerLocoAnim = 'player_idle'
   private action: PlayerAnim | null = null
-  private locomotionMoving = false
-  private runSprint = false
   private lockUntil = 0
   private finishCleanup: (() => void) | null = null
   private contactTimer: ReturnType<typeof setTimeout> | null = null
+  private strafeSprint = false
+  private dribbleTouchUntil = 0
+  private dribbleTouchAnim: PlayerLocoAnim | null = null
 
   constructor(
     private readonly actions: AnimMap,
@@ -76,26 +84,28 @@ export class PlayerAnimController {
       action.enabled = true
     }
 
-    const idle = this.actions.idle
+    const idle = this.actions.player_idle
     if (!idle) return
-    this.applyScale(idle, 'idle')
+    this.applyScale(idle, 'player_idle')
     idle.play()
     idle.setEffectiveWeight(1)
     this.fadeOutOthers(idle, undefined, LOCO_BLEND)
-    this.current = 'idle'
+    this.current = 'player_idle'
     this.action = null
   }
 
   update(delta: number) {
     this.lockUntil = Math.max(0, this.lockUntil - delta)
+    this.dribbleTouchUntil = Math.max(0, this.dribbleTouchUntil - delta)
+    if (this.dribbleTouchUntil <= 0) this.dribbleTouchAnim = null
+  }
+
+  isDribbleTouching() {
+    return this.dribbleTouchUntil > 0
   }
 
   isLocked() {
     return this.lockUntil > 0
-  }
-
-  isMoving() {
-    return this.locomotionMoving
   }
 
   getAction() {
@@ -104,40 +114,49 @@ export class PlayerAnimController {
 
   getDisplayAnim(): PlayerAnim {
     if (this.action) return this.action
-    return this.locomotionMoving ? 'run' : 'idle'
+    return this.current
   }
 
   isSliding() {
-    return this.action === 'carrinho'
+    return this.action === 'player_tackle'
   }
 
   isKnockedDown() {
-    return this.action === 'cair'
+    return this.action === 'player_trip'
+  }
+
+  isReceiving() {
+    return this.action === 'player_receive'
+  }
+
+  isHeading() {
+    return this.action === 'player_header'
   }
 
   isBodyLocked() {
-    if (isMovingStrike(this.action)) return false
+    if (isStrike(this.action)) return false
+    if (this.action === 'player_receive' || this.action === 'player_header') return false
     return (
       this.lockUntil > 0 &&
       this.action != null &&
-      (isOneShot(this.action) || this.action === 'cair' || this.action === 'carrinho')
+      isActionClip(this.action)
     )
   }
 
   isStriking() {
-    return isMovingStrike(this.action)
+    return isStrike(this.action)
   }
 
   locksFacing() {
-    return false
+    return this.action === 'player_receive' || this.action === 'player_header'
   }
 
   allowsLocomotionDuringAction() {
-    return isMovingStrike(this.action)
+    return isStrike(this.action)
   }
 
   getStrikeMoveMultiplier() {
-    if (!this.action) return 1
+    if (!isStrike(this.action)) return 1
     return STRIKE_MOVE_MUL[this.action] ?? 1
   }
 
@@ -151,8 +170,15 @@ export class PlayerAnimController {
   }
 
   private playbackScale(name: PlayerAnim): number {
-    if (name === 'run' && this.runSprint) return SPRINT_TIME_SCALE
-    return STRIKE_TIME_SCALE[name] ?? 1
+    if (name === 'player_run' && this.strafeSprint) return SPRINT_TIME_SCALE
+    if (name === 'player_receive') return RECEIVE_TIME_SCALE
+    if (name === 'player_header') return HEADER_TIME_SCALE
+    if (name === 'player_walking') {
+      const clipName = this.actions.player_walking?.getClip()?.name
+      return clipName === 'player_walking' ? WALK_TIME_SCALE : WALK_FALLBACK_TIME_SCALE
+    }
+    if (isStrike(name as PlayerAnim)) return STRIKE_TIME_SCALE[name as PlayerStrikeAnim] ?? 1
+    return 1
   }
 
   private clearListeners() {
@@ -168,11 +194,6 @@ export class PlayerAnimController {
     action.setEffectiveTimeScale(this.playbackScale(name))
   }
 
-  private locoGoal(): 'idle' | 'run' {
-    return this.locomotionMoving ? 'run' : 'idle'
-  }
-
-  /** Fade suave nos clips que saem — sem stop() (evita T-pose / flick) */
   private fadeOutOthers(
     keepA: THREE.AnimationAction | undefined,
     keepB: THREE.AnimationAction | undefined,
@@ -189,10 +210,6 @@ export class PlayerAnimController {
     }
   }
 
-  /**
-   * Transição conectada — prev crossFadeTo next, resto fadeOut.
-   * Igual Unity: sempre blend, nunca corta seco.
-   */
   private transition(
     fromName: PlayerAnim,
     toName: PlayerAnim,
@@ -234,54 +251,113 @@ export class PlayerAnimController {
       this.fadeOutOthers(undefined, next, duration)
     }
 
-    this.current = toName
+    if (isLoco(toName)) this.current = toName
   }
 
   private returnToLocomotion(fromName: PlayerAnim) {
-    const back = this.locoGoal()
     this.action = null
     this.lockUntil = 0
-    this.transition(fromName, back, { warp: true, duration: ACTION_BLEND })
+    this.transition(fromName, 'player_idle', { warp: true, duration: ACTION_BLEND })
+    this.current = 'player_idle'
   }
 
-  setLocomotion(moving: boolean, sprint: boolean) {
-    this.locomotionMoving = moving
-    this.runSprint = sprint
+  setStrafeLocomotion(input: StrafeLocoInput) {
+    if (isStrike(this.action)) return
+    if (this.action && this.action !== 'player_receive' && this.action !== 'player_header') return
+    if (this.dribbleTouchUntil > 0) return
 
-    if (isMovingStrike(this.action)) return
-    if (this.action) return
+    this.strafeSprint = input.sprint
 
-    const target: PlayerAnim = moving ? 'run' : 'idle'
+    const target = input.moving
+      ? resolveStrafeLocoClip(input.localForward, input.localRight, input.sprint)
+      : 'player_idle'
+
     if (this.current === target) {
-      if (target === 'run') this.applyScale(this.actions.run!, 'run')
+      const action = this.actions[target]
+      if (!action) return
+      this.applyScale(action, target)
+      if (!action.isRunning() || action.getEffectiveWeight() < 0.01) {
+        action.play()
+        action.setEffectiveWeight(1)
+      }
       return
     }
     this.transition(this.current, target, { warp: true })
   }
 
-  setRunSpeed(sprint: boolean) {
-    if (this.action || this.current !== 'run') return
-    this.runSprint = sprint
-    const run = this.actions.run
-    if (run) this.applyScale(run, 'run')
+  setDirectLocomotion(input: { moving: boolean; sprint: boolean }) {
+    if (isStrike(this.action)) return
+    if (this.action && this.action !== 'player_receive' && this.action !== 'player_header') return
+    if (this.dribbleTouchUntil > 0) return
+
+    this.strafeSprint = input.sprint
+
+    const target = resolveDirectLocoClip(input.moving, input.sprint)
+
+    if (this.current === target) {
+      const action = this.actions[target]
+      if (!action) return
+      this.applyScale(action, target)
+      if (!action.isRunning() || action.getEffectiveWeight() < 0.01) {
+        action.play()
+        action.setEffectiveWeight(1)
+      }
+      return
+    }
+    this.transition(this.current, target, { warp: true })
+  }
+
+  setCarrierLocomotion(input: StrafeLocoInput) {
+    if (isStrike(this.action)) return
+    if (this.action && this.action !== 'player_receive' && this.action !== 'player_header') return
+    if (this.dribbleTouchUntil > 0) return
+
+    this.strafeSprint = input.sprint
+
+    const target = input.moving
+      ? resolveCarrierLocoClip(input.localForward, input.localRight, input.sprint)
+      : 'player_idle'
+
+    if (this.current === target) {
+      const action = this.actions[target]
+      if (!action) return
+      this.applyScale(action, target)
+      if (!action.isRunning() || action.getEffectiveWeight() < 0.01) {
+        action.play()
+        action.setEffectiveWeight(1)
+      }
+      return
+    }
+    this.transition(this.current, target, { warp: true })
+  }
+
+  playDribbleTouch(
+    anim: 'player_left' | 'player_right' | 'player_backward',
+    duration: number,
+  ) {
+    if (isStrike(this.action)) return
+    if (
+      this.action &&
+      this.action !== 'player_receive' &&
+      this.action !== 'player_header'
+    ) {
+      return
+    }
+
+    if (this.dribbleTouchAnim === anim && this.dribbleTouchUntil > 0) {
+      this.dribbleTouchUntil = Math.max(this.dribbleTouchUntil, duration)
+      return
+    }
+
+    this.dribbleTouchAnim = anim
+    this.dribbleTouchUntil = duration
+    this.transition(this.current, anim, { warp: true, duration: 0.12 })
   }
 
   forceIdle() {
-    this.locomotionMoving = false
     if (this.action) return
-    if (this.current === 'idle') return
-    this.transition(this.current, 'idle', { warp: true })
-  }
-
-  forceLocomotion(name: 'idle' | 'run', sprint = false) {
-    this.locomotionMoving = name === 'run'
-    this.runSprint = sprint
-    if (this.action) return
-    if (this.current === name) {
-      if (name === 'run') this.applyScale(this.actions.run!, 'run')
-      return
-    }
-    this.transition(this.current, name, { warp: true })
+    if (this.current === 'player_idle') return
+    this.transition(this.current, 'player_idle', { warp: true })
   }
 
   private playAction(
@@ -289,7 +365,11 @@ export class PlayerAnimController {
     opts?: { onContact?: () => void; onFinished?: () => void },
   ) {
     const action = this.actions[name]
-    if (!action) return
+    if (!action) {
+      opts?.onContact?.()
+      opts?.onFinished?.()
+      return
+    }
 
     this.clearListeners()
     const duration = this.playbackDurationSec(name)
@@ -299,7 +379,7 @@ export class PlayerAnimController {
     this.transition(this.current, name, { warp: false, duration: ACTION_BLEND })
 
     if (opts?.onContact) {
-      const ratio = STRIKE_CONTACT_RATIO[name] ?? 0.35
+      const ratio = isStrike(name) ? (STRIKE_CONTACT_RATIO[name] ?? 0.35) : 0.38
       this.contactTimer = setTimeout(() => {
         this.contactTimer = null
         opts.onContact?.()
@@ -318,7 +398,7 @@ export class PlayerAnimController {
   }
 
   playStrike(
-    name: 'pass' | 'kick' | 'shoot',
+    name: PlayerStrikeAnim,
     opts?: { onContact?: () => void; instantContact?: boolean },
   ) {
     if (opts?.instantContact && opts.onContact) {
@@ -329,16 +409,23 @@ export class PlayerAnimController {
     this.playAction(name, opts)
   }
 
+  playReceive(onFinished?: () => void) {
+    this.playAction('player_receive', { onFinished })
+  }
+
+  playHeader(opts?: { onContact?: () => void; onFinished?: () => void }) {
+    this.playAction('player_header', opts)
+  }
+
   playKnockdown() {
-    if (this.action === 'cair') return
-    const action = this.actions.cair
+    if (this.action === 'player_trip') return
+    const action = this.actions.player_trip
     if (!action) return
 
     this.clearListeners()
-    this.locomotionMoving = false
-    this.lockUntil = this.playbackDurationSec('cair')
-    this.action = 'cair'
-    this.transition(this.current, 'cair', { warp: false, duration: ACTION_BLEND })
+    this.lockUntil = this.playbackDurationSec('player_trip')
+    this.action = 'player_trip'
+    this.transition(this.current, 'player_trip', { warp: false, duration: ACTION_BLEND })
 
     const handleFinished = (event: { action: THREE.AnimationAction }) => {
       if (event.action !== action) return
@@ -350,24 +437,23 @@ export class PlayerAnimController {
   }
 
   endKnockdown() {
-    if (this.action !== 'cair') return
+    if (this.action !== 'player_trip') return
     this.clearListeners()
-    this.returnToLocomotion('cair')
+    this.returnToLocomotion('player_trip')
   }
 
   startSlide() {
-    if (this.action === 'carrinho') return
+    if (this.action === 'player_tackle') return
     this.clearListeners()
-    this.locomotionMoving = false
-    this.lockUntil = this.playbackDurationSec('carrinho')
-    this.action = 'carrinho'
-    this.transition(this.current, 'carrinho', { warp: false, duration: ACTION_BLEND })
+    this.lockUntil = this.playbackDurationSec('player_tackle')
+    this.action = 'player_tackle'
+    this.transition(this.current, 'player_tackle', { warp: false, duration: ACTION_BLEND })
   }
 
   endSlide() {
-    if (this.action !== 'carrinho') return
+    if (this.action !== 'player_tackle') return
     this.clearListeners()
-    this.returnToLocomotion('carrinho')
+    this.returnToLocomotion('player_tackle')
   }
 
   playReplay(anim: PlayerAnim) {
@@ -375,23 +461,31 @@ export class PlayerAnimController {
     this.action = null
     this.lockUntil = 0
 
-    if (anim === 'carrinho') {
+    if (anim === 'player_tackle') {
       this.startSlide()
       return
     }
-    if (anim === 'cair') {
+    if (anim === 'player_trip') {
       this.playKnockdown()
       return
     }
-    if (isOneShot(anim)) {
-      this.playAction(anim as 'pass' | 'kick' | 'shoot')
+    if (isStrike(anim)) {
+      this.playAction(anim)
       return
     }
-    this.locomotionMoving = anim === 'run'
-    this.transition(this.current, anim, { warp: true })
+    if (isLoco(anim)) {
+      this.transition(this.current, anim, { warp: true })
+      return
+    }
+    this.playAction(anim)
   }
 
   dispose() {
     this.clearListeners()
   }
+}
+
+export function legacyLocoFromMoving(moving: boolean, sprint: boolean): PlayerLocoAnim {
+  if (!moving) return 'player_idle'
+  return sprint ? 'player_run' : 'player_walking'
 }

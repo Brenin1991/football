@@ -19,15 +19,23 @@ export type PsxToneMapping = 'none' | 'linear' | 'reinhard' | 'cineon' | 'aces' 
 export const PSX_CLASSIC = {
   /** Efeitos retro na tela */
   post: {
-    pixelSize: 1,
-    resolutionScale: 0.8,
+    pixelSize: 0.9,
+    resolutionScale: 0.7,
     colorDepth: 32,
-    ditherIntensity: 0.7,
+    ditherIntensity: 0.4,
     bands: 16,
-    bandIntensity: 0.3,
-    scanOpacity: 0.05,
+    bandIntensity: 0.2,
+    scanOpacity: 0,
     scanCount: 256,
     uvJitter: 0.0001,
+    /** Bloom: intensidade/threshold/smoothing para brilho/glow */
+    bloom: {
+      intensity: 0.14,
+      threshold: 0.88,
+      smoothing: 0.35,
+      radius: 0.5,
+      mipmapBlur: false,
+    },
   },
 
   /**
@@ -38,17 +46,17 @@ export const PSX_CLASSIC = {
     /** Exposição HDR. 1 = neutro, 1.5–2.5 = mais claro */
     exposure: 3,
     /** Brilho aditivo na tela final (-0.4 a 0.4) */
-    brightness: 0,
+    brightness: 0.01,
     /** Contraste. 1 = neutro, 1.2 = mais punch, 0.8 = lavado */
     contrast: 1,
     /** Saturação. 0 = P&B, 1 = neutro, 1.3 = mais vivo */
-    saturation: 1.9,
+    saturation: 1.5,
     /** Gamma / curva. 1 = neutro, 1.1 = midtones mais escuros */
-    gamma: 1.1,
+    gamma: 1,
     /** Vinheta nas bordas (0 = off, 0.3 = forte) */
-    vignette: 0.0,
+    vignette: 0.4,
     /** Escurecimento da vinheta (0–1) */
-    vignetteDarkness: 0.55,
+    vignetteDarkness: 1.55,
     /** Matiz RGB — multiplicador por canal [R, G, B]. Ex: [1.05, 1, 0.95] = quente */
     tint: [1.0, 1.0, 1.0] as [number, number, number],
     /**
@@ -60,17 +68,17 @@ export const PSX_CLASSIC = {
 
   /** Materiais 3D */
   material: {
-    vertexSnap: 8,
-    playerVertexSnap: 1024,
+    vertexSnap: 32,
+    playerVertexSnap: 128,
     flatShading: true,
     /** Texturas estilo PS1 */
     texture: {
       /** Resolução máxima (64 ou 128 px no maior lado) */
-      maxSize: 1024,
+      maxSize: 2048,
       /** Mapeamento afim — só recomendado em meshes pequenos (jogadores) */
       affine: true,
       /** Wobble animado nas UVs (0 = desligado) */
-      wobbleIntensity: 0,
+      wobbleIntensity: 0.5,
       wobbleSpeed: 3.5,
       wobbleFrequency: 12,
       /** Campo: sem afim/wobble (polígonos grandes deformam demais) */
@@ -88,8 +96,8 @@ export const PSX_CLASSIC = {
   },
 
   /** Atmosfera */
-  fog: { color: '#8aafcc', near: 0, far: 955 },
-  background: '#7a9cb8',
+  fog: { color: '#c9a206', near: 15, far: 150 },
+  background: '#ffc002',
 
   /** Sombras — mapSize baixo + basic + nearest = blocos estilo PS1 */
   shadow: {
@@ -99,11 +107,11 @@ export const PSX_CLASSIC = {
     /** Menor = sombras mais blocadas (256–512 recomendado) */
     mapSize: 1024,
     bias: -0.0002,
-    normalBias: 0.02,
+    normalBias: 0.01,
     /** Sem suavização na textura do shadow map */
     nearestFilter: true,
     /** Jogadores e árbitro */
-    players: { cast: true, receive: false },
+    players: { cast: true, receive: true },
   },
 }
 

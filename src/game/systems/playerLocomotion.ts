@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { rotateTowardAngle } from './rules'
+import type { PlayerLocoAnim } from '../types'
 
 /** Aceleração ao ir para velocidade alvo (1/s) */
 export const PLAYER_MOVE_ACCEL = 15
@@ -11,6 +12,8 @@ export const PLAYER_DIR_SMOOTH_CONTROLLED = 10
 export const PLAYER_DIR_SMOOTH_AI = 6.5
 /** Suavização da direção (IA em corrida direta — passe, marcação) */
 export const PLAYER_DIR_SMOOTH_AI_DIRECT = 9
+/** Giro para olhar bola/jogo */
+export const PLAYER_BALL_FOCUS_TURN = 9.5
 
 export function smoothDirection2D(
   current: { x: number; z: number },
@@ -102,4 +105,58 @@ export function applyPlayerFacing(
 ): number {
   const turnSpeed = scaleTurnSpeedByMomentum(baseTurnSpeed, currentSpeed, maxSpeed, controlled)
   return rotateTowardAngle(currentFacing, targetFacing, turnSpeed, delta)
+}
+
+/** Olhar para a bola / jogo */
+export function getBallFocusFacing(
+  pos: { x: number; z: number },
+  ball: { x: number; z: number },
+): number {
+  return Math.atan2(ball.x - pos.x, ball.z - pos.z)
+}
+
+/** Movimento world → eixos locais do corpo (frente / direita) */
+export function worldToLocalMovement(
+  moveX: number,
+  moveZ: number,
+  facingY: number,
+): { localForward: number; localRight: number } {
+  const len = Math.hypot(moveX, moveZ)
+  if (len < 0.02) return { localForward: 0, localRight: 0 }
+  const wx = moveX / len
+  const wz = moveZ / len
+  const sin = Math.sin(facingY)
+  const cos = Math.cos(facingY)
+  return {
+    localForward: wx * sin + wz * cos,
+    localRight: wx * cos - wz * sin,
+  }
+}
+
+/** Escolhe clip de locomoção strafe olhando para a bola */
+export function resolveStrafeLocoClip(
+  localForward: number,
+  localRight: number,
+  sprint: boolean,
+): PlayerLocoAnim {
+  const mag = Math.hypot(localForward, localRight)
+  if (mag < 0.1) return 'player_idle'
+
+  const nf = localForward / mag
+  const nr = localRight / mag
+  const absF = Math.abs(nf)
+  const absR = Math.abs(nr)
+
+  if (sprint && nf > 0.15) return 'player_run'
+
+  if (nf < -0.5 && absF >= absR) return 'player_backward'
+  if (absR > 0.72 && absR > absF * 1.35) return nr < 0 ? 'player_left' : 'player_right'
+
+  return 'player_walking'
+}
+
+/** Locomoção frontal — transições / corrida normal */
+export function resolveDirectLocoClip(moving: boolean, sprint: boolean): PlayerLocoAnim {
+  if (!moving) return 'player_idle'
+  return sprint ? 'player_run' : 'player_walking'
 }

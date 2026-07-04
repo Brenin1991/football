@@ -21,7 +21,33 @@ export type MatchPhase =
 
 export type OutType = 'sideline' | 'goal-line'
 
-export type PlayerAnim = 'idle' | 'run' | 'pass' | 'kick' | 'shoot' | 'carrinho' | 'cair'
+export type PlayerLocoAnim =
+  | 'player_idle'
+  | 'player_walking'
+  | 'player_run'
+  | 'player_backward'
+  | 'player_left'
+  | 'player_right'
+
+export type PlayerStrikeAnim = 'player_pass' | 'player_kick' | 'player_shoot'
+
+export type PlayerActionAnim =
+  | PlayerStrikeAnim
+  | 'player_tackle'
+  | 'player_trip'
+  | 'player_header'
+  | 'player_receive'
+
+export type PlayerAnim = PlayerLocoAnim | PlayerActionAnim
+
+export type GoalkeeperAnim =
+  | 'gk_idle'
+  | 'gk_idle_ball'
+  | 'gk_diving_save_left'
+  | 'gk_diving_save_right'
+  | 'gk_body_save_left'
+  | 'gk_body_save_right'
+  | 'gk_hand_pass'
 
 export type PlayerRole = 'gk' | 'def' | 'mid' | 'fwd'
 

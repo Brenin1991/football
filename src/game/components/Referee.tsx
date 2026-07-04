@@ -3,9 +3,8 @@ import { useFrame } from '@react-three/fiber'
 import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { SkeletonUtils } from 'three-stdlib'
-import { PLAYER_HEIGHT, PLAYER_SPRINT_SPEED } from '../constants'
+import { PLAYER_SPRINT_SPEED } from '../constants'
 import { usePlayerAssets } from '../context/PlayerAssetsContext'
-import type { PlayerAnim } from '../types'
 import { entranceSystem } from '../systems/teamEntrance'
 import { isFieldParadePhase } from '../systems/matchPhases'
 import { useGameStore } from '../store/gameStore'
@@ -17,7 +16,7 @@ import { smoothVelocity2D } from '../systems/playerLocomotion'
 import { applyRefereeMaterials } from '../graphics/graphicsMaterials'
 import { alignPlayerModelToCapsule } from '../systems/animationClips'
 
-const LOCOMOTION_ANIMS: PlayerAnim[] = ['idle', 'run']
+type RefLocoAnim = 'player_idle' | 'player_run'
 
 export function Referee() {
   const { scene, animations } = usePlayerAssets()
@@ -35,37 +34,36 @@ export function Referee() {
   }, [scene])
 
   const { actions, mixer } = useAnimations(animations, modelRootRef)
-  const currentAnim = useRef<PlayerAnim>('idle')
+  const currentAnim = useRef<RefLocoAnim>('player_idle')
+
+  const pickAction = (name: RefLocoAnim) =>
+    actions[name] ?? actions[name === 'player_run' ? 'run' : 'idle']
 
   useEffect(() => {
-    if (!actions.idle) return
+    const idle = pickAction('player_idle')
+    if (!idle) return
     for (const action of Object.values(actions)) {
       if (!action) continue
       action.setLoop(THREE.LoopRepeat, Infinity)
       action.clampWhenFinished = false
       action.enabled = true
     }
-    actions.idle.reset().fadeIn(0.2).play()
-    currentAnim.current = 'idle'
+    idle.reset().fadeIn(0.2).play()
+    currentAnim.current = 'player_idle'
   }, [actions])
 
-  const playAnim = (name: PlayerAnim) => {
+  const playAnim = (name: RefLocoAnim) => {
     if (currentAnim.current === name) return
-    const next = actions[name]
-    const prev = actions[currentAnim.current]
+    const next = pickAction(name)
+    const prev = pickAction(currentAnim.current)
     if (!next) return
-
-    const bothLoco =
-      LOCOMOTION_ANIMS.includes(name) && LOCOMOTION_ANIMS.includes(currentAnim.current)
-
-    if (!bothLoco) next.reset()
 
     next.enabled = true
     if (prev && prev !== next) {
       prev.enabled = true
       if (!prev.isRunning()) prev.play()
       next.play()
-      prev.crossFadeTo(next, 0.28, bothLoco)
+      prev.crossFadeTo(next, 0.28, true)
     } else {
       next.play()
       next.setEffectiveWeight(1)
@@ -91,7 +89,7 @@ export function Referee() {
         pos.current.x = actor.x
         pos.current.z = actor.z
         rot.current = actor.rotation
-        playAnim(actor.moving ? 'run' : 'idle')
+        playAnim(actor.moving ? 'player_run' : 'player_idle')
       }
       if (rootRef.current) {
         rootRef.current.position.set(pos.current.x, getPlayerBodyY(), pos.current.z)
@@ -143,11 +141,11 @@ export function Referee() {
         6.5,
         simDelta,
       )
-      playAnim('run')
+      playAnim('player_run')
     } else {
       moveVel.current.x = 0
       moveVel.current.z = 0
-      playAnim('idle')
+      playAnim('player_idle')
     }
 
     if (rootRef.current) {
@@ -158,22 +156,9 @@ export function Referee() {
     }
   })
 
-  const cardColor =
-    refereeState.showingCard === 'yellow'
-      ? '#facc15'
-      : refereeState.showingCard === 'red'
-        ? '#ef4444'
-        : null
-
   return (
-    <group ref={rootRef} position={[2.8, getPlayerBodyY(), -2.4]}>
+    <group ref={rootRef}>
       <primitive ref={modelRootRef} object={cloned} />
-      {cardColor && (
-        <mesh position={[0.35, PLAYER_HEIGHT * 0.22, 0.12]} rotation={[0, rot.current, -0.25]}>
-          <boxGeometry args={[0.22, 0.32, 0.02]} />
-          <meshBasicMaterial color={cardColor} toneMapped={false} />
-        </mesh>
-      )}
     </group>
   )
 }
