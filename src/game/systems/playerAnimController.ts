@@ -23,10 +23,14 @@ const STRIKE_TIME_SCALE: Partial<Record<PlayerStrikeAnim, number>> = {
 }
 
 const STRIKE_MOVE_MUL: Partial<Record<PlayerStrikeAnim, number>> = {
-  player_pass: 0.74,
-  player_kick: 0.62,
-  player_shoot: 0.58,
+  player_pass: 0.86,
+  player_kick: 0.68,
+  player_shoot: 0.65,
 }
+
+const THROW_IN_TIME_SCALE = 1.12
+const THROW_IN_CONTACT_RATIO = 0.56
+const SPIN_TIME_SCALE = 1.05
 
 const STRIKE_CONTACT_RATIO: Partial<Record<PlayerStrikeAnim, number>> = {
   player_pass: 0.24,
@@ -64,6 +68,10 @@ export class PlayerAnimController {
   private strafeSprint = false
   private dribbleTouchUntil = 0
   private dribbleTouchAnim: PlayerLocoAnim | null = null
+  private rootMotionSnapshot: (() => void) | null = null
+  private rootMotionSnapshotFired = false
+  private holdBallAction: THREE.AnimationAction | null = null
+  private holdBallActive = false
 
   constructor(
     private readonly actions: AnimMap,
@@ -76,7 +84,7 @@ export class PlayerAnimController {
       const anim = name as PlayerAnim
       if (isActionClip(anim)) {
         action.setLoop(THREE.LoopOnce, 1)
-        action.clampWhenFinished = true
+        action.clampWhenFinished = false
       } else {
         action.setLoop(THREE.LoopRepeat, Infinity)
         action.clampWhenFinished = false
@@ -114,7 +122,94 @@ export class PlayerAnimController {
 
   getDisplayAnim(): PlayerAnim {
     if (this.action) return this.action
+    if (this.holdBallActive) return 'player_idle'
     return this.current
+  }
+
+  getAnimTime(): number {
+    if (this.holdBallActive && this.holdBallAction) {
+      return this.holdBallAction.time
+    }
+    const name = this.getDisplayAnim()
+    return this.actions[name]?.time ?? 0
+  }
+
+  isThrowInHolding() {
+    return this.holdBallActive
+  }
+
+  bindHoldBallIdle(action?: THREE.AnimationAction) {
+    this.holdBallAction = action ?? null
+    if (!action) return
+    action.setLoop(THREE.LoopRepeat, Infinity)
+    action.clampWhenFinished = false
+    action.enabled = true
+  }
+
+  enterThrowInHold() {
+    if (this.action || !this.holdBallAction) return
+    const hold = this.holdBallAction
+    if (this.holdBallActive) {
+      if (!hold.isRunning() || hold.getEffectiveWeight() < 0.01) {
+        hold.play()
+        hold.setEffectiveWeight(1)
+      }
+      return
+    }
+
+    this.holdBallActive = true
+    const prev = this.actions[this.current]
+    hold.enabled = true
+    hold.reset()
+    hold.play()
+    hold.setEffectiveWeight(1)
+    if (prev && prev !== hold) prev.fadeOut(LOCO_BLEND)
+    this.fadeOutOthers(hold, undefined, LOCO_BLEND)
+  }
+
+  exitThrowInHold() {
+    if (!this.holdBallActive) return
+    this.holdBallActive = false
+    this.holdBallAction?.fadeOut(LOCO_BLEND)
+  }
+
+  playThrowIn(opts?: { onContact?: () => void }) {
+    this.exitThrowInHold()
+    this.playAction('player_throw_in', opts)
+  }
+
+  playSpin(onFinished?: () => void) {
+    if (this.action || this.holdBallActive) return
+    const action = this.actions.player_spin
+    if (!action) return
+
+    this.clearListeners()
+    this.beginRootMotionAction()
+    this.lockUntil = this.playbackDurationSec('player_spin')
+    this.action = 'player_spin'
+    this.transition(this.current, 'player_spin', { warp: false, duration: ACTION_BLEND })
+
+    const handleFinished = (event: { action: THREE.AnimationAction }) => {
+      if (event.action !== action) return
+      if (this.action !== 'player_spin') return
+      this.clearListeners()
+      this.fireRootMotionSnapshot()
+      onFinished?.()
+      this.releaseToLocomotion('player_spin')
+    }
+    this.mixer.addEventListener('finished', handleFinished)
+    this.finishCleanup = () => this.mixer.removeEventListener('finished', handleFinished)
+  }
+
+  endSpin() {
+    if (this.action !== 'player_spin') return
+    this.clearListeners()
+    this.fireRootMotionSnapshot()
+    this.returnToLocomotion('player_spin')
+  }
+
+  isSpinning() {
+    return this.action === 'player_spin'
   }
 
   isSliding() {
@@ -123,6 +218,29 @@ export class PlayerAnimController {
 
   isKnockedDown() {
     return this.action === 'player_trip'
+  }
+
+  /** Animações com deslocamento de esqueleto — carrinho, queda e elástico. */
+  absorbsRootMotion() {
+    return (
+      this.action === 'player_tackle' ||
+      this.action === 'player_trip' ||
+      this.action === 'player_spin'
+    )
+  }
+
+  setRootMotionSnapshot(fn: (() => void) | null) {
+    this.rootMotionSnapshot = fn
+  }
+
+  private fireRootMotionSnapshot() {
+    if (this.rootMotionSnapshotFired || !this.rootMotionSnapshot) return
+    this.rootMotionSnapshotFired = true
+    this.rootMotionSnapshot()
+  }
+
+  private beginRootMotionAction() {
+    this.rootMotionSnapshotFired = false
   }
 
   isReceiving() {
@@ -178,6 +296,8 @@ export class PlayerAnimController {
       return clipName === 'player_walking' ? WALK_TIME_SCALE : WALK_FALLBACK_TIME_SCALE
     }
     if (isStrike(name as PlayerAnim)) return STRIKE_TIME_SCALE[name as PlayerStrikeAnim] ?? 1
+    if (name === 'player_throw_in') return THROW_IN_TIME_SCALE
+    if (name === 'player_spin') return SPIN_TIME_SCALE
     return 1
   }
 
@@ -254,14 +374,32 @@ export class PlayerAnimController {
     if (isLoco(toName)) this.current = toName
   }
 
-  private returnToLocomotion(fromName: PlayerAnim) {
+  private releaseToLocomotion(fromName: PlayerAnim, toLoco: PlayerLocoAnim = 'player_idle') {
+    const finished = this.actions[fromName]
+    finished?.stop()
+    finished?.reset()
+
     this.action = null
     this.lockUntil = 0
-    this.transition(fromName, 'player_idle', { warp: true, duration: ACTION_BLEND })
-    this.current = 'player_idle'
+
+    const idle = this.actions[toLoco]
+    if (!idle) return
+
+    idle.enabled = true
+    idle.reset()
+    idle.play()
+    this.applyScale(idle, toLoco)
+    idle.setEffectiveWeight(1)
+    this.fadeOutOthers(idle, undefined, ACTION_BLEND)
+    this.current = toLoco
+  }
+
+  private returnToLocomotion(fromName: PlayerAnim) {
+    this.releaseToLocomotion(fromName, 'player_idle')
   }
 
   setStrafeLocomotion(input: StrafeLocoInput) {
+    if (this.holdBallActive) return
     if (isStrike(this.action)) return
     if (this.action && this.action !== 'player_receive' && this.action !== 'player_header') return
     if (this.dribbleTouchUntil > 0) return
@@ -286,6 +424,7 @@ export class PlayerAnimController {
   }
 
   setDirectLocomotion(input: { moving: boolean; sprint: boolean }) {
+    if (this.holdBallActive) return
     if (isStrike(this.action)) return
     if (this.action && this.action !== 'player_receive' && this.action !== 'player_header') return
     if (this.dribbleTouchUntil > 0) return
@@ -308,6 +447,7 @@ export class PlayerAnimController {
   }
 
   setCarrierLocomotion(input: StrafeLocoInput) {
+    if (this.holdBallActive) return
     if (isStrike(this.action)) return
     if (this.action && this.action !== 'player_receive' && this.action !== 'player_header') return
     if (this.dribbleTouchUntil > 0) return
@@ -356,6 +496,7 @@ export class PlayerAnimController {
 
   forceIdle() {
     if (this.action) return
+    if (this.holdBallActive) return
     if (this.current === 'player_idle') return
     this.transition(this.current, 'player_idle', { warp: true })
   }
@@ -379,7 +520,12 @@ export class PlayerAnimController {
     this.transition(this.current, name, { warp: false, duration: ACTION_BLEND })
 
     if (opts?.onContact) {
-      const ratio = isStrike(name) ? (STRIKE_CONTACT_RATIO[name] ?? 0.35) : 0.38
+      const ratio =
+        name === 'player_throw_in'
+          ? THROW_IN_CONTACT_RATIO
+          : isStrike(name)
+            ? (STRIKE_CONTACT_RATIO[name] ?? 0.35)
+            : 0.38
       this.contactTimer = setTimeout(() => {
         this.contactTimer = null
         opts.onContact?.()
@@ -423,14 +569,16 @@ export class PlayerAnimController {
     if (!action) return
 
     this.clearListeners()
+    this.beginRootMotionAction()
     this.lockUntil = this.playbackDurationSec('player_trip')
     this.action = 'player_trip'
     this.transition(this.current, 'player_trip', { warp: false, duration: ACTION_BLEND })
 
     const handleFinished = (event: { action: THREE.AnimationAction }) => {
       if (event.action !== action) return
-      this.finishCleanup?.()
-      this.finishCleanup = null
+      this.clearListeners()
+      this.fireRootMotionSnapshot()
+      this.releaseToLocomotion('player_trip')
     }
     this.mixer.addEventListener('finished', handleFinished)
     this.finishCleanup = () => this.mixer.removeEventListener('finished', handleFinished)
@@ -439,49 +587,42 @@ export class PlayerAnimController {
   endKnockdown() {
     if (this.action !== 'player_trip') return
     this.clearListeners()
+    this.fireRootMotionSnapshot()
     this.returnToLocomotion('player_trip')
   }
 
   startSlide() {
     if (this.action === 'player_tackle') return
+    const action = this.actions.player_tackle
+    if (!action) return
+
     this.clearListeners()
+    this.beginRootMotionAction()
     this.lockUntil = this.playbackDurationSec('player_tackle')
     this.action = 'player_tackle'
     this.transition(this.current, 'player_tackle', { warp: false, duration: ACTION_BLEND })
+
+    const handleFinished = (event: { action: THREE.AnimationAction }) => {
+      if (event.action !== action) return
+      if (this.action !== 'player_tackle') return
+      this.clearListeners()
+      this.fireRootMotionSnapshot()
+      this.returnToLocomotion('player_tackle')
+    }
+    this.mixer.addEventListener('finished', handleFinished)
+    this.finishCleanup = () => this.mixer.removeEventListener('finished', handleFinished)
   }
 
   endSlide() {
     if (this.action !== 'player_tackle') return
     this.clearListeners()
+    this.fireRootMotionSnapshot()
     this.returnToLocomotion('player_tackle')
-  }
-
-  playReplay(anim: PlayerAnim) {
-    this.clearListeners()
-    this.action = null
-    this.lockUntil = 0
-
-    if (anim === 'player_tackle') {
-      this.startSlide()
-      return
-    }
-    if (anim === 'player_trip') {
-      this.playKnockdown()
-      return
-    }
-    if (isStrike(anim)) {
-      this.playAction(anim)
-      return
-    }
-    if (isLoco(anim)) {
-      this.transition(this.current, anim, { warp: true })
-      return
-    }
-    this.playAction(anim)
   }
 
   dispose() {
     this.clearListeners()
+    this.exitThrowInHold()
   }
 }
 

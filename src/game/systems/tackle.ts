@@ -1,17 +1,22 @@
 import {
-  getGoalkeeperId,
   SLIDE_COOLDOWN_MS,
   SLIDE_CONTACT_DIST,
   SLIDE_DURATION_MS,
   SLIDE_REACH,
 } from '../constants'
-import { getUserTeam, useGameStore } from '../store/gameStore'
-import { playerRegistry, type PlayerRef } from './entityRegistry'
+import { useGameStore } from '../store/gameStore'
+import { ballBodyRef, playerRegistry, type PlayerRef } from './entityRegistry'
 import { getHeldBallPoint, STEAL_COOLDOWN_MS } from './possession'
 import { isBallShielding } from './ballShield'
 import { reportSlideFoul, canPlayerPlay } from './referee'
-import { crowdSfx } from './crowdSfx'
 import { distance2D, normalize2D } from './rules'
+import { minPlayerFootDist2D } from './playerSkeleton'
+import { ensureBallDynamic, syncBallFromBody } from './ballPhysics'
+import { clearDribbleState } from './ballDribble'
+import type { RapierRigidBody } from '@react-three/rapier'
+
+const SLIDE_CLAIM_BLOCK_MS = 720
+const SLIDE_DISLODGE_SPEED = 4.8
 
 export const HEAVY_TACKLE_DIST = SLIDE_CONTACT_DIST
 export const KNOCKDOWN_DURATION_MS = 1900
@@ -125,8 +130,13 @@ function contactDistanceDuringSlide(
   slide: SlideState,
   target: { x: number; z: number },
 ): number {
-  const feet = getSlideFeetPoint(slider, slide)
+  const footDist = minPlayerFootDist2D(slider.id, { x: target.x, y: 0, z: target.z })
   const toBody = distance2D(slider.position, { x: target.x, y: 0, z: target.z })
+  if (footDist != null) {
+    return Math.min(toBody, footDist)
+  }
+
+  const feet = getSlideFeetPoint(slider, slide)
   const toFeet = distance2D({ x: feet.x, y: 0, z: feet.z }, { x: target.x, y: 0, z: target.z })
   return Math.min(toBody, toFeet)
 }
@@ -163,15 +173,39 @@ function shouldKnockdownOnSlide(
   return dist < HEAVY_TACKLE_DIST
 }
 
-function claimSlideSteal(slider: PlayerRef) {
+/** Solta a bola sem dar posse — física/colisores decidem depois. */
+function dislodgeBallOnSlide(
+  sliderId: string,
+  holderId: string,
+  slide: SlideState,
+) {
   const store = useGameStore.getState()
-  store.setPossession(slider.id, slider.team)
-  store.setLastTouch(slider.team)
-  if (slider.team === getUserTeam()) {
-    crowdSfx.notifyHomeSteal()
+  const slider = playerRegistry.get(sliderId)
+  if (store.ballPossession?.playerId === holderId) {
+    store.clearPossession()
+  } else {
+    clearDribbleState()
   }
-  if (slider.team === getUserTeam() && slider.id !== getGoalkeeperId(getUserTeam())) {
-    store.setActivePlayer(slider.id)
+  ensureBallDynamic()
+  const body = ballBodyRef.current as RapierRigidBody | null
+  if (body) {
+    body.wakeUp()
+    const v = body.linvel()
+    body.setLinvel(
+      {
+        x: slide.dirX * SLIDE_DISLODGE_SPEED + v.x * 0.28,
+        y: v.y,
+        z: slide.dirZ * SLIDE_DISLODGE_SPEED + v.z * 0.28,
+      },
+      true,
+    )
+    syncBallFromBody(body)
+  }
+  store.freezeDistanceBallClaims(SLIDE_CLAIM_BLOCK_MS)
+  store.blockPasserClaim(sliderId, SLIDE_CLAIM_BLOCK_MS)
+  store.blockPasserClaim(holderId, SLIDE_CLAIM_BLOCK_MS)
+  if (slider) {
+    store.setLastTouch(slider.team)
   }
 }
 
@@ -199,6 +233,7 @@ export function processSlideContacts(sliderId: string) {
   if (possession && !slide.resolvedHolder) {
     const holder = playerRegistry.get(possession.playerId)
     if (holder && holder.team !== slider.team) {
+      if (holder.role === 'gk') return
       const held = getHeldBallPoint(holder, possession.playerId)
       const hitsBody = canSlideReachTarget(slider, slide, holder.position)
       const hitsFoot = canSlideReachTarget(slider, slide, held)
@@ -212,8 +247,7 @@ export function processSlideContacts(sliderId: string) {
           return
         }
         startKnockdown(holder.id)
-        store.setLastTouch(slider.team)
-        claimSlideSteal(slider)
+        dislodgeBallOnSlide(slider.id, holder.id, slide)
         return
       }
     }

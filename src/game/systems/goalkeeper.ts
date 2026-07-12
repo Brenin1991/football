@@ -1,26 +1,41 @@
 import {
   BALL_RADIUS,
+  CLAIM_DISTANCE,
   GK_BODY_SAVE_STEP,
   GK_CATCH_MAX_SPEED,
   GK_CLAIM_BOX_SPEED,
   GK_CLOSE_ATTACKER_DIST,
   GK_DISTRIBUTE_DELAY_MS,
   GK_FACING_CLAMP,
+  GK_FEET_CLAIM_MAX_HEIGHT,
+  GK_FEET_CLAIM_MAX_SPEED,
   GK_HAND_RADIUS,
   GK_HOLD_MS,
   GK_MAX_STEP_FROM_LINE,
+  GK_MIN_FROM_LINE,
   GK_REACH_HEIGHT,
   GK_SAVE_COOLDOWN_MS,
+  GK_REACH_DIVE,
+  GK_REACH_STANDING,
   SHOT_SPEED,
+  WORLD_SCALE,
+  KICK_LOFT_HEIGHT,
+  KICK_PASS_LOFT_BASE,
 } from '../constants'
-import { ballRef, playerRegistry, type PlayerRef } from './entityRegistry'
-import { distance2D, normalize2D } from './rules'
-import { useGameStore } from '../store/gameStore'
+import { ballRef, ballBodyRef, playerRegistry, type PlayerRef } from './entityRegistry'
+import { distance2D } from './rules'
+import { useGameStore, type BallPossession } from '../store/gameStore'
 import { getAttackSign, getDefensiveGoalZ, getFieldFacingRotation, isInPenaltyArea } from './teamField'
 import type { FieldBounds, GoalkeeperAnim, GoalZone, TeamId, Vec3 } from '../types'
-import { minGkHandDist, testGkHandContact } from './goalkeeperHands'
+import { minGkHandDist, getGkCatchAnchor } from './goalkeeperHands'
+import {
+  getGkCommitWindow,
+  PLAYER_SHOOT_CONTACT_SEC,
+  rollGkCommitJitter,
+} from './gkAnimTiming'
+import { shotLoftFromPower, shotSpeedFromPower, SHOT_POWER_CHARGE_DURATION_SEC } from './shotPower'
 
-export type GkSaveKind = 'catch' | 'parry'
+export type GkSaveKind = 'catch' | 'parry' | 'foot'
 export type GkMode = 'idle' | 'save' | 'hold' | 'distribute'
 
 export type GkRuntime = {
@@ -37,6 +52,9 @@ export type GkRuntime = {
   stepDepth: number
   faceAngle: number | null
   distributing: boolean
+  /** Jitter de timing por ameaça (positivo = reage mais cedo) */
+  commitJitter: number
+  threatKey: string | null
 }
 
 const gkRuntimes = new Map<string, GkRuntime>()
@@ -46,6 +64,56 @@ const gkRuntimes = new Map<string, GkRuntime>()
 // real — pra garantir que ele sempre volte a reagir.
 const GK_SAVE_FAILSAFE_MS = 1500
 const GK_DISTRIBUTE_FAILSAFE_MS = GK_DISTRIBUTE_DELAY_MS + 4000
+/** Zona central — chute no corpo, sem mergulho lateral */
+const GK_CENTRAL_ZONE = GK_REACH_STANDING * 0.38
+/** Body save — se joga no chão (até ~altura do joelho/tronco baixo) */
+const GK_BODY_SAVE_MAX_Y = 0.9 * WORLD_SCALE
+/** Diving save — bolas mais altas que body save */
+const GK_DIVING_MIN_Y = GK_BODY_SAVE_MAX_Y + 0.04 * WORLD_SCALE
+
+function isCentralToGk(gkX: number, targetX: number): boolean {
+  return Math.abs(targetX - gkX) < GK_CENTRAL_ZONE
+}
+
+/** Altura mínima para reação de braços no centro (abaixo = corpo físico em pé) */
+const GK_MIDDLE_JUMP_MIN_Y = 0.82
+
+function isLowSaveHeight(predictedY: number): boolean {
+  return predictedY < GK_MIDDLE_JUMP_MIN_Y
+}
+
+function gkMeetBallDepth(predictedY: number, _urgency: number): number {
+  if (predictedY < GK_FEET_CLAIM_MAX_HEIGHT + 0.4) {
+    return GK_MIN_FROM_LINE + 0.22
+  }
+  if (isLowSaveHeight(predictedY)) {
+    return GK_MIN_FROM_LINE + 0.3
+  }
+  return GK_MIN_FROM_LINE + 0.38 + _urgency * 0.22
+}
+
+function gkLowShotCoverPoint(
+  team: TeamId,
+  bounds: FieldBounds,
+  interceptX: number,
+  maxDepth = GK_MAX_STEP_FROM_LINE,
+): { x: number; z: number } {
+  const goalZ = getDefensiveGoalZ(team, bounds)
+  const intoField = getAttackSign(team, bounds)
+  return clampGkPosition(
+    { x: interceptX, y: 0, z: goalZ + intoField * (GK_MIN_FROM_LINE + 0.24) },
+    team,
+    bounds,
+    maxDepth,
+  )
+}
+
+function isLowBallThreat(threat: ShotThreat): boolean {
+  if (threat.interceptYGk != null) {
+    return threat.interceptYGk < GK_MIDDLE_JUMP_MIN_Y
+  }
+  return threat.interceptY < GK_MIDDLE_JUMP_MIN_Y
+}
 
 function defaultRuntime(): GkRuntime {
   return {
@@ -62,6 +130,8 @@ function defaultRuntime(): GkRuntime {
     stepDepth: GK_MAX_STEP_FROM_LINE,
     faceAngle: null,
     distributing: false,
+    commitJitter: 0,
+    threatKey: null,
   }
 }
 
@@ -69,11 +139,59 @@ export function getGkRuntime(gkId: string): GkRuntime | undefined {
   return gkRuntimes.get(gkId)
 }
 
+/** Colisores físicos no corpo inteiro — sempre ativos exceto com bola na mão ou pós-contato na defesa */
+export function areGkPhysicsCollidersActive(gkId: string): boolean {
+  const store = useGameStore.getState()
+  if (store.phase === 'replay') return false
+
+  const rt = gkRuntimes.get(gkId)
+  if (!rt) return true
+  if (rt.mode === 'hold' || rt.mode === 'distribute') return false
+  if (rt.mode === 'save' && rt.handContactResolved) return false
+  return true
+}
+
+/** @deprecated use areGkPhysicsCollidersActive */
+export function areGkBodyBoneCollidersActive(gkId: string): boolean {
+  return areGkPhysicsCollidersActive(gkId)
+}
+
+/** @deprecated use areGkPhysicsCollidersActive */
+export function areGkHandsPhysicsActive(gkId: string): boolean {
+  return areGkPhysicsCollidersActive(gkId)
+}
+
+/** Goleiro com bola agarrada — ninguém disputa; jogadores se afastam. */
+export function isGkBallProtected(possession: BallPossession | null): boolean {
+  if (!possession) return false
+  const holder = playerRegistry.get(possession.playerId)
+  if (!holder || holder.role !== 'gk') return false
+  const rt = gkRuntimes.get(holder.id)
+  return rt?.mode === 'hold' || rt?.mode === 'distribute'
+}
+
+/** Alvo de recuo quando jogador está colado no goleiro com a bola. */
+export function getGkHoldClearTarget(
+  playerPos: Vec3,
+  gkPos: Vec3,
+  minDist = 4.2 * WORLD_SCALE,
+): { x: number; z: number } {
+  const dx = playerPos.x - gkPos.x
+  const dz = playerPos.z - gkPos.z
+  const dist = Math.hypot(dx, dz)
+  if (dist >= minDist) return { x: playerPos.x, z: playerPos.z }
+  const len = dist > 0.05 ? dist : 1
+  return {
+    x: gkPos.x + (dx / len) * minDist,
+    z: gkPos.z + (dz / len) * minDist,
+  }
+}
+
 export function isGkBodyLocked(gkId: string): boolean {
   const rt = gkRuntimes.get(gkId)
   if (!rt) return false
-  if (rt.mode === 'hold' || rt.mode === 'distribute') return true
-  if (rt.mode === 'save') return !rt.allowStep
+  if (rt.mode === 'distribute') return true
+  if (rt.mode === 'save' && rt.saveAnim) return true
   return performance.now() < rt.saveLockedUntil
 }
 
@@ -84,9 +202,17 @@ export type ShotThreat = {
   goalMaxX: number
   interceptX: number
   interceptY: number
+  /** Altura prevista no plano do goleiro (não na linha do gol) */
+  interceptYGk?: number
   timeToGoal: number
   urgency: number
   ballSpeed: number
+  /** Distância da bola (ou atacante) até a linha do gol, ao longo do campo */
+  shotDistance: number
+  /** Ameaça prevista antes da bola sair (windup / carga) */
+  preShot?: boolean
+  /** Windup/carga ativos — commit de defesa permitido */
+  preShotImminent?: boolean
 }
 
 export function assessShotThreat(
@@ -96,33 +222,39 @@ export function assessShotThreat(
   zones: GoalZone[],
 ): ShotThreat | null {
   const speed = Math.hypot(vel.x, vel.z)
-  if (speed < 1.8) return null
-  if (ball.y > GK_REACH_HEIGHT + 0.55 && vel.y > -0.8) return null
+  const lowShot = ball.y < GK_FEET_CLAIM_MAX_HEIGHT
+  if (lowShot && speed < GK_FEET_CLAIM_MAX_SPEED) return null
+  const minSpeed = lowShot ? 1.35 : 3.2
+  if (speed < minSpeed) return null
+  // Lob alto sem perigo — ignora; chutes fortes por cima do gol ainda geram ameaça
+  if (ball.y > GK_REACH_HEIGHT + 1.35 && speed < 5.5 && vel.y > 0.2) return null
 
   let best: ShotThreat | null = null
 
   for (const zone of zones) {
-    // zone.team = quem MARCA nesse gol; quem defende é o adversário
     const defendingTeam = zone.team === 'home' ? 'away' : 'home'
     const goalZ = getDefensiveGoalZ(defendingTeam, bounds)
     const intoField = getAttackSign(defendingTeam, bounds)
 
     const toGoal = (ball.z - goalZ) * intoField
-    if (toGoal < 0.2 || toGoal > 38) continue
+    if (toGoal < 0.35 || toGoal > (lowShot ? 24 : 32)) continue
 
     const closingSpeed = -(vel.z * intoField)
-    if (closingSpeed < 0.25) continue
+    if (closingSpeed < (lowShot ? 0.55 : 1.05)) continue
 
     const timeToGoal = toGoal / Math.max(closingSpeed, 0.35)
-    if (timeToGoal > 3.2) continue
+    if (timeToGoal > (lowShot ? 2.65 : 2.15)) continue
 
     const predictX = ball.x + vel.x * timeToGoal
     const predictY = ball.y + vel.y * timeToGoal - 0.5 * 9.81 * timeToGoal * timeToGoal * 0.012
-    const margin = 3.2
+    const margin = lowShot ? 1.15 : 0.95
     if (predictX < zone.minX - margin || predictX > zone.maxX + margin) continue
 
     const interceptX = Math.max(zone.minX + 0.12, Math.min(zone.maxX - 0.12, predictX))
-    const urgency = Math.min(1, (speed / SHOT_SPEED) * (1.6 / Math.max(timeToGoal, 0.15)))
+    const urgency = Math.min(1, (speed / SHOT_SPEED) * (1.4 / Math.max(timeToGoal, 0.18)))
+    const gkPlaneZ =
+      goalZ + intoField * GK_MIN_FROM_LINE
+    const atGk = predictBallAtZ(ball, vel, gkPlaneZ)
 
     const threat: ShotThreat = {
       defendingTeam,
@@ -131,15 +263,278 @@ export function assessShotThreat(
       goalMaxX: zone.maxX,
       interceptX,
       interceptY: Math.max(0.06, predictY),
+      interceptYGk: atGk ? Math.max(0.06, atGk.y) : undefined,
       timeToGoal,
       urgency,
       ballSpeed: speed,
+      shotDistance: toGoal,
     }
 
     if (!best || threat.urgency > best.urgency) best = threat
   }
 
   return best
+}
+
+function estimateShotVelocity(
+  dirX: number,
+  dirZ: number,
+  power: number,
+): Vec3 {
+  const horiz = Math.hypot(dirX, dirZ)
+  const nx = horiz > 0.001 ? dirX / horiz : 0
+  const nz = horiz > 0.001 ? dirZ / horiz : 1
+  const speed = shotSpeedFromPower(power)
+  const loft = shotLoftFromPower(power)
+  const vy =
+    loft > 0.02
+      ? KICK_LOFT_HEIGHT * loft + speed * (0.14 + 0.32 * loft) * loft
+      : KICK_PASS_LOFT_BASE + speed * 0.035
+  return { x: nx * speed, y: vy, z: nz * speed }
+}
+
+function isFacingGoal(
+  shooter: PlayerRef,
+  defendingTeam: TeamId,
+  bounds: FieldBounds,
+): boolean {
+  const goalZ = getDefensiveGoalZ(defendingTeam, bounds)
+  const intoField = getAttackSign(defendingTeam, bounds)
+  const fx = Math.sin(shooter.rotation)
+  const fz = Math.cos(shooter.rotation)
+  const toGoalX = bounds.center.x - shooter.position.x
+  const toGoalZ = goalZ + intoField * 1.8 - shooter.position.z
+  const len = Math.hypot(toGoalX, toGoalZ)
+  if (len < 0.12) return true
+  return (fx * toGoalX + fz * toGoalZ) / len > 0.42
+}
+
+function isInShootingZone(
+  pos: Vec3,
+  defendingTeam: TeamId,
+  bounds: FieldBounds,
+): boolean {
+  if (isInPenaltyArea(pos, defendingTeam, bounds)) return true
+  const goalZ = getDefensiveGoalZ(defendingTeam, bounds)
+  const intoField = getAttackSign(defendingTeam, bounds)
+  const distToGoal = (pos.z - goalZ) * intoField
+  return distToGoal > 0.25 && distToGoal < 24
+}
+
+function buildThreatFromZones(
+  defendingTeam: TeamId,
+  bounds: FieldBounds,
+  zones: GoalZone[],
+  interceptX: number,
+  interceptY: number,
+  timeToGoal: number,
+  ballSpeed: number,
+  shotDistance: number,
+  preShot = false,
+  preShotImminent = false,
+  interceptYGk?: number,
+): ShotThreat | null {
+  const zone = zones.find((z) => (z.team === 'home' ? 'away' : 'home') === defendingTeam)
+  if (!zone) return null
+
+  const margin = preShot ? 1.25 : 0.95
+  if (interceptX < zone.minX - margin || interceptX > zone.maxX + margin) return null
+
+  const goalZ = getDefensiveGoalZ(defendingTeam, bounds)
+  const low = (interceptYGk ?? interceptY) < GK_MIDDLE_JUMP_MIN_Y
+  const urgency = Math.min(
+    1,
+    (ballSpeed / SHOT_SPEED) * (1.55 / Math.max(timeToGoal, 0.14)) +
+      (preShotImminent ? 0.22 : preShot ? 0.08 : 0) -
+      (low && shotDistance > 10 ? 0.12 : 0),
+  )
+
+  return {
+    defendingTeam,
+    goalZ,
+    goalMinX: zone.minX,
+    goalMaxX: zone.maxX,
+    interceptX: Math.max(zone.minX + 0.12, Math.min(zone.maxX - 0.12, interceptX)),
+    interceptY: Math.max(0.06, interceptY),
+    interceptYGk: interceptYGk != null ? Math.max(0.06, interceptYGk) : undefined,
+    timeToGoal,
+    urgency: Math.max(0.06, urgency),
+    ballSpeed,
+    shotDistance,
+    preShot,
+    preShotImminent,
+  }
+}
+
+/** Lê windup / carga do chute e prevê trajetória antes da bola sair */
+export function assessPreShotThreat(
+  gkTeam: TeamId,
+  bounds: FieldBounds,
+  zones: GoalZone[],
+  possession: BallPossession | null,
+): ShotThreat | null {
+  if (!possession || possession.team === gkTeam || zones.length === 0) return null
+
+  const shooter = playerRegistry.get(possession.playerId)
+  if (!shooter || shooter.role === 'gk') return null
+  if (!isInShootingZone(shooter.position, gkTeam, bounds)) return null
+  if (!isFacingGoal(shooter, gkTeam, bounds)) return null
+
+  const store = useGameStore.getState()
+  const winding = shooter.anim === 'player_shoot'
+  const aimForShooter =
+    store.strikeAim && store.ballPossession?.playerId === shooter.id
+      ? store.strikeAim
+      : null
+  const charging =
+    !!aimForShooter?.charging &&
+    store.shotChargeActive &&
+    store.powerBarMode === 'shot'
+  const preShotImminent = winding || charging
+  const inBox = isInPenaltyArea(shooter.position, gkTeam, bounds)
+  const goalZ = getDefensiveGoalZ(gkTeam, bounds)
+  const intoField = getAttackSign(gkTeam, bounds)
+  const shotDistance = Math.max(0.35, (shooter.position.z - goalZ) * intoField)
+
+  if (!preShotImminent && !(inBox && shotDistance < 11)) return null
+
+  let power = 0.68
+  if (aimForShooter && aimForShooter.power > 0.12) power = aimForShooter.power
+  else if (store.shotChargeActive && store.shotChargePower > 0.12) {
+    power = store.shotChargePower
+  }
+
+  let dirX = Math.sin(shooter.rotation)
+  let dirZ = Math.cos(shooter.rotation)
+  if (aimForShooter && Math.hypot(aimForShooter.dirX, aimForShooter.dirZ) > 0.18) {
+    dirX = aimForShooter.dirX
+    dirZ = aimForShooter.dirZ
+  }
+  const horiz = Math.hypot(dirX, dirZ)
+  if (horiz < 0.05) return null
+  dirX /= horiz
+  dirZ /= horiz
+
+  let timeToStrike = inBox ? 0.52 : 0.68
+  if (winding) {
+    timeToStrike = Math.max(0.03, PLAYER_SHOOT_CONTACT_SEC - (shooter.animTime ?? 0))
+  } else if (charging) {
+    timeToStrike =
+      PLAYER_SHOOT_CONTACT_SEC +
+      0.12 +
+      (1 - power) * SHOT_POWER_CHARGE_DURATION_SEC * 0.45
+  } else if (inBox && shotDistance > 8) {
+    timeToStrike = 0.85 + (shotDistance - 8) * 0.04
+  }
+
+  const ball = ballRef.current
+  const vel = estimateShotVelocity(dirX, dirZ, power)
+  const lineZ = gkLineZ(gkTeam, bounds)
+  const closing = -(vel.z * intoField)
+  if (closing < 0.45) return null
+
+  const flightTime = Math.abs(lineZ - ball.z) / Math.max(Math.abs(vel.z), 0.35)
+  if (flightTime > 2.4) return null
+
+  const predicted = predictBallAtZ(ball, vel, lineZ)
+  if (!predicted) return null
+
+  return buildThreatFromZones(
+    gkTeam,
+    bounds,
+    zones,
+    predicted.x,
+    predicted.y,
+    timeToStrike + flightTime,
+    Math.hypot(vel.x, vel.z),
+    shotDistance,
+    true,
+    preShotImminent,
+    predicted.y,
+  )
+}
+
+function resolveGkThreat(
+  gkTeam: TeamId,
+  ballThreat: ShotThreat | null,
+  preShotThreat: ShotThreat | null,
+): ShotThreat | null {
+  const ball = ballThreat?.defendingTeam === gkTeam ? ballThreat : null
+  const pre = preShotThreat?.defendingTeam === gkTeam ? preShotThreat : null
+  if (!ball && !pre) return null
+  if (!ball) return pre
+  if (!pre) return ball
+  return pre.timeToGoal <= ball.timeToGoal ? pre : ball
+}
+
+function refreshGkThreatJitter(rt: GkRuntime, threat: ShotThreat) {
+  const key = `${threat.interceptX.toFixed(1)}:${threat.interceptY.toFixed(2)}:${threat.preShot ? 1 : 0}`
+  if (rt.threatKey !== key) {
+    rt.threatKey = key
+    rt.commitJitter = rollGkCommitJitter()
+  }
+}
+
+function commitWindowForThreat(
+  threat: ShotThreat,
+  plan: SaveDecision,
+  jitter: number,
+): number {
+  return getGkCommitWindow(plan.anim, {
+    lowBall: isLowBallThreat(threat),
+    shotDistance: threat.shotDistance,
+    preShot: threat.preShot,
+    preShotImminent: threat.preShotImminent,
+    jitter,
+  })
+}
+
+function shouldCommitGkSave(
+  threat: ShotThreat,
+  plan: SaveDecision,
+  inReach: boolean,
+  lateralError: number,
+  distToBall: number,
+  centralShot: boolean,
+  easyCatch: boolean,
+  jitter: number,
+): boolean {
+  const t = threat.timeToGoal
+  const close = threat.shotDistance < 6.5
+  const window = commitWindowForThreat(threat, plan, jitter)
+  const closeBoost = close ? 1.14 : 1
+
+  if (inReach) return true
+
+  if (isLowBallThreat(threat)) {
+    if (!plan.anim) {
+      return t <= (close ? 0.38 : 0.22)
+    }
+    return t <= window * closeBoost
+  }
+
+  if (t <= window * closeBoost) return true
+
+  if (plan.anim === 'gk_miss_middle') {
+    return t <= window + 0.18
+  }
+
+  if (plan.anim === 'gk_catch' || easyCatch) {
+    return t <= window + 0.1 || distToBall < (centralShot ? 4.2 : 2.6)
+  }
+
+  if (plan.anim?.includes('diving')) {
+    return (
+      t <= window + 0.12 ||
+      (threat.urgency >= 0.48 && t <= window + 0.22)
+    )
+  }
+
+  if (plan.anim?.includes('body_save')) {
+    return t <= window + 0.08 || lateralError < GK_REACH_DIVE * 0.42
+  }
+
+  return centralShot && t <= window + 0.12
 }
 
 function pickSaveSide(gkX: number, targetX: number, velX: number): 'left' | 'right' {
@@ -161,65 +556,253 @@ export function predictBallAtZ(ball: Vec3, vel: Vec3, targetZ: number): Vec3 | n
   }
 }
 
-function gkLineZ(team: TeamId, bounds: FieldBounds, depth = 0.11): number {
+function gkThreatSweepDepth(
+  threat: ShotThreat,
+  maxDepth = GK_MAX_STEP_FROM_LINE,
+  gkX?: number,
+): number {
+  if (threat.interceptY < 0.72) {
+    return Math.min(maxDepth, gkMeetBallDepth(threat.interceptY, threat.urgency))
+  }
+
+  const lateralToAim = gkX != null ? Math.abs(gkX - threat.interceptX) : 0
+  const centralClose =
+    gkX != null &&
+    lateralToAim < GK_CENTRAL_ZONE &&
+    threat.timeToGoal < 1.4 &&
+    threat.interceptY >= GK_MIDDLE_JUMP_MIN_Y
+
+  if (centralClose) {
+    return GK_MIN_FROM_LINE + 0.2
+  }
+
+  const span = Math.max(0.12, maxDepth - GK_MIN_FROM_LINE)
+  const urgencyBoost = Math.min(1, threat.urgency * 0.68)
+  const timeBoost =
+    threat.timeToGoal < 0.5 ? 0.14 : threat.timeToGoal < 0.9 ? 0.08 : 0
+  return GK_MIN_FROM_LINE + span * Math.min(1, urgencyBoost + timeBoost)
+}
+
+function gkThreatPosition(
+  team: TeamId,
+  bounds: FieldBounds,
+  threat: ShotThreat,
+  maxDepth = GK_MAX_STEP_FROM_LINE,
+  gkX?: number,
+): { x: number; z: number } {
+  const goalZ = getDefensiveGoalZ(team, bounds)
+  const intoField = getAttackSign(team, bounds)
+  const sweep = gkThreatSweepDepth(threat, maxDepth, gkX)
+  return clampGkPosition(
+    { x: threat.interceptX, y: 0, z: goalZ + intoField * sweep },
+    team,
+    bounds,
+    maxDepth,
+  )
+}
+
+function gkLineZ(team: TeamId, bounds: FieldBounds, depth = GK_MIN_FROM_LINE): number {
   const goalZ = getDefensiveGoalZ(team, bounds)
   return goalZ + getAttackSign(team, bounds) * depth
 }
 
-/** Pega vs espalma — regra fixa pela trajetória, sem sorteio */
+/** Bola baixa e lenta — domínio com os pés, sem defesa de mãos */
+export function isWeakLowBall(ball: Vec3, vel: Vec3): boolean {
+  const speed = Math.hypot(vel.x, vel.z)
+  return ball.y < GK_FEET_CLAIM_MAX_HEIGHT && speed < GK_FEET_CLAIM_MAX_SPEED
+}
+
+/** Pega vs espalma — baixa no chão espalma; meio/alto tende a pegar com mergulho lateral */
 function chooseSaveKind(
   predictedY: number,
   ballSpeed: number,
   distToGk: number,
   close1v1: boolean,
 ): GkSaveKind {
-  if (close1v1 || distToGk < 1.65) return 'parry'
-  if (ballSpeed > GK_CATCH_MAX_SPEED * 0.92) return 'parry'
-  if (predictedY < 0.45) return 'parry'
-  if (predictedY > GK_REACH_HEIGHT + 0.15) return 'parry'
-  if (distToGk < 2.4 && ballSpeed > 6.5) return 'parry'
-  if (predictedY >= 0.5 && predictedY <= 1.55 && ballSpeed <= GK_CATCH_MAX_SPEED) return 'catch'
-  return predictedY <= 1.2 ? 'parry' : 'catch'
+  if (
+    ballSpeed < GK_CLAIM_BOX_SPEED &&
+    predictedY >= GK_FEET_CLAIM_MAX_HEIGHT &&
+    predictedY <= GK_REACH_HEIGHT + 0.28
+  ) {
+    return 'catch'
+  }
+
+  if (predictedY < 0.38) return 'parry'
+  if (ballSpeed < 6.2 && predictedY < 0.48) return 'parry'
+  if (close1v1 && predictedY < 0.5) return 'parry'
+
+  const tooFast = ballSpeed > GK_CATCH_MAX_SPEED
+  const overhead = predictedY > GK_REACH_HEIGHT + 0.22
+
+  const highCatchBand =
+    predictedY >= 0.88 && predictedY <= GK_REACH_HEIGHT + 0.16
+  if (highCatchBand && distToGk < 3.6 && !overhead) {
+    if (!tooFast) return 'catch'
+    if (ballSpeed <= GK_CATCH_MAX_SPEED * 1.04 && distToGk < 3.0) return 'catch'
+  }
+
+  if (
+    !tooFast &&
+    !overhead &&
+    predictedY >= 0.45 &&
+    predictedY <= 1.75 &&
+    distToGk < 3.6
+  ) {
+    return 'catch'
+  }
+
+  if (close1v1 && predictedY < 0.72) return 'parry'
+  if (tooFast || overhead) return 'parry'
+
+  return predictedY >= 0.5 ? 'catch' : 'parry'
 }
 
 type SaveDecision = {
   kind: GkSaveKind
   side: 'left' | 'right'
-  anim: GoalkeeperAnim
+  anim: GoalkeeperAnim | null
   target: Vec3
+  lateralError: number
+  central: boolean
+  commitLeadSec: number
 }
 
-function decideGkSave(
+/** Bola passa por cima do goleiro — altura no plano Z do GK, não na linha do gol */
+function ballPassesOverGk(central: boolean, predictedYAtGkLine: number): boolean {
+  if (!central) return false
+  return predictedYAtGkLine > GK_REACH_HEIGHT + 0.06
+}
+
+function getSaveCommitLead(
+  anim: GoalkeeperAnim | null,
+  opts?: { lowBall?: boolean; shotDistance?: number },
+): number {
+  return getGkCommitWindow(anim, opts)
+}
+
+/**
+ * Escolhe animação pela trajetória prevista no plano do goleiro:
+ * - body_save: lateral + baixa (se joga no chão)
+ * - diving_save: lateral + mais alta
+ * - gk_catch: central + agarrável
+ * - gk_miss_middle: SOMENTE central + por cima da cabeça/trave
+ * - null: central baixa (física do corpo) ou fora de alcance
+ */
+function pickSaveAnim(
+  kind: GkSaveKind,
+  side: 'left' | 'right',
+  predictedYAtGkLine: number,
+  lateralError: number,
+  _ballSpeed: number,
+  _goalHeight: number,
+): GoalkeeperAnim | null {
+  if (kind === 'foot') return null
+
+  const central = lateralError < GK_CENTRAL_ZONE
+
+  // Bola que já chega baixa no goleiro — nunca miss middle (pulo por cima)
+  if (predictedYAtGkLine < GK_MIDDLE_JUMP_MIN_Y + 0.1) {
+    if (central) return null
+    if (predictedYAtGkLine <= GK_BODY_SAVE_MAX_Y) {
+      return side === 'left' ? 'gk_body_save_left' : 'gk_body_save_right'
+    }
+    return side === 'left' ? 'gk_diving_save_left' : 'gk_diving_save_right'
+  }
+
+  if (ballPassesOverGk(central, predictedYAtGkLine)) {
+    return 'gk_miss_middle'
+  }
+
+  if (central) {
+    if (predictedYAtGkLine < GK_FEET_CLAIM_MAX_HEIGHT + 0.08) return null
+    if (
+      kind === 'catch' &&
+      predictedYAtGkLine >= GK_FEET_CLAIM_MAX_HEIGHT &&
+      predictedYAtGkLine <= GK_REACH_HEIGHT - 0.08
+    ) {
+      return 'gk_catch'
+    }
+    return null
+  }
+
+  if (predictedYAtGkLine <= GK_BODY_SAVE_MAX_Y) {
+    return side === 'left' ? 'gk_body_save_left' : 'gk_body_save_right'
+  }
+
+  if (predictedYAtGkLine >= GK_DIVING_MIN_Y) {
+    return side === 'left' ? 'gk_diving_save_left' : 'gk_diving_save_right'
+  }
+
+  return side === 'left' ? 'gk_body_save_left' : 'gk_body_save_right'
+}
+
+function evaluateGkSave(
   gk: PlayerRef,
   ball: Vec3,
   vel: Vec3,
   bounds: FieldBounds,
-  opts?: { force1v1?: boolean; aim?: Vec3 },
+  opts?: {
+    force1v1?: boolean
+    aim?: Vec3
+    estimatedVel?: Vec3
+    shotDistance?: number
+  },
 ): SaveDecision {
   const lineZ = gkLineZ(gk.team, bounds)
-  const predicted = predictBallAtZ(ball, vel, lineZ) ?? opts?.aim ?? ball
-  const speed = Math.hypot(vel.x, vel.z)
+  const shotVel = opts?.estimatedVel ?? vel
+  const atGkLine = predictBallAtZ(ball, shotVel, lineZ)
+  const predicted = {
+    x: opts?.aim?.x ?? atGkLine?.x ?? ball.x,
+    y: atGkLine?.y ?? ball.y,
+    z: lineZ,
+  }
+  const speed = Math.hypot(shotVel.x, shotVel.z)
   const dist = distance2D(gk.position, ball)
-  const side = pickSaveSide(gk.position.x, predicted.x, vel.x)
+  const side = pickSaveSide(gk.position.x, predicted.x, shotVel.x)
   const kind = chooseSaveKind(
     predicted.y,
     speed,
     dist,
     opts?.force1v1 ?? false,
   )
+  const lateralError = Math.abs(gk.position.x - predicted.x)
+  const central = lateralError < GK_CENTRAL_ZONE
+  const anim = pickSaveAnim(
+    kind,
+    side,
+    predicted.y,
+    lateralError,
+    speed,
+    bounds.goalHeight,
+  )
+  const lowBall = predicted.y < GK_MIDDLE_JUMP_MIN_Y
   return {
     kind,
     side,
-    anim: pickSaveAnim(kind, side),
+    anim,
     target: { x: predicted.x, y: predicted.y, z: lineZ },
+    lateralError,
+    central,
+    commitLeadSec: getSaveCommitLead(anim, {
+      lowBall,
+      shotDistance: opts?.shotDistance,
+    }),
   }
 }
 
-function pickSaveAnim(kind: GkSaveKind, side: 'left' | 'right'): GoalkeeperAnim {
-  if (kind === 'catch') {
-    return side === 'left' ? 'gk_diving_save_left' : 'gk_diving_save_right'
-  }
-  return side === 'left' ? 'gk_body_save_left' : 'gk_body_save_right'
+function isEasyCatchShot(threat: ShotThreat, gk: PlayerRef): boolean {
+  if (threat.interceptY < GK_FEET_CLAIM_MAX_HEIGHT) return false
+  if (threat.interceptY > GK_REACH_HEIGHT - 0.1) return false
+
+  const lateral = Math.abs(gk.position.x - threat.interceptX)
+  const central = isCentralToGk(gk.position.x, threat.interceptX)
+
+  if (central && threat.ballSpeed <= GK_CATCH_MAX_SPEED * 1.08) return true
+
+  if (threat.ballSpeed > GK_CLAIM_BOX_SPEED) return false
+  if (threat.urgency > 0.72) return false
+  if (threat.interceptY >= 0.52 && lateral < GK_REACH_STANDING + 0.28) return true
+  return lateral < GK_REACH_STANDING + 0.22
 }
 
 export function clampGkFacing(
@@ -250,13 +833,31 @@ export function clampGkPosition(
     bounds.center.x - halfW * 0.92,
     Math.min(bounds.center.x + halfW * 0.92, pos.x),
   )
-  const nearLine = goalZ + intoField * 0.06
+  const nearLine = goalZ + intoField * GK_MIN_FROM_LINE
   const farLine = goalZ + intoField * maxDepth
   const z =
     intoField > 0
       ? Math.max(nearLine, Math.min(farLine, pos.z))
       : Math.min(nearLine, Math.max(farLine, pos.z))
   return { x, z }
+}
+
+function gk1v1CoverPoint(
+  team: TeamId,
+  bounds: FieldBounds,
+  ball: Vec3,
+  baseX: number,
+): { x: number; z: number } {
+  const goalZ = getDefensiveGoalZ(team, bounds)
+  const intoField = getAttackSign(team, bounds)
+  const targetX = baseX * 0.32 + ball.x * 0.68
+  const depth = GK_MIN_FROM_LINE + 0.78
+  return clampGkPosition(
+    { x: targetX, y: 0, z: goalZ + intoField * depth },
+    team,
+    bounds,
+    GK_MAX_STEP_FROM_LINE,
+  )
 }
 
 function findCloseAttacker(gk: PlayerRef, team: TeamId, bounds: FieldBounds): PlayerRef | null {
@@ -289,26 +890,50 @@ function startGkSave(
   bounds: FieldBounds,
   ball: Vec3,
   vel: Vec3,
-  opts?: { allowStep?: boolean; stepDepth?: number; force1v1?: boolean; aim?: Vec3 },
+  opts?: {
+    allowStep?: boolean
+    stepDepth?: number
+    force1v1?: boolean
+    aim?: Vec3
+    estimatedVel?: Vec3
+    shotDistance?: number
+  },
 ) {
   const gk = playerRegistry.get(gkId)
   if (!gk) return
 
-  const decision = decideGkSave(gk, ball, vel, bounds, {
+  const decision = evaluateGkSave(gk, ball, vel, bounds, {
     force1v1: opts?.force1v1,
     aim: opts?.aim,
+    estimatedVel: opts?.estimatedVel,
+    shotDistance: opts?.shotDistance,
   })
   const rt = gkRuntimes.get(gkId) ?? defaultRuntime()
+
+  const goalZ = getDefensiveGoalZ(team, bounds)
+  const intoField = getAttackSign(team, bounds)
+  let meetX = opts?.aim?.x ?? decision.target.x
+  let meetZ =
+    opts?.aim?.z ??
+    goalZ +
+      intoField *
+        gkMeetBallDepth(decision.target.y, Math.hypot(vel.x, vel.z) / SHOT_SPEED)
+
+  if (isLowSaveHeight(decision.target.y)) {
+    const cover = gkLowShotCoverPoint(team, bounds, meetX)
+    meetX = cover.x
+    meetZ = cover.z
+  }
 
   rt.mode = 'save'
   rt.saveAnim = decision.anim
   rt.saveKind = decision.kind
   rt.saveSide = decision.side
-  rt.interceptTarget = { x: decision.target.x, z: decision.target.z }
+  rt.interceptTarget = { x: meetX, z: meetZ }
   rt.handContactResolved = false
-  rt.allowStep = opts?.allowStep ?? decision.kind === 'parry'
-  rt.stepDepth = opts?.stepDepth ?? (decision.kind === 'parry' ? GK_BODY_SAVE_STEP : GK_MAX_STEP_FROM_LINE)
-  rt.saveLockedUntil = performance.now() + 900
+  rt.allowStep = false
+  rt.stepDepth = GK_MIN_FROM_LINE + 0.35
+  rt.saveLockedUntil = performance.now() + (decision.anim ? 900 : 520)
   rt.lastSaveAt = performance.now()
   rt.faceAngle = clampGkFacing(team, bounds, gk.position, decision.target)
   rt.distributing = false
@@ -316,7 +941,38 @@ function startGkSave(
   gkRuntimes.set(gkId, rt)
 }
 
-function applyGkCatch(gkId: string, team: TeamId) {
+export function applyGkFeetClaim(gkId: string, team: TeamId): boolean {
+  const store = useGameStore.getState()
+  if (!store.canPlayerClaimBall(gkId)) return false
+
+  store.setPossession(gkId, team)
+  store.setLastTouch(team)
+  ballRef.velocity = { x: 0, y: 0, z: 0 }
+
+  const rt = gkRuntimes.get(gkId) ?? defaultRuntime()
+  rt.mode = 'idle'
+  rt.saveAnim = null
+  rt.saveKind = null
+  rt.interceptTarget = null
+  rt.holdUntil = 0
+  rt.saveLockedUntil = 0
+  rt.allowStep = false
+  rt.handContactResolved = false
+  rt.distributing = false
+  gkRuntimes.set(gkId, rt)
+  return true
+}
+
+export function applyGkCatch(
+  gkId: string,
+  team: TeamId,
+  anchorMode: 'left' | 'right' | 'feet' | null = null,
+) {
+  if (anchorMode === 'feet') {
+    applyGkFeetClaim(gkId, team)
+    return
+  }
+
   const store = useGameStore.getState()
   if (!store.canPlayerClaimBall(gkId)) return
 
@@ -326,9 +982,27 @@ function applyGkCatch(gkId: string, team: TeamId) {
 
   const gk = playerRegistry.get(gkId)
   if (gk) {
-    ballRef.current.x = gk.position.x
-    ballRef.current.y = 1.05
-    ballRef.current.z = gk.position.z + 0.22
+    const handAnchor = getGkCatchAnchor(
+      gkId,
+      anchorMode === 'left' ? 'left' : 'right',
+    )
+    if (handAnchor) {
+      ballRef.current.x = handAnchor.x
+      ballRef.current.y = handAnchor.y
+      ballRef.current.z = handAnchor.z
+    } else {
+      ballRef.current.x = gk.position.x
+      ballRef.current.y = 1.05
+      ballRef.current.z = gk.position.z + 0.22
+    }
+  }
+
+  const body = ballBodyRef.current as import('@react-three/rapier').RapierRigidBody | null
+  if (body) {
+    const p = ballRef.current
+    body.setTranslation({ x: p.x, y: p.y, z: p.z }, true)
+    body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+    body.setAngvel({ x: 0, y: 0, z: 0 }, true)
   }
 
   const rt = gkRuntimes.get(gkId) ?? defaultRuntime()
@@ -337,36 +1011,9 @@ function applyGkCatch(gkId: string, team: TeamId) {
   rt.saveKind = null
   rt.interceptTarget = null
   rt.holdUntil = performance.now() + GK_HOLD_MS
-  rt.saveLockedUntil = rt.holdUntil
+  rt.saveLockedUntil = 0
   rt.allowStep = false
-  gkRuntimes.set(gkId, rt)
-}
-
-function applyGkParry(gkId: string, team: TeamId, side: 'left' | 'right') {
-  const store = useGameStore.getState()
-  store.setLastTouch(team)
-
-  const sign = side === 'left' ? -1 : 1
-  const spd = Math.min(Math.hypot(ballRef.velocity.x, ballRef.velocity.z), 14)
-  const n = normalize2D(ballRef.velocity.x, ballRef.velocity.z)
-  const bounds = store.fieldBounds!
-  const deflectX = n.x * 0.35 + sign * 0.72
-  const deflectZ = n.z * 0.35 + getAttackSign(team, bounds) * 0.55
-  const len = Math.hypot(deflectX, deflectZ) || 1
-
-  ballRef.velocity = {
-    x: (deflectX / len) * Math.max(spd * 0.55, 3.5),
-    y: 0.22,
-    z: (deflectZ / len) * Math.max(spd * 0.55, 3.5),
-  }
-
-  const rt = gkRuntimes.get(gkId) ?? defaultRuntime()
-  rt.mode = 'idle'
-  rt.saveAnim = null
-  rt.saveKind = null
-  rt.interceptTarget = null
-  rt.saveLockedUntil = performance.now() + GK_SAVE_COOLDOWN_MS
-  rt.allowStep = false
+  rt.handContactResolved = true
   gkRuntimes.set(gkId, rt)
 }
 
@@ -384,8 +1031,37 @@ function onSaveAnimFinished(gkId: string) {
   gkRuntimes.set(gkId, rt)
 }
 
+/** Espalma com física já resolvida pelo Rapier — só atualiza estado. */
+export function resolveGkPhysicsParry(gkId: string, team: TeamId) {
+  const store = useGameStore.getState()
+  store.setLastTouch(team)
+
+  const body = ballBodyRef.current as import('@react-three/rapier').RapierRigidBody | null
+  if (body) {
+    const t = body.translation()
+    const v = body.linvel()
+    ballRef.current = { x: t.x, y: t.y, z: t.z }
+    ballRef.velocity = { x: v.x, y: v.y, z: v.z }
+  }
+
+  const rt = gkRuntimes.get(gkId) ?? defaultRuntime()
+  rt.mode = 'idle'
+  rt.saveAnim = null
+  rt.saveKind = null
+  rt.interceptTarget = null
+  rt.handContactResolved = true
+  rt.saveLockedUntil = performance.now() + GK_SAVE_COOLDOWN_MS
+  rt.allowStep = false
+  gkRuntimes.set(gkId, rt)
+}
+
 export function notifyGkSaveFinished(gkId: string) {
   onSaveAnimFinished(gkId)
+}
+
+export function shouldGkBlendToHold(gkId: string): boolean {
+  const rt = gkRuntimes.get(gkId)
+  return rt?.mode === 'hold'
 }
 
 /** Avalia ameaças e dispara animações — roda cedo no frame */
@@ -414,6 +1090,21 @@ export function tickGoalkeeperDefense() {
       onSaveAnimFinished(gk.id)
     }
 
+    if (rt.mode === 'save' && !rt.saveAnim) {
+      const elapsed = now - rt.lastSaveAt
+      const threatNow =
+        store.goalZones.length > 0
+          ? assessShotThreat(ball, vel, bounds, store.goalZones)
+          : null
+      const stillThreat =
+        threatNow &&
+        threatNow.defendingTeam === gk.team &&
+        threatNow.timeToGoal < 0.35
+      if (elapsed > 520 && !stillThreat) {
+        onSaveAnimFinished(gk.id)
+      }
+    }
+
     // Se ele não está mais de posse da bola mas ficou marcado como
     // 'hold'/'distribute' (por exemplo, perdeu a bola num desarme), esse
     // estado não faz mais sentido — solta o goleiro imediatamente.
@@ -434,130 +1125,223 @@ export function tickGoalkeeperDefense() {
       continue
     }
 
-    if (rt.mode === 'hold' || rt.mode === 'distribute' || rt.mode === 'save') continue
+    if (rt.mode === 'hold' || rt.mode === 'distribute') continue
+
+    if (rt.mode === 'save') continue
 
     const lineZ = gkLineZ(gk.team, bounds)
 
-    // Sempre atualiza pra onde o goleiro está olhando, mesmo quando não é
-    // hora de avaliar chute — antes disso só acontecia aqui dentro, e a
-    // função inteira podia ser pulada (veja abaixo), deixando o goleiro
-    // "cego" parado numa direção velha.
+    const ballThreat =
+      store.goalZones.length > 0
+        ? assessShotThreat(ball, vel, bounds, store.goalZones)
+        : null
+    const preShotThreat =
+      store.goalZones.length > 0
+        ? assessPreShotThreat(gk.team, bounds, store.goalZones, poss)
+        : null
+    const threatForTeamEarly = resolveGkThreat(gk.team, ballThreat, preShotThreat)
+
+    if (isWeakLowBall(ball, vel) && isInPenaltyArea(ball, gk.team, bounds)) {
+      const predicted = predictBallAtZ(ball, vel, lineZ)
+      rt.interceptTarget = gkLowShotCoverPoint(
+        gk.team,
+        bounds,
+        predicted?.x ?? ball.x,
+      )
+      rt.faceAngle = clampGkFacing(gk.team, bounds, gk.position, ball)
+      continue
+    }
+
+    // Sempre atualiza pra onde o goleiro está olhando
     rt.faceAngle = clampGkFacing(gk.team, bounds, gk.position, predictBallAtZ(ball, vel, lineZ) ?? ball)
 
     const inCooldown = now - rt.lastSaveAt < GK_SAVE_COOLDOWN_MS
-    const ballWithOther = !!poss // outro jogador (não o goleiro) está de posse
+    const opponentHasBall = !!poss && poss.team !== gk.team
 
-    if (inCooldown || ballWithOther) {
-      // Não pode iniciar outra defesa agora (cooldown) ou a bola está
-      // controlada por alguém (não dá pra calcular "chute" ainda), mas
-      // continua acompanhando/reposicionando em vez de simplesmente parar
-      // de atualizar o alvo — isso é o que deixava o interceptTarget velho
-      // e o goleiro "travado" olhando pra um ponto sem sentido.
-      if (isInPenaltyArea(ball, gk.team, bounds) && distance2D(gk.position, ball) < 8) {
-        const predicted = predictBallAtZ(ball, vel, lineZ)
-        if (predicted) {
-          rt.interceptTarget = clampGkPosition({ x: predicted.x, y: 0, z: lineZ }, gk.team, bounds)
-        }
-      } else {
-        rt.interceptTarget = null
-      }
+    if (inCooldown) {
+      updateGkInterceptTarget(gk, bounds, ball, vel, rt, threatForTeamEarly)
+      continue
+    }
+
+    if (opponentHasBall && !threatForTeamEarly?.preShot) {
+      updateGkInterceptTarget(gk, bounds, ball, vel, rt, threatForTeamEarly)
       continue
     }
 
     const closeAtt = findCloseAttacker(gk, gk.team, bounds)
-    if (closeAtt) {
-      startGkSave(gk.id, gk.team, bounds, ball, vel, {
-        force1v1: true,
-        allowStep: true,
-        stepDepth: GK_BODY_SAVE_STEP,
-      })
-      continue
-    }
+    if (closeAtt && poss?.playerId === closeAtt.id) {
+      updateGkInterceptTarget(gk, bounds, ball, vel, rt, threatForTeamEarly)
+      const baseCover = rt.interceptTarget ?? computeGkCoverPosition(gk.team, bounds, ball)
+      rt.interceptTarget = gk1v1CoverPoint(
+        gk.team,
+        bounds,
+        ball,
+        baseCover.x,
+      )
+      rt.faceAngle = clampGkFacing(gk.team, bounds, gk.position, ball)
 
-    const threat =
-      store.goalZones.length > 0
-        ? assessShotThreat(ball, vel, bounds, store.goalZones)
-        : null
-
-    const distToBall = distance2D(gk.position, ball)
-    const inBox = isInPenaltyArea(ball, gk.team, bounds)
-
-    if (threat && threat.defendingTeam === gk.team) {
-      const aimX = threat.interceptX
-      rt.interceptTarget = clampGkPosition({ x: aimX, y: 0, z: lineZ }, gk.team, bounds)
-
-      const lateralError = Math.abs(gk.position.x - aimX)
-      const aligned = lateralError < 0.42
-      const urgent =
-        threat.timeToGoal < 0.72 ||
-        distToBall < 2.1 ||
-        minGkHandDist(gk.id, ball) < GK_HAND_RADIUS + BALL_RADIUS + 0.45
-
-      const shouldSave =
-        urgent ||
-        aligned ||
-        threat.timeToGoal < 1.05 ||
-        distToBall < 3.2
-
-      if (shouldSave && (aligned || urgent || threat.timeToGoal < 1.35)) {
+      const attDist = distance2D(gk.position, closeAtt.position)
+      if (
+        attDist < GK_CLOSE_ATTACKER_DIST * 0.95 &&
+        speed > 1.4 &&
+        !isWeakLowBall(ball, vel) &&
+        speed > GK_CLAIM_BOX_SPEED * 0.82
+      ) {
         startGkSave(gk.id, gk.team, bounds, ball, vel, {
-          aim: { x: aimX, y: threat.interceptY, z: lineZ },
+          force1v1: true,
         })
       }
       continue
     }
 
-    if (inBox && distToBall < 4.5 && speed > 1.0) {
-      const predicted = predictBallAtZ(ball, vel, lineZ)
-      if (predicted) {
-        rt.interceptTarget = clampGkPosition(
-          { x: predicted.x, y: 0, z: lineZ },
-          gk.team,
-          bounds,
-        )
-        const aligned = Math.abs(gk.position.x - predicted.x) < 0.5
-        if (aligned || distToBall < 2.5 || speed > 4) {
-          startGkSave(gk.id, gk.team, bounds, ball, vel, { aim: predicted })
+    const threatForTeam = threatForTeamEarly
+
+    const distToBall = distance2D(gk.position, ball)
+    const easyCatch = threatForTeam ? isEasyCatchShot(threatForTeam, gk) : false
+
+    if (
+      threatForTeam &&
+      threatForTeam.urgency >=
+        (threatForTeam.preShot && !threatForTeam.preShotImminent
+          ? 0.22
+          : threatForTeam.preShot
+            ? 0.12
+            : 0.18) &&
+      threatForTeam.ballSpeed >= (threatForTeam.preShot ? 1.1 : 2.2)
+    ) {
+      const aimX = threatForTeam.interceptX
+      const lateralError = Math.abs(gk.position.x - aimX)
+      const centralShot = isCentralToGk(gk.position.x, aimX)
+
+      let estimatedVel: Vec3 | undefined
+      if (threatForTeam.preShot && poss) {
+        const shooter = playerRegistry.get(poss.playerId)
+        if (shooter) {
+          const storeNow = useGameStore.getState()
+          const aim =
+            storeNow.strikeAim && storeNow.ballPossession?.playerId === shooter.id
+              ? storeNow.strikeAim
+              : null
+          let dirX = Math.sin(shooter.rotation)
+          let dirZ = Math.cos(shooter.rotation)
+          if (aim && Math.hypot(aim.dirX, aim.dirZ) > 0.18) {
+            dirX = aim.dirX
+            dirZ = aim.dirZ
+          }
+          const power =
+            aim && aim.power > 0.12
+              ? aim.power
+              : storeNow.shotChargePower > 0.12
+                ? storeNow.shotChargePower
+                : 0.68
+          estimatedVel = estimateShotVelocity(dirX, dirZ, power)
+        }
+      }
+
+      const previewPlan = evaluateGkSave(gk, ball, vel, bounds, {
+        aim: { x: aimX, y: 0, z: lineZ },
+        estimatedVel,
+        shotDistance: threatForTeam.shotDistance,
+      })
+
+      refreshGkThreatJitter(rt, threatForTeam)
+
+      const lowShot = isLowBallThreat(threatForTeam)
+      const threatDepth = lowShot
+        ? GK_MIN_FROM_LINE + 0.26
+        : centralShot && threatForTeam.timeToGoal < 1.5
+          ? GK_MIN_FROM_LINE + 0.38
+          : threatForTeam.urgency > 0.52
+            ? Math.min(GK_BODY_SAVE_STEP * 0.72, GK_MAX_STEP_FROM_LINE * 1.02)
+            : GK_MAX_STEP_FROM_LINE * 0.78
+
+      rt.interceptTarget = lowShot
+        ? gkLowShotCoverPoint(gk.team, bounds, aimX, threatDepth)
+        : gkThreatPosition(
+            gk.team,
+            bounds,
+            threatForTeam,
+            threatDepth,
+            gk.position.x,
+          )
+
+      const inReach =
+        minGkHandDist(gk.id, ball) < GK_HAND_RADIUS + BALL_RADIUS + 0.35
+
+      const shouldCommit = shouldCommitGkSave(
+        threatForTeam,
+        previewPlan,
+        inReach,
+        lateralError,
+        distToBall,
+        centralShot,
+        easyCatch,
+        rt.commitJitter,
+      )
+
+      if (shouldCommit) {
+        const saveVel = estimatedVel ?? vel
+        if (lowShot) {
+          const cover = gkLowShotCoverPoint(gk.team, bounds, aimX, threatDepth)
+          startGkSave(gk.id, gk.team, bounds, ball, saveVel, {
+            aim: { x: cover.x, y: previewPlan.target.y, z: cover.z },
+            estimatedVel,
+            shotDistance: threatForTeam.shotDistance,
+          })
+        } else {
+          const sweep = gkThreatSweepDepth(
+            threatForTeam,
+            threatDepth,
+            gk.position.x,
+          )
+          const goalZ = getDefensiveGoalZ(gk.team, bounds)
+          const intoField = getAttackSign(gk.team, bounds)
+          startGkSave(gk.id, gk.team, bounds, ball, saveVel, {
+            aim: { x: aimX, y: previewPlan.target.y, z: goalZ + intoField * sweep },
+            estimatedVel,
+            shotDistance: threatForTeam.shotDistance,
+          })
         }
       }
       continue
     }
 
-    rt.interceptTarget = null
+    updateGkInterceptTarget(gk, bounds, ball, vel, rt, threatForTeamEarly)
   }
 }
 
-/** Contato bola ↔ mãos + fallback por proximidade durante defesa */
-export function resolveGkHandContacts() {
+/** Bola solta baixa na área — goleiro domina com os pés (como jogador de linha). */
+export function tryGkFeetClaim(): boolean {
   const store = useGameStore.getState()
-  if (store.phase !== 'playing' || store.ballFrozen || store.ballPossession) return
+  if (!store.fieldBounds || store.ballPossession) return false
 
   const ball = ballRef.current
+  const vel = ballRef.velocity
+  if (!isWeakLowBall(ball, vel)) return false
+
+  let best: PlayerRef | null = null
+  let bestDist = Infinity
 
   for (const gk of playerRegistry.values()) {
     if (gk.role !== 'gk') continue
     const rt = gkRuntimes.get(gk.id)
-    if (!rt || rt.mode !== 'save' || rt.handContactResolved) continue
+    if (rt?.mode === 'save' || rt?.mode === 'hold' || rt?.mode === 'distribute') continue
+    if (!isInPenaltyArea(ball, gk.team, store.fieldBounds)) continue
+    if (!store.canPlayerClaimBall(gk.id)) continue
 
-    let side = testGkHandContact(gk.id, ball)
-
-    if (!side) {
-      const handDist = minGkHandDist(gk.id, ball)
-      const bodyDist = distance2D(gk.position, ball)
-      const reach = GK_HAND_RADIUS + BALL_RADIUS + 0.85
-      if (handDist > reach && bodyDist > reach) continue
-      side = rt.saveSide ?? pickSaveSide(gk.position.x, ball.x, ballRef.velocity.x)
-    }
-
-    rt.handContactResolved = true
-    const kind = rt.saveKind ?? 'parry'
-
-    if (kind === 'catch') {
-      applyGkCatch(gk.id, gk.team)
-    } else {
-      applyGkParry(gk.id, gk.team, side)
-    }
+    const d = distance2D(gk.position, ball)
+    if (d >= CLAIM_DISTANCE || d >= bestDist) continue
+    bestDist = d
+    best = gk
   }
+
+  if (!best) return false
+  return applyGkFeetClaim(best.id, best.team)
+}
+
+/** @deprecated Magnet catch removido — só contato físico via Rapier */
+export function tryGkEasyCatch(): boolean {
+  return false
 }
 
 function tickGkHoldAndRelease() {
@@ -601,47 +1385,133 @@ export function finishGkDistribution(gkId: string) {
   gkRuntimes.set(gkId, rt)
 }
 
-export function tryGoalkeeperBoxClaim(players: PlayerRef[]): PlayerRef | null {
-  const store = useGameStore.getState()
-  if (!store.fieldBounds || store.ballPossession) return null
-
-  const ball = ballRef.current
-  const vel = ballRef.velocity
-  const speed = Math.hypot(vel.x, vel.z)
-  if (speed > GK_CLAIM_BOX_SPEED) return null
-  if (ball.y > GK_REACH_HEIGHT) return null
-
-  let best: PlayerRef | null = null
-  let bestDist = Infinity
-
-  for (const p of players) {
-    if (p.role !== 'gk') continue
-    const rt = gkRuntimes.get(p.id)
-    if (rt?.mode === 'save') continue
-
-    if (!isInPenaltyArea(ball, p.team, store.fieldBounds)) continue
-
-    const handDist = minGkHandDist(p.id, ball)
-    const bodyDist = distance2D(p.position, ball)
-    const d = Math.min(handDist, bodyDist)
-    if (d > 0.95) continue
-
-    if (d < bestDist) {
-      bestDist = d
-      best = p
-    }
-  }
-
-  return best
-}
-
 export function getThreatAwareGkPosition(
   gkPos: Vec3,
-  _threat: ShotThreat,
+  threat: ShotThreat,
   bounds: FieldBounds,
   team: TeamId,
+  ball: Vec3,
 ): { x: number; z: number } {
-  return clampGkPosition(gkPos, team, bounds, GK_MAX_STEP_FROM_LINE)
+  const central = isCentralToGk(gkPos.x, threat.interceptX)
+  const maxDepth =
+    central && threat.timeToGoal < 1.4
+      ? GK_MIN_FROM_LINE + 0.3
+      : threat.urgency > 0.5
+        ? Math.min(GK_BODY_SAVE_STEP * 0.7, GK_MAX_STEP_FROM_LINE)
+        : GK_MAX_STEP_FROM_LINE * 0.8
+  if (threat.defendingTeam === team) {
+    return gkThreatPosition(team, bounds, threat, maxDepth, gkPos.x)
+  }
+  return computeGkCoverPosition(team, bounds, ball, maxDepth)
+}
+
+/**
+ * Posicionamento estilo FIFA/PES: cobre o ângulo da bola ao gol,
+ * avança da linha quando a ameaça está perto e desliza lateralmente.
+ */
+export function computeGkCoverPosition(
+  team: TeamId,
+  bounds: FieldBounds,
+  ball: Vec3,
+  maxDepth = GK_MAX_STEP_FROM_LINE,
+): { x: number; z: number } {
+  const goalZ = getDefensiveGoalZ(team, bounds)
+  const intoField = getAttackSign(team, bounds)
+  const goalX = bounds.center.x
+  const halfW = bounds.goalWidth / 2
+
+  const relX = ball.x - goalX
+  const relZ = (ball.z - goalZ) * intoField
+  const angle = Math.atan2(relX, Math.max(relZ, 0.55))
+
+  const lateralReach = halfW * 0.92
+  const lateralPull = Math.min(lateralReach, Math.abs(relX) * 0.68 + 0.32)
+  const targetX = goalX + Math.sin(angle) * lateralPull
+  const ballCentral = Math.abs(relX) < halfW * 0.3
+  const ballLow = ball.y < GK_FEET_CLAIM_MAX_HEIGHT + 0.5
+
+  const minDepth = GK_MIN_FROM_LINE
+  let depth = minDepth + 0.48
+  if (ballLow) {
+    depth = minDepth + 0.24
+  } else if (relZ < 5 && ballCentral) {
+    depth = minDepth + 0.18
+  } else if (relZ < 8 && ballCentral) {
+    depth = minDepth + 0.28
+  } else if (relZ < 7) {
+    depth = minDepth + 0.68 + (7 - relZ) * 0.09
+  } else if (relZ < 14) {
+    depth = minDepth + 0.72 + (14 - relZ) * 0.04
+  } else if (relZ < 24) {
+    depth = minDepth + 0.52 + (24 - relZ) * 0.014
+  } else if (relZ > 34) {
+    depth = minDepth + 0.42
+  }
+
+  if (isInPenaltyArea(ball, team, bounds) && !ballCentral) {
+    depth = Math.max(depth, minDepth + 0.68 + Math.max(0, 9 - relZ) * 0.065)
+  } else if (relZ < 18 && !ballLow) {
+    depth = Math.max(depth, minDepth + 0.58 + (18 - relZ) * 0.028)
+  }
+
+  depth = Math.min(depth, maxDepth)
+  const targetZ = goalZ + intoField * depth
+  return clampGkPosition({ x: targetX, y: 0, z: targetZ }, team, bounds, maxDepth)
+}
+
+function updateGkInterceptTarget(
+  gk: PlayerRef,
+  bounds: FieldBounds,
+  ball: Vec3,
+  vel: Vec3,
+  rt: GkRuntime,
+  threat: ShotThreat | null,
+) {
+  const lineZ = gkLineZ(gk.team, bounds)
+  const maxDepth =
+    threat && threat.urgency > 0.55
+      ? Math.min(GK_BODY_SAVE_STEP * 0.7, GK_MAX_STEP_FROM_LINE)
+      : GK_MAX_STEP_FROM_LINE * 0.82
+
+  if (threat && threat.defendingTeam === gk.team) {
+    if (isLowBallThreat(threat)) {
+      rt.interceptTarget = gkLowShotCoverPoint(
+        gk.team,
+        bounds,
+        threat.interceptX,
+        maxDepth,
+      )
+    } else {
+      rt.interceptTarget = gkThreatPosition(
+        gk.team,
+        bounds,
+        threat,
+        maxDepth,
+        gk.position.x,
+      )
+    }
+    return
+  }
+
+  const predicted = predictBallAtZ(ball, vel, lineZ)
+  if (predicted && isInPenaltyArea(ball, gk.team, bounds)) {
+    if (predicted.y < GK_MIDDLE_JUMP_MIN_Y) {
+      rt.interceptTarget = gkLowShotCoverPoint(gk.team, bounds, predicted.x, maxDepth)
+      return
+    }
+    const goalZ = getDefensiveGoalZ(gk.team, bounds)
+    const intoField = getAttackSign(gk.team, bounds)
+    const boxSweep = gkMeetBallDepth(predicted.y, 0.55)
+    rt.interceptTarget = clampGkPosition(
+      { x: predicted.x, y: 0, z: goalZ + intoField * boxSweep },
+      gk.team,
+      bounds,
+      maxDepth,
+    )
+    return
+  }
+
+  rt.interceptTarget = computeGkCoverPosition(gk.team, bounds, ball, maxDepth)
 }
 
 export function getGkPositionTarget(
@@ -662,17 +1532,42 @@ export function getGkPositionTarget(
   const lineZ = gkLineZ(team, bounds)
 
   if (threat && threat.defendingTeam === team) {
-    return clampGkPosition({ x: threat.interceptX, y: 0, z: lineZ }, team, bounds)
+    if (isLowBallThreat(threat)) {
+      return gkLowShotCoverPoint(
+        team,
+        bounds,
+        threat.interceptX,
+        GK_MAX_STEP_FROM_LINE * 0.82,
+      )
+    }
+    const gk = playerRegistry.get(gkId)
+    return gkThreatPosition(
+      team,
+      bounds,
+      threat,
+      GK_MAX_STEP_FROM_LINE * 0.82,
+      gk?.position.x,
+    )
   }
 
   if (isInPenaltyArea(ball, team, bounds)) {
     const predicted = predictBallAtZ(ball, vel, lineZ)
     if (predicted) {
-      return clampGkPosition({ x: predicted.x, y: 0, z: lineZ }, team, bounds)
+      if (predicted.y < GK_MIDDLE_JUMP_MIN_Y) {
+        return gkLowShotCoverPoint(team, bounds, predicted.x)
+      }
+      const goalZ = getDefensiveGoalZ(team, bounds)
+      const intoField = getAttackSign(team, bounds)
+      const boxSweep = gkMeetBallDepth(predicted.y, Math.hypot(vel.x, vel.z) / SHOT_SPEED)
+      return clampGkPosition(
+        { x: predicted.x, y: 0, z: goalZ + intoField * boxSweep },
+        team,
+        bounds,
+      )
     }
   }
 
-  return null
+  return computeGkCoverPosition(team, bounds, ball)
 }
 
 export function getGkMoveTarget(

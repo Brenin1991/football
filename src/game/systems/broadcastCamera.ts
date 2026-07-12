@@ -3,13 +3,13 @@ import type { FieldBounds } from '../types'
 import { FIELD_SCALE, PITCH_LIMITS } from './fieldData'
 
 /** Câmera fixa na lateral — só varia um pouco para não invadir arquibancada */
-const CAM_OFFSET = 0.62 * FIELD_SCALE
-const CAM_HEIGHT_WIDE = 3.48 * Math.sqrt(FIELD_SCALE)
-const CAM_HEIGHT_TIGHT = 3.05 * Math.sqrt(FIELD_SCALE)
+const CAM_OFFSET = 4.22 * FIELD_SCALE
+const CAM_HEIGHT_WIDE = 4.48 * Math.sqrt(FIELD_SCALE)
+const CAM_HEIGHT_TIGHT = 6.05 * Math.sqrt(FIELD_SCALE)
 
 /** Zoom forte no lado oposto — só óptico, sem recuar pra arquibancada */
-const FOV_WIDE = 52
-const FOV_TIGHT = 19
+const FOV_WIDE = 35
+const FOV_TIGHT = 12
 
 export type BroadcastCameraTarget = {
   position: THREE.Vector3

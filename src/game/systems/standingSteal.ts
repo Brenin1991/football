@@ -15,6 +15,7 @@ export function tryStandingSteal(stealerId: string): boolean {
   const stealer = playerRegistry.get(stealerId)
   const holder = playerRegistry.get(possession.playerId)
   if (!stealer || !holder || stealer.team === holder.team) return false
+  if (holder.role === 'gk') return false
   if (!store.canPlayerClaimBall(stealerId)) return false
   if (performance.now() - store.possessionSince < STEAL_COOLDOWN_MS) return false
   if (store.isStealImmune(possession.playerId)) return false
@@ -35,9 +36,6 @@ export function tryStandingSteal(stealerId: string): boolean {
   store.setPossession(stealerId, stealer.team)
   if (stealer.team === getUserTeam() && possession.team === getOpponent(getUserTeam())) {
     crowdSfx.notifyHomeSteal()
-  }
-  if (stealer.team === getUserTeam() && stealer.role !== 'gk') {
-    store.setActivePlayer(stealerId)
   }
   return true
 }

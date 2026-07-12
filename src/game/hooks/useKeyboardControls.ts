@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { sfx } from '../systems/sfx'
 import {
   createGamepadEdgeState,
   pollXboxGamepad,
@@ -27,13 +28,17 @@ export type ControlState = {
   moveX: number
   /** Analógico esquerdo — eixo Z (-1..1), para frente = positivo */
   moveZ: number
+  /** Analógico direito — eixo X (-1..1) */
+  skillX: number
+  /** Analógico direito — eixo Z (-1..1), para frente = positivo */
+  skillZ: number
 }
 
 export type PlayerAction = 'pass' | 'kick' | 'slide' | 'cross' | 'throughPass' | 'switchPlayer'
 
 type BooleanControlKey = Exclude<
   keyof ControlState,
-  'moveX' | 'moveZ'
+  'moveX' | 'moveZ' | 'skillX' | 'skillZ'
 >
 
 const DEFAULT: ControlState = {
@@ -52,6 +57,8 @@ const DEFAULT: ControlState = {
   cancelCharge: false,
   moveX: 0,
   moveZ: 0,
+  skillX: 0,
+  skillZ: 0,
 }
 
 export function useKeyboardControls() {
@@ -98,6 +105,7 @@ export function useKeyboardControls() {
       if (e.repeat) return
       const action = map[e.code]
       if (!action) return
+      sfx.unlock()
       if (action === 'sprint') keyboardSprint.current = true
       if (action === 'left') keyboardLeft.current = true
       if (action === 'right') keyboardRight.current = true
@@ -162,12 +170,16 @@ export function useKeyboardControls() {
         cancelCharge: false,
         aimLeft: false,
         aimRight: false,
+        skillX: 0,
+        skillZ: 0,
       }
 
       const hasPad = pollXboxGamepad(gamepadEdge.current, gp)
 
       c.moveX = gp.moveX
       c.moveZ = gp.moveZ
+      c.skillX = gp.skillX
+      c.skillZ = gp.skillZ
       c.sprint = keyboardSprint.current || gp.sprint
 
       c.pass = keyboardPass.current || gp.passHeld

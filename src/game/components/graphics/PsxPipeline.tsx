@@ -19,7 +19,7 @@ function PsxEffectPass() {
 export function PsxPipeline() {
   const { shadow, background, post } = PSX_CLASSIC
   const lightRef = useRef<THREE.DirectionalLight>(null)
-  const exr = useLoader(EXRLoader, '/ambient/sky.exr')
+  const exr = useLoader(EXRLoader, '/ambient/sky4.exr')
   const { gl, scene } = useThree()
 
   useEffect(() => {
@@ -80,9 +80,9 @@ export function PsxPipeline() {
     light.shadow.normalBias = shadow.normalBias
 
     const cam = light.shadow.camera as THREE.OrthographicCamera
-    cam.left = -SHADOW_CAMERA.halfX
-    cam.right = SHADOW_CAMERA.halfX
-    cam.top = SHADOW_CAMERA.halfZ
+    cam.left = -SHADOW_CAMERA.halfX * 2
+    cam.right = SHADOW_CAMERA.halfX * 2
+    cam.top = SHADOW_CAMERA.halfZ * 4
     cam.bottom = -SHADOW_CAMERA.halfZ
     cam.near = SHADOW_CAMERA.near
     cam.far = SHADOW_CAMERA.far
@@ -99,13 +99,13 @@ export function PsxPipeline() {
   return (
     <>
       <color attach="background" args={[background]} />
-      <ambientLight color="#18635a" intensity={0.58} />
+      <ambientLight color="#a2a96b" intensity={0.58} />
       <hemisphereLight args={['#a8c4e0', '#3a5a40', 0.28]} />
       <directionalLight
         ref={lightRef}
         position={[18 * FIELD_SCALE, 28 * FIELD_SCALE, 12 * FIELD_SCALE]}
-        intensity={1.05}
-        color="#fff4e0"
+        intensity={1}
+        color="#fae2b4"
         castShadow={shadow.enabled}
         shadow-mapSize={[shadow.mapSize, shadow.mapSize]}
         shadow-camera-near={SHADOW_CAMERA.near}

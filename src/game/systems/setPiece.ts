@@ -1,5 +1,5 @@
 import { getGoalkeeperId, SHOT_SPEED, WORLD_SCALE } from '../constants'
-import { getUserTeam, useGameStore } from '../store/gameStore'
+import { useGameStore } from '../store/gameStore'
 import type { FieldBounds, FormationSlot, MatchPhase, TeamId, Vec3 } from '../types'
 import { playerRegistry } from './entityRegistry'
 import { applyBallVelocity, ensureBallDynamic, markSetPieceLaunch } from './ballPhysics'
@@ -680,6 +680,38 @@ export function beginSetPiece(
 
 export function executeSetPieceKick(power = 1): boolean {
   const store = useGameStore.getState()
+  const { phase, setPieceTeam, setPieceKickerId, setPiecePosition } = store
+
+  if (
+    !setPieceTeam ||
+    !setPieceKickerId ||
+    !setPiecePosition ||
+    (phase !== 'throw-in' &&
+      phase !== 'corner' &&
+      phase !== 'goal-kick' &&
+      phase !== 'free-kick' &&
+      phase !== 'penalty')
+  ) {
+    return false
+  }
+
+  if (phase === 'throw-in') {
+    useGameStore.setState({
+      setPieceThrowAnim: {
+        kickerId: setPieceKickerId,
+        at: performance.now(),
+        power,
+      },
+      setPieceKickPending: false,
+    })
+    return true
+  }
+
+  return finishSetPieceKickLaunch(power)
+}
+
+function finishSetPieceKickLaunch(power = 1): boolean {
+  const store = useGameStore.getState()
   const { phase, setPieceTeam, setPieceKickerId, setPiecePosition, setPieceAimAngle } =
     store
 
@@ -746,9 +778,6 @@ export function executeSetPieceKick(power = 1): boolean {
         startedAt: performance.now(),
         runnerIds: receivers.runnerIds,
       })
-      if (setPieceTeam === getUserTeam() && primary.role !== 'gk') {
-        store.setActivePlayer(receivers.receiverId)
-      }
     }
   }
 
@@ -758,6 +787,7 @@ export function executeSetPieceKick(power = 1): boolean {
     setPiecePosition: null,
     setPieceAimAngle: 0,
     setPieceKickPending: false,
+    setPieceThrowAnim: null,
     setPieceShootAnim: useShootAnim
       ? { kickerId, at: performance.now() }
       : null,
@@ -766,6 +796,11 @@ export function executeSetPieceKick(power = 1): boolean {
   })
 
   return true
+}
+
+/** Lateral — lança a bola no contato da animação player_throw_in */
+export function executeThrowInLaunch(power = 1): boolean {
+  return finishSetPieceKickLaunch(power)
 }
 
 export function isKickerReadyForSetPiece(

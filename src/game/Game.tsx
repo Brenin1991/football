@@ -1,6 +1,7 @@
 import { Suspense, useEffect } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Ball } from './components/Ball'
+import { ActivePlayerMarker } from './components/ActivePlayerMarker'
 import { Field } from './components/Field'
 import { GameCamera } from './components/GameCamera'
 import { GameInput } from './components/GameInput'
@@ -24,6 +25,7 @@ import { StrikeAimIndicator } from './components/StrikeAimIndicator'
 import { TeamEntranceManager } from './components/TeamEntranceManager'
 import { TeamController } from './components/TeamController'
 import { GoalkeeperController } from './components/GoalkeeperController'
+import { PhysicsDebug } from './components/PhysicsDebug'
 import { PhysicsWorld } from './components/PhysicsWorld'
 import { GameTimeController } from './components/GameTimeController'
 import { FORMATION_442, PLAYERS_PER_TEAM, playerId } from './constants'
@@ -31,7 +33,7 @@ import { PlayerAssetsProvider } from './context/PlayerAssetsContext'
 import { useKeyboardControls } from './hooks/useKeyboardControls'
 import { getUserTeam, useGameStore } from './store/gameStore'
 import { configureGraphicsRenderer, configureGraphicsScene } from './graphics/configureGraphicsRenderer'
-import { AAA_CLASSIC } from './graphics/aaaSettings'
+import { AAA_CLASSIC, getAaaCanvasDpr } from './graphics/aaaSettings'
 import { PSX_CLASSIC } from './psx/psxSettings'
 import { useGraphicsStore } from '../store/graphicsStore'
 import { useMatchSetupStore } from '../store/matchSetupStore'
@@ -124,10 +126,12 @@ function Scene(props: SceneProps) {
         <MarkerCacheUpdater />
         <Suspense fallback={<Loading />}>
           <Field />
+          <PhysicsDebug />
           <PlayerAssetsProvider>
             <Ball />
             <SetPieceAim />
             <StrikeAimIndicator />
+            <ActivePlayerMarker />
             <OffsideReplayLine />
             <Referee />
             <Players {...props} />
@@ -152,7 +156,12 @@ function Scene(props: SceneProps) {
 export function Game({ onExit: _onExit }: { onExit?: () => void }) {
   const keyboard = useKeyboardControls()
   const graphicsMode = useGraphicsStore((s) => s.mode)
+  const aaaResolution = useGraphicsStore((s) => s.aaaResolution)
   const gfx = graphicsMode === 'aaa' ? AAA_CLASSIC : PSX_CLASSIC
+  const canvasDpr: [number, number] =
+    graphicsMode === 'aaa'
+      ? getAaaCanvasDpr(aaaResolution)
+      : [PSX_CLASSIC.renderer.dprMin, PSX_CLASSIC.renderer.dprMax]
   const setUserTeam = useGameStore((s) => s.setUserTeam)
 
   useEffect(() => {
@@ -182,10 +191,10 @@ export function Game({ onExit: _onExit }: { onExit?: () => void }) {
       <GameTimeController />
       <ScreenFade />
       <Canvas
-        key={graphicsMode}
+        key={`${graphicsMode}-${aaaResolution}`}
         shadows
         tabIndex={0}
-        dpr={[gfx.renderer.dprMin, gfx.renderer.dprMax]}
+        dpr={canvasDpr}
         gl={{
           antialias: gfx.renderer.antialias,
           powerPreference: 'high-performance',
@@ -194,6 +203,7 @@ export function Game({ onExit: _onExit }: { onExit?: () => void }) {
           configureGraphicsRenderer(gl, graphicsMode)
           configureGraphicsScene(scene, graphicsMode)
           gl.domElement.focus()
+          sfx.unlock()
         }}
         camera={{
           fov: 44,

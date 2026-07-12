@@ -16,17 +16,24 @@ export function PlayerSelectionLabel({ team, id }: PlayerSelectionLabelProps) {
 
   return (
     <Html
-      position={[0, PLAYER_HEIGHT + 0.06, 0]}
+      position={[0, PLAYER_HEIGHT - 0.1, 0]}
       center
       sprite
-      distanceFactor={11}
       zIndexRange={[40, 0]}
       style={{ pointerEvents: 'none', userSelect: 'none' }}
     >
-      <div
-        className={`psx-player-selection-name${hasYellowCard ? ' psx-player-selection-name--yellow' : ''}`}
-      >
-        {name}
+      <div className="psx-player-selection-wrap">
+        <div
+          className={`psx-player-selection-name${hasYellowCard ? ' psx-player-selection-name--yellow' : ''}`}
+        >
+          {name}
+        </div>
+        <img
+          src="/textures/indicator.png"
+          alt=""
+          className="psx-player-selection-indicator"
+          draggable={false}
+        />
       </div>
     </Html>
   )

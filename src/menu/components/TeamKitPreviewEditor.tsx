@@ -27,7 +27,7 @@ import {
   loadShirtTextureFromDb,
 } from '../../game/psx/shirtTextureApply'
 import { configureGraphicsRenderer, configureGraphicsScene } from '../../game/graphics/configureGraphicsRenderer'
-import { AAA_CLASSIC } from '../../game/graphics/aaaSettings'
+import { AAA_CLASSIC, getAaaCanvasDpr } from '../../game/graphics/aaaSettings'
 import { PSX_CLASSIC } from '../../game/psx/psxSettings'
 import { useGraphicsStore } from '../../store/graphicsStore'
 import { processShirtTextureUpload } from '../../lib/processShirtTexture'
@@ -195,7 +195,12 @@ function SliderRow({
 
 export function TeamShirtTextureEditor({ teamId, kits, refreshKey }: TeamShirtTextureEditorProps) {
   const graphicsMode = useGraphicsStore((s) => s.mode)
+  const aaaResolution = useGraphicsStore((s) => s.aaaResolution)
   const gfx = graphicsMode === 'aaa' ? AAA_CLASSIC : PSX_CLASSIC
+  const canvasDpr: [number, number] =
+    graphicsMode === 'aaa'
+      ? getAaaCanvasDpr(aaaResolution)
+      : [PSX_CLASSIC.renderer.dprMin, PSX_CLASSIC.renderer.dprMax]
   const [kitNumber, setKitNumber] = useState<1 | 2>(1)
   const [zoom, setZoom] = useState<'torso' | 'full'>('torso')
   const [frame, setFrame] = useState<PlayerPreviewFrame | null>(null)
@@ -369,10 +374,10 @@ export function TeamShirtTextureEditor({ teamId, kits, refreshKey }: TeamShirtTe
           </button>
         </div>
         <Canvas
-          key={graphicsMode}
+          key={`${graphicsMode}-${aaaResolution}`}
           className="kit-preview-editor__canvas"
           shadows={graphicsMode === 'aaa'}
-          dpr={[gfx.renderer.dprMin, gfx.renderer.dprMax]}
+          dpr={canvasDpr}
           gl={{ antialias: gfx.renderer.antialias }}
           camera={{ position: [0, 0.08, 0.75], fov: 38, near: 0.05, far: 20 }}
           onCreated={({ gl, scene }) => {

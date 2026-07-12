@@ -191,6 +191,8 @@ export function findPassTargetInFacingDirection(
     maxLateralRatio?: number
     /** Filtra alvos em impedimento */
     onsideOnly?: { team: TeamId; bounds: FieldBounds; ballZ: number }
+    /** Direção de mira explícita (stick/WASD) em vez da rotação atual do corpo */
+    facingDir?: { x: number; z: number }
   },
 ): PlayerRef | null {
   const {
@@ -199,10 +201,12 @@ export function findPassTargetInFacingDirection(
     minDot = 0.82,
     maxLateralRatio = 0.38,
     onsideOnly,
+    facingDir,
   } = options ?? {}
 
-  const fx = Math.sin(from.rotation)
-  const fz = Math.cos(from.rotation)
+  const dirLen = facingDir ? Math.hypot(facingDir.x, facingDir.z) : 0
+  const fx = dirLen > 0.001 ? facingDir!.x / dirLen : Math.sin(from.rotation)
+  const fz = dirLen > 0.001 ? facingDir!.z / dirLen : Math.cos(from.rotation)
 
   let best: PlayerRef | null = null
   let bestDist = Infinity
@@ -233,6 +237,63 @@ export function findPassTargetInFacingDirection(
 
     if (dist < bestDist) {
       bestDist = dist
+      best = p
+    }
+  }
+
+  return best
+}
+
+/**
+ * Passe assistido (estilo FIFA): escolhe o melhor companheiro na direção do
+ * input, com cone largo — não exige o corpo estar virado pro alvo.
+ */
+export function findAssistedPassTarget(
+  from: PlayerRef,
+  players: PlayerRef[],
+  aimDir: { x: number; z: number },
+  options?: {
+    minDist?: number
+    maxDist?: number
+    onsideOnly?: { team: TeamId; bounds: FieldBounds; ballZ: number }
+  },
+): PlayerRef | null {
+  const { minDist = 2, maxDist = 28, onsideOnly } = options ?? {}
+
+  const dirLen = Math.hypot(aimDir.x, aimDir.z)
+  const fx = dirLen > 0.001 ? aimDir.x / dirLen : Math.sin(from.rotation)
+  const fz = dirLen > 0.001 ? aimDir.z / dirLen : Math.cos(from.rotation)
+
+  let best: PlayerRef | null = null
+  let bestScore = -Infinity
+
+  for (const p of players) {
+    if (p.team !== from.team || p.id === from.id || p.role === 'gk') continue
+
+    const dx = p.position.x - from.position.x
+    const dz = p.position.z - from.position.z
+    const dist = Math.hypot(dx, dz)
+    if (dist < minDist || dist > maxDist) continue
+
+    const forward = dx * fx + dz * fz
+    if (forward < 0.35) continue
+
+    const dot = forward / dist
+    if (dot < 0.12) continue
+
+    if (
+      onsideOnly &&
+      isOffsideAtZ(onsideOnly.team, p.position.z, onsideOnly.bounds, onsideOnly.ballZ)
+    ) {
+      continue
+    }
+
+    const alignScore = dot
+    const distScore = 1 / (1 + dist * 0.1)
+    const score = alignScore * 0.7 + distScore * 0.3
+
+    if (score > bestScore) {
+      bestScore = score
       best = p
     }
   }
@@ -294,6 +355,7 @@ export function canStealFromHolder(
   holder: PlayerRef,
   foot: { x: number; z: number },
 ): boolean {
+  if (holder.role === 'gk') return false
   const toFoot = distance2D(stealer.position, { x: foot.x, y: 0, z: foot.z })
   const toBody = distance2D(stealer.position, holder.position)
   return toFoot < STEAL_DISTANCE || toBody < STEAL_DISTANCE * 0.92

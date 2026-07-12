@@ -33,7 +33,7 @@ export function applyRefereeMaterials(model: THREE.Group) {
   else applyRefereeMaterialsPsx(model)
 }
 
-export function createBallMaterial(): THREE.MeshStandardMaterial {
-  if (getGraphicsMode() === 'aaa') return createBallMaterialAaa()
-  return createBallMaterialPsx()
+export function createBallMaterial(texture?: THREE.Texture | null): THREE.MeshStandardMaterial {
+  if (getGraphicsMode() === 'aaa') return createBallMaterialAaa(texture)
+  return createBallMaterialPsx(texture)
 }

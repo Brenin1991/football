@@ -28,8 +28,11 @@ import { crowdSfx } from '../systems/crowdSfx'
 import { narrationSfx } from '../systems/narrationSfx'
 import { isFieldParadePhase } from '../systems/matchPhases'
 import { replaySystem } from '../systems/replaySystem'
+import { isPlayerKnockedDown } from '../systems/tackle'
 import { isUserPauseActive } from '../systems/gameTime'
 import { sfx } from '../systems/sfx'
+import { syncActivePlayerOnLooseBall } from '../systems/playerSwitch'
+import { findNearestPlayerToBall } from '../systems/possession'
 
 function claimDistanceToBall(playerId: string, ballPos: { x: number; z: number }) {
   const p = playerRegistry.get(playerId)
@@ -70,12 +73,18 @@ export function TeamController() {
         return
       }
 
-      if (possession.team === getUserTeam() && holder.role !== 'gk') {
+      if (
+        possession.team === getUserTeam() &&
+        holder.role !== 'gk' &&
+        holder.id !== store.activePlayerId
+      ) {
         store.setActivePlayer(possession.playerId)
       }
 
       return
     }
+
+    syncActivePlayerOnLooseBall()
 
     let passIntent = store.passIntent
     if (
@@ -102,6 +111,8 @@ export function TeamController() {
     }
 
     if (passIntent) {
+      if (!store.canDistanceClaimBall()) return
+
       const receiverIds = [
         passIntent.receiverId,
         ...(passIntent.runnerIds ?? []).filter((rid) => rid !== passIntent.receiverId),
@@ -115,7 +126,8 @@ export function TeamController() {
 
       for (const rid of receiverIds) {
         const receiver = playerRegistry.get(rid)
-        if (!receiver || !store.canPlayerClaimBall(receiver.id)) continue
+        if (!receiver || isPlayerKnockedDown(receiver.id)) continue
+        if (!store.canPlayerClaimBall(receiver.id)) continue
         const toBall = claimDistanceToBall(receiver.id, ballPos)
 
         if (
@@ -139,13 +151,12 @@ export function TeamController() {
             return
           }
           store.setPossession(receiver.id, receiver.team)
-          if (receiver.team === getUserTeam() && receiver.role !== 'gk') {
-            store.setActivePlayer(receiver.id)
-          }
           return
         }
       }
     }
+
+    if (!store.canDistanceClaimBall()) return
 
     const maxClaimSpeed = passIntent
       ? passIntent.passType === 'cross'
@@ -156,12 +167,19 @@ export function TeamController() {
       : LOOSE_BALL_MAX_SPEED
     if (ballSpeed > maxClaimSpeed) return
 
-    const contestant = findClosestContestant(
-      players,
-      ballPos,
-      passIntent?.receiverId,
-    )
-    if (contestant && store.canPlayerClaimBall(contestant.id)) {
+    const contestant =
+      !passIntent && getUserTeam()
+        ? findNearestPlayerToBall(
+            players.filter(
+              (p) =>
+                p.team === getUserTeam() &&
+                p.role !== 'gk' &&
+                !store.sentOffPlayers.includes(p.id),
+            ),
+            ballPos,
+          )
+        : findClosestContestant(players, ballPos, passIntent?.receiverId)
+    if (contestant && !isPlayerKnockedDown(contestant.id) && store.canPlayerClaimBall(contestant.id)) {
       const toBall = claimDistanceToBall(contestant.id, ballPos)
       if (toBall >= CLAIM_DISTANCE) return
 
@@ -172,7 +190,7 @@ export function TeamController() {
         return
       }
 
-      if (!passIntent) {
+      if (!passIntent && contestant.team !== getUserTeam()) {
         const chaserId = resolveLooseBallChaser(contestant.team, ballPos)
         if (chaserId && chaserId !== contestant.id) return
       }
@@ -186,9 +204,6 @@ export function TeamController() {
         if (contestant.team === getUserTeam() && store.lastTouchTeam === getOpponent(getUserTeam())) {
           crowdSfx.notifyHomeSteal()
         }
-      }
-      if (contestant.team === getUserTeam() && contestant.role !== 'gk') {
-        store.setActivePlayer(contestant.id)
       }
     }
   })

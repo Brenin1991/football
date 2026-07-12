@@ -14,7 +14,11 @@ export function RefereeManager() {
 
     if (store.phase !== prevPhaseRef.current) {
       if (prevPhaseRef.current != null) {
-        whistleForPhase(store.phase)
+        const skipGoalRepeat =
+          store.phase === 'goal' && prevPhaseRef.current === 'goal-celebration'
+        if (!skipGoalRepeat) {
+          whistleForPhase(store.phase)
+        }
       }
       prevPhaseRef.current = store.phase
     }

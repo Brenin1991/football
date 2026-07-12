@@ -1,6 +1,7 @@
 import { useFrame } from '@react-three/fiber'
 import { useRef } from 'react'
 import {
+  BALL_OUT_SETTLE_SEC,
   GOAL_CELEBRATION_TIME,
   REAL_SECONDS_PER_GAME_MINUTE,
 } from '../constants'
@@ -24,6 +25,7 @@ import { getUserTeam } from '../store/gameStore'
 import { getAiSetPieceKickDelay } from './GameInput'
 import { crowdSfx } from '../systems/crowdSfx'
 import { narrationSfx } from '../systems/narrationSfx'
+import { sfx } from '../systems/sfx'
 import { getSimDelta } from '../systems/gameTime'
 import { isReplaySequenceRunning, replaySystem } from '../systems/replaySystem'
 
@@ -39,6 +41,12 @@ export function MatchManager() {
   const graceRef = useRef(KICKOFF_GRACE)
   const setPieceTimerRef = useRef(0)
   const transitionBusyRef = useRef(false)
+  const pendingOobRef = useRef<{
+    crossBall: { x: number; y: number; z: number }
+    type: 'sideline' | 'goal-line'
+    side: 'left' | 'right' | 'home' | 'away'
+    timer: number
+  } | null>(null)
 
   useFrame((_, delta) => {
     const store = useGameStore.getState()
@@ -61,6 +69,10 @@ export function MatchManager() {
       graceRef.current = Math.max(0, graceRef.current - simDelta)
     }
 
+    if (store.phase !== 'playing') {
+      pendingOobRef.current = null
+    }
+
     if (store.phase === 'playing' && !store.ballFrozen && !isScreenTransitionActive() && !isReplaySequenceRunning()) {
       const ball = ballRef.current
       const canCheckOob =
@@ -69,8 +81,6 @@ export function MatchManager() {
       if (canCheckOob) {
         const goalTeam = isBallInGoal(ball, goalZones)
         if (goalTeam) {
-          ensureBallKinematic()
-          setBallPosition({ x: ball.x, y: ballRestY(), z: ball.z })
           replaySystem.requestGoalSequence(goalTeam, () => {
             useGameStore.getState().scoreGoal(goalTeam)
             timerRef.current = 0
@@ -90,27 +100,47 @@ export function MatchManager() {
         }
 
         if (out.out && out.type && out.side && !transitionBusyRef.current) {
-          if (store.passIntent) {
-            narrationSfx.playPassError()
+          if (!pendingOobRef.current) {
+            if (store.passIntent) {
+              narrationSfx.playPassError()
+            }
+            pendingOobRef.current = {
+              crossBall: { x: ball.x, y: ballRestY(), z: ball.z },
+              type: out.type,
+              side: out.side,
+              timer: 0,
+            }
           }
 
+          pendingOobRef.current.timer += simDelta
+          if (pendingOobRef.current.timer < BALL_OUT_SETTLE_SEC) {
+            return
+          }
+
+          const crossBall = pendingOobRef.current.crossBall
+          const oobType = pendingOobRef.current.type
+          const oobSide = pendingOobRef.current.side
+          pendingOobRef.current = null
+
+          sfx.playWhistle()
+
           const { phase: setPhase, team } = determineSetPieceTeam(
-            out.type,
+            oobType,
             lastTouchTeam,
-            out.side,
+            oobSide,
           )
 
-          let position = { x: ball.x, y: ballRestY(), z: ball.z }
+          let position = { x: crossBall.x, y: ballRestY(), z: crossBall.z }
           let message = ''
 
           if (setPhase === 'throw-in') {
-            position = resolveThrowIn(ball, fieldBounds)
+            position = resolveThrowIn(crossBall, fieldBounds)
             message =
               team === getUserTeam()
                 ? `Lateral — ← → mirar · Espaço chutar`
                 : `Lateral — Visitante`
           } else if (setPhase === 'corner') {
-            position = resolveCorner(ball, fieldBounds, team)
+            position = resolveCorner(crossBall, fieldBounds, team)
             message =
               team === getUserTeam()
                 ? `Escanteio — ← → mirar · Espaço chutar`
@@ -150,9 +180,12 @@ export function MatchManager() {
             return
           }
           startSetPiece()
-        } else if (fellPastPitch && !out.out) {
-          ensureBallKinematic()
-          setBallPosition({ x: ball.x, y: ballRestY(), z: ball.z })
+        } else {
+          pendingOobRef.current = null
+          if (fellPastPitch && !out.out) {
+            ensureBallKinematic()
+            setBallPosition({ x: ball.x, y: ballRestY(), z: ball.z })
+          }
         }
       }
     }

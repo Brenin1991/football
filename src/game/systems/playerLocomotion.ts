@@ -3,17 +3,17 @@ import { rotateTowardAngle } from './rules'
 import type { PlayerLocoAnim } from '../types'
 
 /** Aceleração ao ir para velocidade alvo (1/s) */
-export const PLAYER_MOVE_ACCEL = 15
+export const PLAYER_MOVE_ACCEL = 18
 /** Desaceleração — menor = mais inércia ao parar */
-export const PLAYER_MOVE_DECEL = 9
+export const PLAYER_MOVE_DECEL = 5.5
 /** Suavização da direção do input (jogador humano) */
-export const PLAYER_DIR_SMOOTH_CONTROLLED = 10
+export const PLAYER_DIR_SMOOTH_CONTROLLED = 12
 /** Suavização da direção (IA em posicionamento) */
-export const PLAYER_DIR_SMOOTH_AI = 6.5
+export const PLAYER_DIR_SMOOTH_AI = 7.5
 /** Suavização da direção (IA em corrida direta — passe, marcação) */
-export const PLAYER_DIR_SMOOTH_AI_DIRECT = 9
+export const PLAYER_DIR_SMOOTH_AI_DIRECT = 10
 /** Giro para olhar bola/jogo */
-export const PLAYER_BALL_FOCUS_TURN = 9.5
+export const PLAYER_BALL_FOCUS_TURN = 7.5
 
 export function smoothDirection2D(
   current: { x: number; z: number },
@@ -84,7 +84,10 @@ export function facingFromMovement(
   currentFacing: number,
 ): number {
   const moveSpeed = Math.hypot(velX, velZ)
-  if (moveSpeed > 0.22) {
+  // Banda mais alta (0.35) para evitar o "flip" de fonte de facing quando a
+  // velocidade oscila em torno do limiar — trocar entre direção-de-velocidade
+  // e direção-de-intenção frame a frame era uma das causas do giro nervoso.
+  if (moveSpeed > 0.35) {
     return Math.atan2(velX, velZ)
   }
   const intentLen = Math.hypot(intentX, intentZ)
@@ -107,12 +110,21 @@ export function applyPlayerFacing(
   return rotateTowardAngle(currentFacing, targetFacing, turnSpeed, delta)
 }
 
-/** Olhar para a bola / jogo */
+/**
+ * Olhar para a bola / jogo. Com deadzone: quando o jogador está praticamente
+ * em cima da bola (vetor quase nulo), o atan2 fica instável e faz o corpo
+ * "rodar" no lugar — nesse caso mantemos a orientação atual.
+ */
 export function getBallFocusFacing(
   pos: { x: number; z: number },
   ball: { x: number; z: number },
+  currentFacing = 0,
+  minDist = 0.45,
 ): number {
-  return Math.atan2(ball.x - pos.x, ball.z - pos.z)
+  const dx = ball.x - pos.x
+  const dz = ball.z - pos.z
+  if (Math.hypot(dx, dz) < minDist) return currentFacing
+  return Math.atan2(dx, dz)
 }
 
 /** Movimento world → eixos locais do corpo (frente / direita) */

@@ -1,14 +1,80 @@
-import { Environment } from '@react-three/drei'
-import { Bloom, BrightnessContrast, EffectComposer, HueSaturation } from '@react-three/postprocessing'
-import { useLayoutEffect, useRef } from 'react'
+import { CubeCamera } from '@react-three/drei'
+import { useLoader, useThree } from '@react-three/fiber'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { AAA_CLASSIC } from '../../graphics/aaaSettings'
+import { AaaPostProcessing } from './AaaPostProcessing'
 import { FIELD_SCALE, SHADOW_CAMERA } from '../../systems/fieldData'
+// @ts-ignore: three example loader types not present
+import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader'
 
-/** Iluminação PBR + IBL + cor viva */
+function SetReflection({ texture }: { texture: THREE.Texture | null }) {
+  const { scene } = useThree()
+  const { environment, reflectionProbe } = AAA_CLASSIC
+
+  useEffect(() => {
+    if (!texture || !reflectionProbe.enabled) return
+    scene.environment = texture
+    scene.environmentIntensity = environment.intensity
+  }, [texture, scene, environment.intensity, reflectionProbe.enabled])
+
+  return null
+}
+
+/** Iluminação PBR + sky EXR + reflection probe + pós-processamento */
 export function AaaPipeline() {
-  const { shadow, background, lighting, post, environment } = AAA_CLASSIC
+  const { shadow, background, lighting, environment, reflectionProbe } = AAA_CLASSIC
   const sunRef = useRef<THREE.DirectionalLight>(null)
+  const exr = useLoader(EXRLoader, '/ambient/sky4.exr')
+  const { gl, scene } = useThree()
+  const [probeCenter, setProbeCenter] = useState<[number, number, number]>([0, reflectionProbe.height, 0])
+
+  useEffect(() => {
+    if (!exr || !gl || !environment.enabled) return
+
+    exr.mapping = THREE.EquirectangularReflectionMapping
+    scene.background = exr
+
+    const pmrem = new THREE.PMREMGenerator(gl)
+    pmrem.compileEquirectangularShader()
+    const envRT = pmrem.fromEquirectangular(exr)
+    scene.environment = envRT.texture
+    scene.environmentIntensity = environment.intensity
+    pmrem.dispose()
+
+    return () => {
+      envRT.dispose()
+      scene.environment = null
+      scene.background = null
+    }
+  }, [exr, gl, scene, environment.enabled, environment.intensity])
+
+  useEffect(() => {
+    const fieldArea = scene.getObjectByName('field_area')
+    if (fieldArea) {
+      const pos = new THREE.Vector3()
+      fieldArea.getWorldPosition(pos)
+      setProbeCenter([pos.x, pos.y + reflectionProbe.height, pos.z])
+    } else {
+      setProbeCenter([0, reflectionProbe.height, 0])
+    }
+  }, [scene, reflectionProbe.height])
+
+  useEffect(() => {
+    const light = sunRef.current
+    if (!light) return
+
+    const fieldArea = scene.getObjectByName('field_area')
+    if (fieldArea) {
+      const pos = new THREE.Vector3()
+      fieldArea.getWorldPosition(pos)
+      light.target.position.copy(pos)
+    } else {
+      light.target.position.set(0, 0, 0)
+    }
+    scene.add(light.target)
+    light.target.updateMatrixWorld()
+  }, [scene])
 
   useLayoutEffect(() => {
     const light = sunRef.current
@@ -40,7 +106,6 @@ export function AaaPipeline() {
   return (
     <>
       <color attach="background" args={[background]} />
-      <Environment preset={environment.preset} environmentIntensity={environment.intensity} />
 
       <ambientLight intensity={lighting.ambient} />
       <hemisphereLight
@@ -68,16 +133,18 @@ export function AaaPipeline() {
         color={lighting.fillColor}
       />
 
-      <EffectComposer multisampling={post.multisampling}>
-        <HueSaturation saturation={post.saturation} />
-        <BrightnessContrast brightness={post.brightness} contrast={post.contrast} />
-        <Bloom
-          intensity={post.bloomIntensity}
-          luminanceThreshold={post.bloomThreshold}
-          luminanceSmoothing={post.bloomSmoothing}
-          mipmapBlur
-        />
-      </EffectComposer>
+      {reflectionProbe.enabled && (
+        <CubeCamera
+          key={`${probeCenter[0].toFixed(2)}:${probeCenter[1].toFixed(2)}:${probeCenter[2].toFixed(2)}`}
+          frames={reflectionProbe.frames}
+          resolution={reflectionProbe.resolution}
+          position={probeCenter}
+        >
+          {(texture) => <SetReflection texture={texture} />}
+        </CubeCamera>
+      )}
+
+      <AaaPostProcessing />
     </>
   )
 }

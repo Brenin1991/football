@@ -340,6 +340,8 @@ export function callFoul(call: FoulCall) {
   if (performance.now() - lastFoulAt < FOUL_COOLDOWN_MS) return
   lastFoulAt = performance.now()
 
+  sfx.playWhistle()
+
   let cardShown: CardColor | null = call.card
   if (call.card) {
     cardShown = issueCard(call.foulerId, call.card)
@@ -361,7 +363,6 @@ export function callFoul(call: FoulCall) {
       : `${call.message}${cardMsg} — cobrança visitante`
 
   const finishFoul = () => {
-    sfx.playWhistle()
     if (cardShown === 'red') {
       narrationSfx.playRedCard()
     } else if (cardShown === 'yellow') {
@@ -465,8 +466,9 @@ export function callOffside(flag: OffsidePassFlag, _bounds: FieldBounds) {
   refereeState.showingCard = null
   refereeState.cardTimer = 0.8
 
+  sfx.playWhistle()
+
   const finishOffside = () => {
-    sfx.playWhistle()
     narrationSfx.playPassError()
     ensureBallKinematic()
     setBallPosition({ x: ballRef.current.x, y: ballRestY(), z: ballRef.current.z })
@@ -524,17 +526,19 @@ export function updateRefereeFollow(delta: number, bounds: FieldBounds) {
 }
 
 export function whistleForPhase(phase: string) {
+  if (phase === 'goal' || phase === 'goal-celebration') {
+    sfx.playWhistleGoal()
+    return
+  }
+  if (phase === 'kickoff') {
+    sfx.playWhistleStart()
+    return
+  }
   if (
-    phase === 'goal' ||
     phase === 'half-time' ||
     phase === 'half-time-exit' ||
     phase === 'full-time' ||
-    phase === 'full-time-exit' ||
-    phase === 'kickoff' ||
-    phase === 'throw-in' ||
-    phase === 'corner' ||
-    phase === 'goal-kick' ||
-    phase === 'penalty'
+    phase === 'full-time-exit'
   ) {
     sfx.playWhistle()
   }

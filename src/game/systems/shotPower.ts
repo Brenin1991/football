@@ -1,7 +1,7 @@
 import { SHOT_SPEED } from '../constants'
 
-/** Tempo de preparação até o chute/passe/cruzamento ser executado */
-export const SHOT_POWER_CHARGE_DURATION_SEC = 0.72
+/** Tempo para encher a barra de força do chute (estilo FIFA — segura para dosar) */
+export const SHOT_POWER_CHARGE_DURATION_SEC = 1.0
 export const PASS_POWER_CHARGE_DURATION_SEC = 0.42
 
 /** Velocidade de preenchimento da barra (0→1 por segundo) */
@@ -9,6 +9,30 @@ export const POWER_FILL_SPEED = 1 / SHOT_POWER_CHARGE_DURATION_SEC
 
 /** Força mínima ao soltar rápido (toque curto) */
 export const POWER_MIN_ON_RELEASE = 0.22
+
+/**
+ * Passe rápido: apertar e soltar o botão dentro dessa janela conta como um
+ * "toque" — sai um passe normal imediato, sem depender do quanto carregou.
+ * Segurar além disso entra no modo de mira/carga (força variável).
+ */
+export const QUICK_PASS_TAP_MS = 180
+/** Força padrão de um passe normal (toque rápido / antecipação) */
+export const QUICK_PASS_POWER = 0.82
+/** Impulso extra no passe rápido sem mira — compensa arrasto da bola no gramado */
+export const QUICK_PASS_SPEED_MUL = 1.14
+
+/** Chute rápido: toque curto no botão de chute */
+export const QUICK_SHOT_TAP_MS = 200
+export const QUICK_SHOT_POWER = 0.58
+
+/**
+ * Antecipação de passe (first-time, estilo FIFA): quanto tempo um passe
+ * pré-agendado antes de receber a bola continua válido para sair no instante
+ * da recepção.
+ */
+export const ACTION_BUFFER_WINDOW_MS = 1400
+/** @deprecated use ACTION_BUFFER_WINDOW_MS */
+export const PASS_BUFFER_WINDOW_MS = ACTION_BUFFER_WINDOW_MS
 
 export const SHOT_SPEED_MIN_MUL = 0.32
 export const SHOT_SPEED_MAX_MUL = 1.18
@@ -70,13 +94,18 @@ export function shotLoftFromPower(power: number): number {
   const t = clamp(finalizePower(power), 0, 1)
   if (t < 0.22) return t * 0.07
   const u = (t - 0.22) / 0.78
-  return 0.03 + Math.pow(u, 1.25) * 1.05
+  return 0.03 + Math.pow(u, 1.25) * 0.82
 }
 
-export function passSpeedFromPower(baseSpeed: number, power: number): number {
+export function passSpeedFromPower(
+  baseSpeed: number,
+  power: number,
+  quickPass = false,
+): number {
   const t = clamp(finalizePower(power), 0, 1)
   const mul = PASS_SPEED_MIN_MUL + t * (PASS_SPEED_MAX_MUL - PASS_SPEED_MIN_MUL)
-  return baseSpeed * mul
+  const quickMul = quickPass ? QUICK_PASS_SPEED_MUL : 1
+  return baseSpeed * mul * quickMul
 }
 
 export function throughSpeedFromPower(baseSpeed: number, power: number): number {

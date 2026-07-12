@@ -1,7 +1,6 @@
 import { useGLTF } from '@react-three/drei'
 import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import type { AnimationClip, Group } from 'three'
-import { sanitizePlayerAnimationClips } from '../systems/animationClips'
 
 type PlayerAssets = {
   scene: Group
@@ -18,7 +17,7 @@ export function PlayerAssetsProvider({ children }: { children: ReactNode }) {
     const root = scene as Group
     return {
       scene: root,
-      animations: sanitizePlayerAnimationClips(animations as AnimationClip[]),
+      animations: animations as AnimationClip[],
     }
   }, [scene, animations])
   return (

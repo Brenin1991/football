@@ -9,7 +9,9 @@ export interface PlayerRef {
   velocity: Vec3
   isControlled: boolean
   isSprinting?: boolean
+  dribbleTouchSeverity?: number
   anim: PlayerAnim
+  animTime: number
   dribbleBallOffset?: { x: number; z: number }
 }
 

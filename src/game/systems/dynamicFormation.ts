@@ -1,9 +1,10 @@
 import type { BallPossession, PassIntent } from '../store/gameStore'
 import { useGameStore } from '../store/gameStore'
 import type { FieldBounds, FormationSlot, PlayerRole, TeamId, Vec3 } from '../types'
-import { MARKER_SWITCH_MARGIN, STEAL_DISTANCE } from '../constants'
+import { MARKER_SWITCH_MARGIN, STEAL_DISTANCE, WORLD_SCALE } from '../constants'
 import { ballRef, playerRegistry } from './entityRegistry'
 import { getBallAtFeet, scorePassInterceptPosition } from './possession'
+import { isGkBallProtected } from './goalkeeper'
 import { distance2D } from './rules'
 import { GOAL_MOUTH_BUFFER, clampForwardFromGoalMouth, getOffsideLineZ } from './offside'
 import {
@@ -527,6 +528,7 @@ export function getMarkerTarget(
 }
 
 const activeMarker: Record<TeamId, string | null> = { home: null, away: null }
+const markerCommitUntil: Record<TeamId, number> = { home: 0, away: 0 }
 let lastPossessionKey = ''
 let markerCacheFrame = -1
 const markerByTeam: Record<TeamId, string | null> = { home: null, away: null }
@@ -534,6 +536,120 @@ const coverPresserByTeam: Record<TeamId, string | null> = { home: null, away: nu
 const passLaneBlockerByTeam: Record<TeamId, string | null> = { home: null, away: null }
 const passInterceptorByTeam: Record<TeamId, string | null> = { home: null, away: null }
 const passInterceptorSecondaryByTeam: Record<TeamId, string | null> = { home: null, away: null }
+
+// --- Marcação individual (man-marking) -------------------------------------
+// defenderId -> opponentId. Cada time defensor cola seus zagueiros/meias nos
+// atacantes mais perigosos, goal-side, enquanto o marcador da bola pressiona.
+const manMarkByTeam: Record<TeamId, Map<string, string>> = {
+  home: new Map(),
+  away: new Map(),
+}
+/** Tempo mínimo que uma marcação individual persiste antes de reavaliar. */
+const MAN_MARK_STICK = 2.4 * WORLD_SCALE
+/** Só marca adversários dentro deste alcance do defensor. */
+const MAN_MARK_MAX_DIST = 17 * WORLD_SCALE
+/** Deslocamento goal-side (fica entre o marcado e o próprio gol). */
+const MAN_MARK_GOALSIDE = 1.15 * WORLD_SCALE
+
+function resolveManMarking(
+  team: TeamId,
+  possession: BallPossession | null,
+): void {
+  const assignments = manMarkByTeam[team]
+  const store = useGameStore.getState()
+
+  // Só marca individualmente quando o adversário controla a bola (construção).
+  const defending = possession != null && possession.team !== team
+  if (
+    !defending ||
+    store.ballFrozen ||
+    store.phase !== 'playing'
+  ) {
+    assignments.clear()
+    return
+  }
+
+  const carrierId = possession!.playerId
+  const primary = markerByTeam[team]
+  const cover = coverPresserByTeam[team]
+
+  // Defensores elegíveis: zagueiros e meias que não estão pressionando a bola.
+  const defenders = [...playerRegistry.values()].filter(
+    (p) =>
+      p.team === team &&
+      (p.role === 'def' || p.role === 'mid') &&
+      p.id !== primary &&
+      p.id !== cover,
+  )
+
+  // Alvos: adversários de linha, menos o goleiro e o portador (esse é do
+  // marcador da bola).
+  const targets = [...playerRegistry.values()].filter(
+    (p) => p.team !== team && p.role !== 'gk' && p.id !== carrierId,
+  )
+
+  if (defenders.length === 0 || targets.length === 0) {
+    assignments.clear()
+    return
+  }
+
+  // Custo por par (defensor, alvo) com "aderência": pares já existentes ganham
+  // desconto pra não ficar trocando de marcado a cada frame (evita indecisão).
+  type Pair = { d: string; o: string; cost: number; raw: number }
+  const pairs: Pair[] = []
+  for (const d of defenders) {
+    const prev = assignments.get(d.id)
+    for (const o of targets) {
+      const raw = distance2D(d.position, o.position)
+      if (raw > MAN_MARK_MAX_DIST) continue
+      const cost = prev === o.id ? raw - MAN_MARK_STICK : raw
+      pairs.push({ d: d.id, o: o.id, cost, raw })
+    }
+  }
+  pairs.sort((a, b) => a.cost - b.cost)
+
+  const next = new Map<string, string>()
+  const usedD = new Set<string>()
+  const usedO = new Set<string>()
+  for (const pair of pairs) {
+    if (usedD.has(pair.d) || usedO.has(pair.o)) continue
+    next.set(pair.d, pair.o)
+    usedD.add(pair.d)
+    usedO.add(pair.o)
+  }
+
+  assignments.clear()
+  for (const [d, o] of next) assignments.set(d, o)
+}
+
+export function getManMarkOpponentId(team: TeamId, playerId: string): string | null {
+  return manMarkByTeam[team].get(playerId) ?? null
+}
+
+/** Posição de marcação: goal-side do adversário, levemente puxada pra bola. */
+export function getManMarkTarget(
+  playerId: string,
+  team: TeamId,
+  bounds: FieldBounds,
+  ball: Vec3,
+): { x: number; z: number } | null {
+  const oppId = manMarkByTeam[team].get(playerId)
+  if (!oppId) return null
+  const opp = playerRegistry.get(oppId)
+  if (!opp) return null
+
+  const attackSign = getAttackSign(team, bounds)
+  // Goal-side = entre o adversário e o gol que defendemos (sentido -attackSign).
+  const z = opp.position.z - attackSign * MAN_MARK_GOALSIDE
+  // Puxa um pouco pro lado da bola pra cortar a linha de passe.
+  const ballSide = ball.x >= opp.position.x ? 1 : -1
+  const x = clamp(
+    opp.position.x + ballSide * 0.35 * WORLD_SCALE,
+    bounds.minX + 0.8,
+    bounds.maxX - 0.8,
+  )
+  return { x, z }
+}
 
 type ForwardRunState = {
   runnerId: string | null
@@ -701,6 +817,11 @@ export function resolveTeamMarker(
     if (!store.passIntent && distance2D(ball, store.setPieceGuardPos) < 5) return null
   }
 
+  if (isGkBallProtected(possession)) {
+    activeMarker[team] = null
+    return null
+  }
+
   const key = possessionKey(possession)
   const possessionChanged = key !== lastPossessionKey
   if (possessionChanged) {
@@ -720,17 +841,29 @@ export function resolveTeamMarker(
     return null
   }
 
+  const now = performance.now()
   const current = activeMarker[team]
   if (!possessionChanged && current && current !== closestId) {
     const currentP = playerRegistry.get(current)
     if (currentP && currentP.team === team && currentP.role !== 'gk') {
       const currentDist = distance2D(currentP.position, contestPoint)
-      if (closestDist > currentDist - MARKER_SWITCH_MARGIN) {
+      // Compromisso temporal: logo após assumir a marcação, exige que o novo
+      // candidato esteja MUITO mais perto pra trocar — evita o clássico
+      // "começa a perseguir a bola e desiste" quando dois defensores ficam
+      // quase equidistantes do portador.
+      const committed = now < markerCommitUntil[team]
+      const margin = committed
+        ? MARKER_SWITCH_MARGIN + 2.2 * WORLD_SCALE
+        : MARKER_SWITCH_MARGIN
+      if (closestDist > currentDist - margin) {
         return current
       }
     }
   }
 
+  if (activeMarker[team] !== closestId) {
+    markerCommitUntil[team] = now + 550
+  }
   activeMarker[team] = closestId
   return closestId
 }
@@ -742,6 +875,7 @@ function resolveCoverPresser(
   primaryMarker: string | null,
 ): string | null {
   if (!possession || possession.team === team || !primaryMarker) return null
+  if (isGkBallProtected(possession)) return null
   const contest = getContestPoint(possession, ball)
   const ranked = [...playerRegistry.values()]
     .filter((p) => p.team === team && p.role !== 'gk')
@@ -830,6 +964,9 @@ export function refreshMarkerCache(
   )
   passLaneBlockerByTeam.home = resolvePassLaneBlocker('home', possession)
   passLaneBlockerByTeam.away = resolvePassLaneBlocker('away', possession)
+
+  resolveManMarking('home', possession)
+  resolveManMarking('away', possession)
 
   const passIntent = useGameStore.getState().passIntent
   resolvePassInterceptors('home', passIntent, ball)

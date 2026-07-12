@@ -216,9 +216,36 @@ export function applyRefereeMaterials(model: THREE.Group) {
   applyMeshShadows(model, PSX_CLASSIC.shadow.players)
 }
 
-export function createBallMaterial(): THREE.MeshStandardMaterial {
-  return toPsxStandard(new THREE.MeshStandardMaterial(), {
+/**
+ * Cria o material da bola. Passe uma THREE.Texture (carregada no componente,
+ * via useLoader/TextureLoader) pra usar como albedo — sem ela, cai na cor
+ * lisa de sempre.
+ *
+ * Nota sobre UV: uma esfera padrão (THREE.SphereGeometry) usa UV
+ * equirretangular, então qualquer textura de bola desenhada nesse formato
+ * (a maioria dos assets prontos de "soccer ball texture") encaixa direto,
+ * sem precisar de unwrap especial.
+ */
+export function createBallMaterial(texture?: THREE.Texture | null): THREE.MeshStandardMaterial {
+  const material = toPsxStandard(new THREE.MeshStandardMaterial(), {
     vertexSnap: PSX_CLASSIC.material.playerVertexSnap,
-    color: new THREE.Color(0xf8f8f6),
+    // Sem textura, mantém a cor lisa de sempre. Com textura, deixa o
+    // toPsxStandard sem cor fixa — ela é aplicada como branco puro abaixo
+    // pra não tingir o albedo da imagem.
+    ...(texture ? {} : { color: new THREE.Color(0xf8f8f6) }),
   })
+
+  if (texture) {
+    // Espaço de cor correto pro albedo — sem isso a textura vem lavada/clara
+    // demais com o tone mapping físico do renderer.
+    texture.colorSpace = THREE.SRGBColorSpace
+    texture.anisotropy = 4
+    texture.needsUpdate = true
+
+    material.map = texture
+    material.color.set(0xffffff)
+    material.needsUpdate = true
+  }
+
+  return material
 }

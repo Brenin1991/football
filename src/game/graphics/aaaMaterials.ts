@@ -37,16 +37,6 @@ function classifyPlayerMesh(name: string): PlayerPart {
   return 'other'
 }
 
-function classifyFieldMesh(name: string): 'grass' | 'line' | 'metal' | 'structure' {
-  const n = name.toLowerCase()
-  if (n.includes('field') || n === 'field_area') return 'grass'
-  if (n.includes('line') || n.includes('mark') || n.includes('circle')) return 'line'
-  if (n.includes('gol') || n.includes('goal') || n.includes('post') || n.includes('net')) {
-    return 'metal'
-  }
-  return 'structure'
-}
-
 function paintMesh(mesh: THREE.Mesh, color: THREE.Color, roughness: number) {
   const boosted = boostAaaColor(color)
   const { kitEmissiveScale, kitEmissiveIntensity, envMapIntensity } = AAA_CLASSIC.material
@@ -61,6 +51,7 @@ function paintMesh(mesh: THREE.Mesh, color: THREE.Color, roughness: number) {
   })
 }
 
+/** Preserva cores/texturas do GLB — só converte pro pipeline AAA */
 export function applyFieldGraphicsAaa(scene: THREE.Object3D) {
   scene.traverse((child) => {
     if (!(child as THREE.Mesh).isMesh) return
@@ -69,41 +60,7 @@ export function applyFieldGraphicsAaa(scene: THREE.Object3D) {
 
     mesh.castShadow = true
     mesh.receiveShadow = true
-
-    const kind = classifyFieldMesh(mesh.name)
-
-    if (kind === 'grass') {
-      applyAaaMaterialToMesh(mesh, {
-        matte: true,
-        color: boostAaaColor(new THREE.Color(0x48b845)),
-        roughness: 0.9,
-        metalness: 0,
-        emissive: new THREE.Color(0x1a5c18),
-        emissiveIntensity: 0.12,
-      })
-      return
-    }
-
-    if (kind === 'line') {
-      applyAaaMaterialToMesh(mesh, {
-        matte: true,
-        color: new THREE.Color(0xf8fcf4),
-        roughness: 0.88,
-        metalness: 0,
-      })
-      return
-    }
-
-    if (kind === 'metal') {
-      applyAaaMaterialToMesh(mesh, {
-        ...(!hasAlbedoMap(mesh.material) ? { color: new THREE.Color(0xd8dce2) } : {}),
-        roughness: 0.35,
-        metalness: 0.85,
-      })
-      return
-    }
-
-    applyAaaMaterialToMesh(mesh, { roughness: 0.78, metalness: 0.05 })
+    applyAaaMaterialToMesh(mesh, { matte: true })
   })
 }
 
@@ -205,11 +162,22 @@ export function applyRefereeMaterialsAaa(model: THREE.Group) {
   applyAaaMeshShadows(model, { cast: true, receive: false })
 }
 
-export function createBallMaterialAaa(): THREE.MeshStandardMaterial {
-  return toAaaStandard(new THREE.MeshStandardMaterial(), {
+export function createBallMaterialAaa(texture?: THREE.Texture | null): THREE.MeshStandardMaterial {
+  const mat = toAaaStandard(new THREE.MeshStandardMaterial(), {
     matte: true,
-    color: new THREE.Color(0xfafaf8),
+    ...(texture ? {} : { color: new THREE.Color(0xfafaf8) }),
     roughness: 0.62,
     metalness: 0,
   })
+
+  if (texture) {
+    texture.colorSpace = THREE.SRGBColorSpace
+    texture.anisotropy = 8
+    texture.needsUpdate = true
+    mat.map = texture
+    mat.color.set(0xffffff)
+    mat.needsUpdate = true
+  }
+
+  return mat
 }

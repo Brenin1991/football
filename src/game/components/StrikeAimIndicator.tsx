@@ -3,6 +3,7 @@ import { useMemo, useRef } from 'react'
 import type * as THREE from 'three'
 import type { PowerBarMode } from '../systems/shotPower'
 import { useGameStore } from '../store/gameStore'
+import { playerRegistry } from '../systems/entityRegistry'
 import { getPitchGroundY } from '../systems/fieldData'
 
 const AIM_COLORS: Record<NonNullable<PowerBarMode>, string> = {
@@ -51,6 +52,10 @@ export function StrikeAimIndicator() {
       return
     }
 
+    const player = playerRegistry.get(useGameStore.getState().activePlayerId)
+    const originX = player?.position.x ?? aim.originX
+    const originZ = player?.position.z ?? aim.originZ
+
     const y = getPitchGroundY() + 0.035
     const length = 1.15 + aim.power * 0.95
     const dashes = buildAimDashes(length)
@@ -58,7 +63,7 @@ export function StrikeAimIndicator() {
     const dashWidth = aim.mode === 'cross' ? 0.09 : 0.075
 
     group.visible = true
-    group.position.set(aim.originX, y, aim.originZ)
+    group.position.set(originX, y, originZ)
     group.rotation.set(0, aim.angle, 0)
 
     dashMeshRefs.forEach((ref, i) => {

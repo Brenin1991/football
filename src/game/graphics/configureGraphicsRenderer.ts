@@ -4,18 +4,25 @@ import { configurePsxRenderer, configurePsxScene } from '../psx/configurePsxRend
 import { AAA_CLASSIC } from './aaaSettings'
 
 export function configureAaaRenderer(renderer: THREE.WebGLRenderer) {
-  const { shadow, toneMapping, toneMappingExposure } = AAA_CLASSIC
+  const { shadow } = AAA_CLASSIC
 
   renderer.shadowMap.enabled = shadow.enabled
   renderer.shadowMap.type = THREE.PCFSoftShadowMap
   renderer.shadowMap.autoUpdate = true
-  renderer.toneMapping = toneMapping
-  renderer.toneMappingExposure = toneMappingExposure
+  // HDR + tone mapping ficam no pós-processo (AaaCompositeEffect)
+  renderer.toneMapping = THREE.NoToneMapping
+  renderer.toneMappingExposure = 1
   renderer.outputColorSpace = THREE.SRGBColorSpace
 }
 
 export function configureAaaScene(scene: THREE.Scene) {
-  scene.environmentIntensity = AAA_CLASSIC.environment.intensity
+  const { environment } = AAA_CLASSIC
+  if (environment.enabled) {
+    scene.environmentIntensity = environment.intensity
+  } else {
+    scene.environment = null
+    scene.environmentIntensity = 0
+  }
 }
 
 export function configureGraphicsRenderer(renderer: THREE.WebGLRenderer, mode: GraphicsMode) {

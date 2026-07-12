@@ -37,6 +37,12 @@ export type DribbleControlOutput = {
   feintMoveSpeed: number
   /** Animação de corrida durante finta após sprint */
   feintKeepRun: boolean
+  /**
+   * 0..1 — quão brusca foi a última finta/corte. Usado pelo sistema de bola
+   * (dribbleBall.ts) pra simular uma perda momentânea de controle fino em
+   * cortes fechados, em vez de a bola ficar sempre "colada" no pé.
+   */
+  touchSeverity: number
 }
 
 type Runtime = {
@@ -55,6 +61,8 @@ type Runtime = {
   stopFeintOldDirZ: number
   stopFeintTurnSign: number
   stopFeintStartSpeed: number
+  /** 0..1 — quão forte foi a freada que originou a finta (escala pelo sprint) */
+  stopFeintIntensity: number
   // --- corte em corrida (running cut) ---
   cutCooldown: number
   runCutTimer: number
@@ -63,6 +71,8 @@ type Runtime = {
   runCutTurnSign: number
   runCutStartSpeed: number
   runCutTouchFired: boolean
+  /** 0..1 — quão fechado foi o ângulo do corte */
+  runCutSeverity: number
   // --- alternância de passadas ---
   footParity: boolean
 }
@@ -81,6 +91,9 @@ const SPRINT_TOUCH_DURATION = 0.2
 const FEINT_BALL_BACK = 0.72 * WORLD_SCALE
 const FEINT_BALL_LATERAL = 0.18 * WORLD_SCALE
 const SPRINT_RELEASE_WINDOW = 0.42
+// Referência de velocidade "rápida" pra escalar a intensidade da finta de
+// parada — parar vindo de um sprint forte precisa doer mais que parar de trote.
+const STOP_FEINT_FAST_REF = 1.35 * WORLD_SCALE
 
 // Corte em corrida: virada de ângulo médio mantendo a velocidade (não é freada,
 // é o jogador "cortando" a marcação/direção sem perder ritmo).
@@ -89,6 +102,16 @@ const RUN_CUT_COOLDOWN = 0.22
 const RUN_CUT_DURATION = 0.26
 const RUN_CUT_BALL_PUSH = 0.42 * WORLD_SCALE
 const RUN_CUT_MAX_TURN_RATE = 2.4
+// Faixa de dot-product que define o quão "fechado" é o corte: perto de
+// RUN_CUT_DOT_MAX é quase reto (corte raso), perto de RUN_CUT_DOT_MIN é quase
+// reversão (corte fechado — isso já beira o território da finta de parada).
+const RUN_CUT_DOT_MAX = 0.88
+const RUN_CUT_DOT_MIN = -0.55
+
+/** Pequena variação humana pra tirar a cadência de metrônomo dos toques. */
+function humanize(base: number, spread = 0.16): number {
+  return base * (1 + (Math.random() - 0.5) * spread)
+}
 
 function createRuntime(): Runtime {
   return {
@@ -107,6 +130,7 @@ function createRuntime(): Runtime {
     stopFeintOldDirZ: 0,
     stopFeintTurnSign: 1,
     stopFeintStartSpeed: 0,
+    stopFeintIntensity: 0,
     cutCooldown: 0,
     runCutTimer: 0,
     runCutDuration: 0,
@@ -114,6 +138,7 @@ function createRuntime(): Runtime {
     runCutTurnSign: 1,
     runCutStartSpeed: 0,
     runCutTouchFired: false,
+    runCutSeverity: 0,
     footParity: false,
   }
 }
@@ -166,6 +191,7 @@ function makeDefaultOutput(): DribbleControlOutput {
     locomotionOverride: null,
     feintMoveSpeed: 0,
     feintKeepRun: false,
+    touchSeverity: 0,
   }
 }
 
@@ -180,28 +206,32 @@ function buildStopFeintOutput(rt: Runtime): DribbleControlOutput {
   out.snapFacing = true
   out.stopFeintActive = true
   out.feintMoveSpeed = rt.stopFeintStartSpeed
-  out.feintKeepRun = rt.stopFeintStartSpeed > STOP_FEINT_MIN_SPEED * 1.02
+  out.touchSeverity = rt.stopFeintIntensity
 
   const t = 1 - rt.stopFeintTimer / rt.stopFeintDuration
 
-  // Leve toque no ritmo — nunca para de fato, só "amassa" a passada
-  out.speedMul = t < 0.1 ? 0.94 : THREE.MathUtils.lerp(0.94, 1, easeOutQuad((t - 0.1) / 0.9))
+  // Quanto mais forte a intensidade (parada vindo de sprint), mais o "amasso"
+  // no ritmo se sente — parar de um trote é quase imperceptível na fala,
+  // parar de um sprint pesa de verdade.
+  const dipFloor = THREE.MathUtils.lerp(0.97, 0.86, rt.stopFeintIntensity)
+  out.speedMul = t < 0.1 ? dipFloor : THREE.MathUtils.lerp(dipFloor, 1, easeOutQuad((t - 0.1) / 0.9))
   out.feintMoveSpeed = rt.stopFeintStartSpeed * out.speedMul
+  out.feintKeepRun = rt.stopFeintStartSpeed > STOP_FEINT_MIN_SPEED * 1.02
 
   // Curva assimétrica: puxa a bola pra trás rápido (plantar o pé), depois solta
-  // suavemente — em vez do lerp linear anterior, que ficava "mecânico".
+  // suavemente. A distância do arrasto também escala com a intensidade —
+  // sprint forte joga a bola mais longe antes de recolher.
   const backPhase =
     t < 0.3
       ? THREE.MathUtils.lerp(1, 0.55, easeOutQuad(t / 0.3))
       : Math.max(0, 0.55 * (1 - easeInQuad((t - 0.3) / 0.7)))
 
+  const ballBack = FEINT_BALL_BACK * THREE.MathUtils.lerp(0.78, 1.3, rt.stopFeintIntensity)
   const sideX = -rt.stopFeintOldDirZ * rt.stopFeintTurnSign
   const sideZ = rt.stopFeintOldDirX * rt.stopFeintTurnSign
 
-  out.ballOffsetX =
-    -rt.stopFeintOldDirX * FEINT_BALL_BACK * backPhase + sideX * FEINT_BALL_LATERAL * backPhase
-  out.ballOffsetZ =
-    -rt.stopFeintOldDirZ * FEINT_BALL_BACK * backPhase + sideZ * FEINT_BALL_LATERAL * backPhase
+  out.ballOffsetX = -rt.stopFeintOldDirX * ballBack * backPhase + sideX * FEINT_BALL_LATERAL * backPhase
+  out.ballOffsetZ = -rt.stopFeintOldDirZ * ballBack * backPhase + sideZ * FEINT_BALL_LATERAL * backPhase
 
   return out
 }
@@ -241,8 +271,16 @@ function tryStartStopFeint(
     return false
   }
 
-  rt.stopFeintTimer = STOP_FEINT_DURATION
-  rt.stopFeintDuration = STOP_FEINT_DURATION
+  const intensity = THREE.MathUtils.clamp(
+    (speed - STOP_FEINT_MIN_SPEED) / (STOP_FEINT_FAST_REF - STOP_FEINT_MIN_SPEED),
+    0,
+    1,
+  )
+  rt.stopFeintIntensity = intensity
+  // Sprint forte também demora mais pra concluir a reversão — não é só mais
+  // longe, é mais devagar pra "assentar" antes de sair de novo.
+  rt.stopFeintDuration = humanize(THREE.MathUtils.lerp(STOP_FEINT_DURATION * 0.9, STOP_FEINT_DURATION * 1.3, intensity))
+  rt.stopFeintTimer = rt.stopFeintDuration
   rt.stopFeintStartSpeed = Math.max(speed, STOP_FEINT_MIN_SPEED)
   rt.stopFeintTargetYaw =
     rawIntentLen > 0.2 ? Math.atan2(rawDirX, rawDirZ) : Math.atan2(-moveDirX, -moveDirZ)
@@ -251,7 +289,7 @@ function tryStartStopFeint(
   const cross = moveDirX * inputDirZ - moveDirZ * inputDirX
   rt.stopFeintTurnSign = cross >= 0 ? 1 : -1
   rt.feintCooldown = STOP_FEINT_COOLDOWN
-  rt.touchCooldown = STOP_FEINT_DURATION * 0.85
+  rt.touchCooldown = rt.stopFeintDuration * 0.85
   rt.stepPhase = 0
   rt.sprintReleaseActive = false
   return true
@@ -261,37 +299,51 @@ function tryStartStopFeint(
 // Corte em corrida — virada de ângulo médio SEM soltar velocidade, o
 // comportamento que faltava para "viradas mesmo correndo". Empurra a bola
 // pro lado do corte e acelera a rotação, mas sem travar a locomoção de corrida.
+//
+// A severidade do corte (quão fechado é o ângulo) escala duração, dip de
+// velocidade, pico de giro e empurrão de bola — um corte raso de 20° e um
+// corte fechado de 100° não podem parecer a mesma animação com sinal trocado.
 // ---------------------------------------------------------------------------
+
+function computeCutSeverity(dot: number): number {
+  const t = THREE.MathUtils.clamp((RUN_CUT_DOT_MAX - dot) / (RUN_CUT_DOT_MAX - RUN_CUT_DOT_MIN), 0, 1)
+  return easeInQuad(t)
+}
 
 function buildRunningCutOutput(rt: Runtime): DribbleControlOutput {
   const out = makeDefaultOutput()
 
   const t = 1 - rt.runCutTimer / rt.runCutDuration // 0 -> 1
   const eased = easeOutQuad(t)
+  const severity = rt.runCutSeverity
+  out.touchSeverity = severity
 
-  // Pequeno "engolir" de velocidade no plante do pé, recuperando logo depois —
-  // bem mais sutil que a finta de parada, pra não parecer que ele freou.
-  out.speedMul = THREE.MathUtils.lerp(0.88, 1, eased)
+  // Pequeno "engolir" de velocidade no plante do pé, recuperando logo depois.
+  // Corte raso mal se sente; corte fechado pesa de verdade.
+  const dipFloor = THREE.MathUtils.lerp(0.95, 0.76, severity)
+  out.speedMul = THREE.MathUtils.lerp(dipFloor, 1, eased)
   out.feintMoveSpeed = rt.runCutStartSpeed * out.speedMul
   out.feintKeepRun = true
 
-  // Vira mais rápido que o normal enquanto o corte está ativo, mas sem
-  // "teleportar" a rotação (sem forcedYaw/snap) — fica orgânico.
-  out.turnRateMul = THREE.MathUtils.lerp(RUN_CUT_MAX_TURN_RATE, 1.15, eased)
+  // Vira mais rápido que o normal enquanto o corte está ativo — quanto mais
+  // fechado o ângulo, maior o pico de giro — mas sem "teleportar" a rotação.
+  const turnPeak = THREE.MathUtils.lerp(1.6, RUN_CUT_MAX_TURN_RATE * 1.3, severity)
+  out.turnRateMul = THREE.MathUtils.lerp(turnPeak, 1.15, eased)
 
   // Empurra a bola pro lado do corte, com pico no meio do movimento e
-  // retorno suave ao centro — imita o toque lateral de quem corta em corrida.
+  // retorno suave ao centro. Cortes fechados empurram mais longe.
   const pushPhase = Math.sin(Math.min(1, t) * Math.PI)
+  const pushMag = RUN_CUT_BALL_PUSH * THREE.MathUtils.lerp(0.68, 1.35, severity)
   const rightX = Math.cos(rt.runCutFromYaw)
   const rightZ = -Math.sin(rt.runCutFromYaw)
-  out.ballOffsetX = rightX * RUN_CUT_BALL_PUSH * pushPhase * rt.runCutTurnSign
-  out.ballOffsetZ = rightZ * RUN_CUT_BALL_PUSH * pushPhase * rt.runCutTurnSign
+  out.ballOffsetX = rightX * pushMag * pushPhase * rt.runCutTurnSign
+  out.ballOffsetZ = rightZ * pushMag * pushPhase * rt.runCutTurnSign
 
   // Dispara a animação de toque uma única vez, no início do corte.
   if (!rt.runCutTouchFired) {
     rt.runCutTouchFired = true
     out.touchAnim = rt.runCutTurnSign > 0 ? 'player_right' : 'player_left'
-    out.touchDuration = rt.runCutDuration * 0.9
+    out.touchDuration = humanize(rt.runCutDuration * 0.9)
   }
 
   return out
@@ -322,13 +374,16 @@ function tryStartRunningCut(
   const dot = dirX * moveDirX + dirZ * moveDirZ
   // Ignora quase-reto (não é virada de verdade) e quase-reversão total
   // (isso é papel da finta de parada, que soma freio + snap de facing).
-  if (dot > 0.88 || dot < -0.55) return false
+  if (dot > RUN_CUT_DOT_MAX || dot < RUN_CUT_DOT_MIN) return false
 
+  const severity = computeCutSeverity(dot)
   const cross = moveDirX * dirZ - moveDirZ * dirX
   rt.runCutTurnSign = cross >= 0 ? 1 : -1
   rt.runCutFromYaw = rotation
-  rt.runCutTimer = RUN_CUT_DURATION
-  rt.runCutDuration = RUN_CUT_DURATION
+  rt.runCutSeverity = severity
+  // Corte fechado demora mais pra "assentar" que um corte raso e rápido.
+  rt.runCutDuration = humanize(THREE.MathUtils.lerp(RUN_CUT_DURATION * 0.62, RUN_CUT_DURATION * 1.6, severity))
+  rt.runCutTimer = rt.runCutDuration
   rt.runCutStartSpeed = speed
   rt.runCutTouchFired = false
   rt.cutCooldown = RUN_CUT_COOLDOWN
@@ -358,15 +413,15 @@ function tryDribbleTouch(
 
   if (absR > 0.58 && absR > absF * 0.85) {
     out.touchAnim = local.r < 0 ? 'player_left' : 'player_right'
-    out.touchDuration = 0.34
-    rt.touchCooldown = TOUCH_COOLDOWN
+    out.touchDuration = humanize(0.34)
+    rt.touchCooldown = humanize(TOUCH_COOLDOWN)
     return
   }
 
   if (local.f < -0.45 && absF > absR * 0.8) {
     out.touchAnim = 'player_backward'
-    out.touchDuration = 0.36
-    rt.touchCooldown = TOUCH_COOLDOWN + 0.08
+    out.touchDuration = humanize(0.36)
+    rt.touchCooldown = humanize(TOUCH_COOLDOWN + 0.08)
     return
   }
 
@@ -385,8 +440,8 @@ function tryDribbleTouch(
         rt.footParity = !rt.footParity
         out.touchAnim = rt.footParity ? 'player_right' : 'player_left'
       }
-      out.touchDuration = 0.28
-      rt.touchCooldown = TOUCH_COOLDOWN
+      out.touchDuration = humanize(0.28)
+      rt.touchCooldown = humanize(TOUCH_COOLDOWN)
     }
     return
   }
@@ -398,8 +453,8 @@ function tryDribbleTouch(
   ) {
     const cross = rt.lastDirX * dirZ - rt.lastDirZ * dirX
     out.touchAnim = cross >= 0 ? 'player_right' : 'player_left'
-    out.touchDuration = 0.32
-    rt.touchCooldown = TOUCH_COOLDOWN
+    out.touchDuration = humanize(0.32)
+    rt.touchCooldown = humanize(TOUCH_COOLDOWN)
   }
 }
 
@@ -438,8 +493,8 @@ function trySprintSubtleTouch(
 
   // absR já garantido >= 0.09 aqui, então sempre há um lado claro.
   out.touchAnim = local.r < 0 ? 'player_left' : 'player_right'
-  out.touchDuration = SPRINT_TOUCH_DURATION
-  rt.touchCooldown = SPRINT_TOUCH_COOLDOWN
+  out.touchDuration = humanize(SPRINT_TOUCH_DURATION)
+  rt.touchCooldown = humanize(SPRINT_TOUCH_COOLDOWN)
 }
 
 // ---------------------------------------------------------------------------

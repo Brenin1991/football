@@ -19,22 +19,22 @@ export type PsxToneMapping = 'none' | 'linear' | 'reinhard' | 'cineon' | 'aces' 
 export const PSX_CLASSIC = {
   /** Efeitos retro na tela */
   post: {
-    pixelSize: 0.9,
-    resolutionScale: 0.7,
-    colorDepth: 32,
-    ditherIntensity: 0.4,
-    bands: 16,
-    bandIntensity: 0.2,
+    pixelSize: 0,
+    resolutionScale: 1,
+    colorDepth: 3,
+    ditherIntensity: 0,
+    bands: 0,
+    bandIntensity: 0,
     scanOpacity: 0,
-    scanCount: 256,
+    scanCount: 0,
     uvJitter: 0.0001,
     /** Bloom: intensidade/threshold/smoothing para brilho/glow */
     bloom: {
-      intensity: 0.14,
+      intensity: 0.74,
       threshold: 0.88,
-      smoothing: 0.35,
-      radius: 0.5,
-      mipmapBlur: false,
+      smoothing: 0.25,
+      radius: 1,
+      mipmapBlur: true,
     },
   },
 
@@ -68,15 +68,15 @@ export const PSX_CLASSIC = {
 
   /** Materiais 3D */
   material: {
-    vertexSnap: 32,
-    playerVertexSnap: 128,
-    flatShading: true,
+    vertexSnap: 0,
+    playerVertexSnap: 0,
+    flatShading: false,
     /** Texturas estilo PS1 */
     texture: {
       /** Resolução máxima (64 ou 128 px no maior lado) */
-      maxSize: 2048,
+      maxSize: 4048,
       /** Mapeamento afim — só recomendado em meshes pequenos (jogadores) */
-      affine: true,
+      affine: false,
       /** Wobble animado nas UVs (0 = desligado) */
       wobbleIntensity: 0.5,
       wobbleSpeed: 3.5,
@@ -84,28 +84,28 @@ export const PSX_CLASSIC = {
       /** Campo: sem afim/wobble (polígonos grandes deformam demais) */
       field: { affine: false, wobble: 0 } satisfies PsxTextureProfile,
       /** Jogadores: afim leve, sem wobble por padrão */
-      character: { affine: true, wobble: 0.25 } satisfies PsxTextureProfile,
+      character: { affine: false, wobble: 0.25 } satisfies PsxTextureProfile,
     },
   },
 
   /** Canvas */
   renderer: {
-    dprMin: 1,
-    dprMax: 1.5,
+    dprMin: 0.5,
+    dprMax: 1,
     antialias: false,
   },
 
   /** Atmosfera */
-  fog: { color: '#c9a206', near: 15, far: 150 },
-  background: '#ffc002',
+  fog: { color: '#cbd8dd', near: 25, far: 150 },
+  background: '#979595',
 
   /** Sombras — mapSize baixo + basic + nearest = blocos estilo PS1 */
   shadow: {
     enabled: true,
     /** basic = dura/pixelada | pcf | pcfsoft = suave */
-    mapType: 'basic' as 'basic' | 'pcf' | 'pcfsoft',
+    mapType: 'pcfsoft',
     /** Menor = sombras mais blocadas (256–512 recomendado) */
-    mapSize: 1024,
+    mapSize: 4048,
     bias: -0.0002,
     normalBias: 0.01,
     /** Sem suavização na textura do shadow map */

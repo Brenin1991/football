@@ -18,11 +18,15 @@ import {
   finalizePower,
   getPowerChargeDuration,
   getPowerFillSpeed,
+  QUICK_PASS_POWER,
+  QUICK_PASS_TAP_MS,
   updatePowerFill,
   type PowerBarMode,
 } from '../systems/shotPower'
 import { getSimDelta, isUserPauseActive } from '../systems/gameTime'
-import { computeStrikeDirection } from '../systems/strikeAim'
+import { computeShotAimDirection, computeStrikeDirection } from '../systems/strikeAim'
+import { switchUserPlayer } from '../systems/playerSwitch'
+import { canAnticipateStrike, getAnticipatedStrikerId, getPassReceiverId, canManualSwitchPlayer } from '../systems/anticipation'
 
 type GameInputProps = {
   controls: MutableRefObject<ControlState>
@@ -32,6 +36,7 @@ type GameInputProps = {
 const AIM_ROTATE_SPEED = 2.4
 
 type PassChargeKind = 'pass' | 'through' | 'cross'
+type ShotContext = 'open' | 'setpiece' | 'anticipate' | null
 
 function canChargeOpenPlay(store: ReturnType<typeof useGameStore.getState>) {
   if (store.phase !== 'playing' || store.ballFrozen) return false
@@ -56,13 +61,6 @@ function canChargeSetPiece(store: ReturnType<typeof useGameStore.getState>) {
   return isActiveSetPiecePhase(store.phase) && store.ballFrozen && store.setPieceTeam === getUserTeam()
 }
 
-function activePassButton(c: ControlState): PassChargeKind | null {
-  if (c.cross) return 'cross'
-  if (c.throughPass) return 'through'
-  if (c.pass) return 'pass'
-  return null
-}
-
 function updateStrikeAim(
   store: ReturnType<typeof useGameStore.getState>,
   controls: ControlState,
@@ -84,21 +82,40 @@ function updateStrikeAim(
   }
 
   const possession = store.ballPossession
-  if (
-    possession?.team !== getUserTeam() ||
-    possession.playerId !== store.activePlayerId
-  ) {
+  const anticipating =
+    canAnticipateStrike(store) &&
+    !canChargeOpenPlay(store) &&
+    !canChargeSetPiece(store)
+
+  const strikerId = anticipating
+    ? (getAnticipatedStrikerId(store) ?? store.activePlayerId)
+    : store.activePlayerId
+
+  const hasBall =
+    possession?.team === getUserTeam() &&
+    possession.playerId === strikerId
+
+  if (!hasBall && !anticipating) {
     store.setStrikeAim(null)
     return
   }
 
-  const player = playerRegistry.get(store.activePlayerId)
+  const player = playerRegistry.get(strikerId)
   if (!player) {
     store.setStrikeAim(null)
     return
   }
 
-  const dir = computeStrikeDirection(controls, player.rotation)
+  const dir =
+    store.powerBarMode === 'shot'
+      ? computeShotAimDirection(
+          controls,
+          player.rotation,
+          store.strikeAim?.mode === 'shot'
+            ? { x: store.strikeAim.dirX, z: store.strikeAim.dirZ }
+            : null,
+        )
+      : computeStrikeDirection(controls, player.rotation)
   const facingX = Math.sin(player.rotation)
   const facingZ = Math.cos(player.rotation)
   const facingDot = Math.max(-1, Math.min(1, dir.x * facingX + dir.z * facingZ))
@@ -121,10 +138,16 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
   const cornerKickTimerRef = useRef(0)
   const chargeRef = useRef(createShotChargeState())
   const chargeModeRef = useRef<PowerBarMode>(null)
-  const shotContextRef = useRef<'open' | 'setpiece' | null>(null)
+  const shotContextRef = useRef<ShotContext>(null)
   const chargeStartedAtRef = useRef(0)
   const prevShotHeldRef = useRef(false)
-  const prevPassHeldRef = useRef(false)
+  const prevGroundPassHeldRef = useRef(false)
+  const prevOtherPassHeldRef = useRef(false)
+  const passTapHoldRef = useRef(false)
+  const passTapStartedRef = useRef(0)
+  const passInAimModeRef = useRef(false)
+  const otherPassTapHoldRef = useRef(false)
+  const otherPassTapStartedRef = useRef(0)
 
   useFrame((_, delta) => {
     const store = useGameStore.getState()
@@ -140,6 +163,13 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
     }
 
     updateStrikeAim(store, c)
+
+    if (c.switchPlayer && store.phase === 'playing' && !store.ballFrozen) {
+      c.switchPlayer = false
+      if (canManualSwitchPlayer(store)) {
+        switchUserPlayer()
+      }
+    }
 
     const simDelta = getSimDelta(delta)
     const charge = chargeRef.current
@@ -181,63 +211,188 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
 
     const openPlayCharge = canChargeOpenPlay(store)
     const setPieceCharge = canChargeSetPiece(store)
-    const passButton = openPlayCharge ? activePassButton(c) : null
+    const anticipateStrike =
+      canAnticipateStrike(store) &&
+      store.phase === 'playing' &&
+      !store.ballFrozen &&
+      !openPlayCharge &&
+      !setPieceCharge
+
+    const strikeChargeReady = openPlayCharge || setPieceCharge || anticipateStrike
+    const passChargeReady = openPlayCharge || anticipateStrike
 
     if (setPieceCharge) {
       if (c.left) store.rotateSetPieceAim(-AIM_ROTATE_SPEED * simDelta)
       if (c.right) store.rotateSetPieceAim(AIM_ROTATE_SPEED * simDelta)
     }
 
-    if (c.cancelCharge && charge.active) {
+    if (c.cancelCharge && (charge.active || passTapHoldRef.current)) {
       charge.active = false
       charge.power = 0
       chargeModeRef.current = null
       shotContextRef.current = null
       chargeStartedAtRef.current = 0
+      passTapHoldRef.current = false
+      passInAimModeRef.current = false
+      otherPassTapHoldRef.current = false
       store.setShotCharge(0, false)
       store.setStrikeAim(null)
       return
     }
 
-    const shotHeld = c.kick && (openPlayCharge || setPieceCharge)
-    const passHeld = passButton != null
-    const shotPressed = shotHeld && !prevShotHeldRef.current
-    consumeKickRelease()
-    const passPressed = passHeld && !prevPassHeldRef.current
-    const actionPressed = shotPressed || passPressed
-    const actionHeld = shotHeld || passHeld
-    const wasActionHeld = prevShotHeldRef.current || prevPassHeldRef.current
-    const actionReleased = !actionHeld && wasActionHeld
+    const shotHeld = c.kick && strikeChargeReady
+    const groundPassHeld = passChargeReady && c.pass
+    const otherPassHeld = passChargeReady && (c.throughPass || c.cross)
+    const otherPassButton: PassChargeKind | null = c.cross
+      ? 'cross'
+      : c.throughPass
+        ? 'through'
+        : null
 
-    if (actionPressed && !charge.active) {
+    const shotPressed = shotHeld && !prevShotHeldRef.current
+    const shotReleased = !shotHeld && prevShotHeldRef.current
+    consumeKickRelease()
+    const groundPassPressed = groundPassHeld && !prevGroundPassHeldRef.current
+    const groundPassReleased = !groundPassHeld && prevGroundPassHeldRef.current
+    const otherPassPressed = otherPassHeld && !prevOtherPassHeldRef.current
+    const otherPassReleased = !otherPassHeld && prevOtherPassHeldRef.current
+    const actionHeld = shotHeld || otherPassHeld || (passInAimModeRef.current && groundPassHeld)
+
+    const resolveShotContext = (): ShotContext => {
+      if (openPlayCharge) return 'open'
+      if (setPieceCharge) return 'setpiece'
+      if (anticipateStrike) return 'anticipate'
+      return null
+    }
+
+    if ((shotPressed || otherPassPressed) && !charge.active && !passTapHoldRef.current) {
+      if (anticipateStrike) {
+        const receiverId = getPassReceiverId(store)
+        if (receiverId && receiverId !== store.activePlayerId) {
+          store.setActivePlayer(receiverId)
+        }
+      }
       charge.active = true
       charge.power = 0
       chargeStartedAtRef.current = performance.now()
+      shotContextRef.current = resolveShotContext()
       if (shotHeld) {
         chargeModeRef.current = 'shot'
-        shotContextRef.current = openPlayCharge ? 'open' : 'setpiece'
-      } else if (passButton) {
-        chargeModeRef.current = passButton
-        shotContextRef.current = null
+        if (openPlayCharge || setPieceCharge || anticipateStrike) {
+          store.setShotCharge(0, true, 'shot')
+        }
+      } else if (otherPassButton) {
+        chargeModeRef.current = otherPassButton
+        if (anticipateStrike) {
+          otherPassTapHoldRef.current = true
+          otherPassTapStartedRef.current = performance.now()
+        }
       }
-    } else if (actionPressed && charge.active) {
+    } else if ((shotPressed || otherPassPressed) && charge.active) {
       const boost = chargeModeRef.current === 'shot' ? 0.18 : 0.12
       charge.power = Math.min(1, charge.power + boost)
     }
 
-    if (charge.active) {
-      const mode = chargeModeRef.current
-      const duration = getPowerChargeDuration(mode)
-      const elapsedMs = performance.now() - chargeStartedAtRef.current
+    if (groundPassPressed) {
+      passTapHoldRef.current = true
+      passTapStartedRef.current = performance.now()
+      passInAimModeRef.current = false
+      shotContextRef.current = resolveShotContext()
+      if (anticipateStrike) {
+        store.setPendingUserPass('pass', QUICK_PASS_POWER, true)
+      }
+    }
 
-      if (mode === 'pass' && actionReleased) {
+    if (passTapHoldRef.current && groundPassHeld && !passInAimModeRef.current) {
+      const tapElapsed = performance.now() - passTapStartedRef.current
+      if (tapElapsed >= QUICK_PASS_TAP_MS) {
+        passInAimModeRef.current = true
+        charge.active = true
+        charge.power = 0
+        chargeModeRef.current = 'pass'
+        chargeStartedAtRef.current = performance.now()
+        shotContextRef.current = resolveShotContext()
+      }
+    }
+
+    if (passTapHoldRef.current && groundPassReleased) {
+      const ctx = shotContextRef.current
+      const aim = store.strikeAim
+      const buffered = ctx === 'anticipate'
+
+      if (passInAimModeRef.current && charge.active) {
         const power = finalizePower(charge.power)
         charge.active = false
         chargeModeRef.current = null
         shotContextRef.current = null
         chargeStartedAtRef.current = 0
         store.setShotCharge(0, false)
-        store.setPendingUserPass('pass', power)
+        store.setPendingUserPass('pass', power, buffered, aim?.dirX, aim?.dirZ)
+      } else if (!passInAimModeRef.current && openPlayCharge) {
+        store.setPendingUserPass('pass', QUICK_PASS_POWER, false, aim?.dirX, aim?.dirZ)
+      } else if (!passInAimModeRef.current && buffered) {
+        store.setPendingUserPass('pass', QUICK_PASS_POWER, true, aim?.dirX, aim?.dirZ)
+      }
+      passTapHoldRef.current = false
+      passInAimModeRef.current = false
+    }
+
+    if (otherPassTapHoldRef.current && otherPassReleased && anticipateStrike) {
+      const tapElapsed = performance.now() - otherPassTapStartedRef.current
+      const mode = chargeModeRef.current
+      if (tapElapsed < QUICK_PASS_TAP_MS && (mode === 'through' || mode === 'cross')) {
+        charge.active = false
+        chargeModeRef.current = null
+        shotContextRef.current = null
+        chargeStartedAtRef.current = 0
+        store.setShotCharge(0, false)
+        store.setPendingUserPass(mode, QUICK_PASS_POWER, true)
+      }
+      otherPassTapHoldRef.current = false
+    }
+
+    if (charge.active && chargeModeRef.current === 'shot' && shotReleased) {
+      const power = finalizePower(charge.power)
+      const shotContext = shotContextRef.current
+      const aim = store.strikeAim
+      charge.active = false
+      chargeModeRef.current = null
+      shotContextRef.current = null
+      chargeStartedAtRef.current = 0
+      store.setShotCharge(0, false)
+
+      if (shotContext === 'open') {
+        store.setPendingUserShot(power, aim?.dirX, aim?.dirZ)
+      } else if (shotContext === 'anticipate') {
+        store.setPendingUserShot(power, aim?.dirX, aim?.dirZ, true)
+      } else if (shotContext === 'setpiece') {
+        store.setPendingSetPiecePower(power)
+        if (store.phase === 'corner' || store.phase === 'penalty') {
+          store.setSetPieceKickPending(true)
+        } else {
+          executeSetPieceKick(power)
+        }
+      }
+    }
+
+    if (charge.active) {
+      const mode = chargeModeRef.current
+      const duration = getPowerChargeDuration(mode)
+      const elapsedMs = performance.now() - chargeStartedAtRef.current
+      const ctx = shotContextRef.current
+      const buffered = ctx === 'anticipate'
+      const aim = store.strikeAim
+
+      if (mode === 'pass') {
+        if (groundPassHeld) {
+          updatePowerFill(charge, simDelta, getPowerFillSpeed(mode))
+        }
+        store.setShotCharge(charge.power, true, 'pass')
+      } else if (mode === 'shot') {
+        if (shotHeld) {
+          updatePowerFill(charge, simDelta, getPowerFillSpeed(mode))
+        }
+        store.setShotCharge(charge.power, true, 'shot')
       } else {
         if (actionHeld) {
           updatePowerFill(charge, simDelta, getPowerFillSpeed(mode))
@@ -245,35 +400,24 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
 
         store.setShotCharge(charge.power, true, mode)
 
-        if (mode !== 'pass' && elapsedMs >= duration * 1000) {
+        if (elapsedMs >= duration * 1000) {
           const power = finalizePower(charge.power)
-          const shotContext = shotContextRef.current
           charge.active = false
           chargeModeRef.current = null
           shotContextRef.current = null
           chargeStartedAtRef.current = 0
           store.setShotCharge(0, false)
 
-          if (mode === 'shot') {
-            if (shotContext === 'open') {
-              store.setPendingUserShot(power)
-            } else if (shotContext === 'setpiece') {
-              store.setPendingSetPiecePower(power)
-              if (store.phase === 'corner' || store.phase === 'penalty') {
-                store.setSetPieceKickPending(true)
-              } else {
-                executeSetPieceKick(power)
-              }
-            }
-          } else if (mode === 'through' || mode === 'cross') {
-            store.setPendingUserPass(mode, power)
+          if (mode === 'through' || mode === 'cross') {
+            store.setPendingUserPass(mode, power, buffered, aim?.dirX, aim?.dirZ)
           }
         }
       }
     }
 
     prevShotHeldRef.current = shotHeld
-    prevPassHeldRef.current = passHeld
+    prevGroundPassHeldRef.current = groundPassHeld
+    prevOtherPassHeldRef.current = otherPassHeld
   })
 
   return null

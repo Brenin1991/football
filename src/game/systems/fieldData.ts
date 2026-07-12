@@ -1,11 +1,130 @@
 import * as THREE from 'three'
 import type { FieldBounds, GoalZone, Vec3 } from '../types'
-import { PLAYER_HEIGHT } from '../constants'
-
-const HIDDEN_NODES = new Set(['field_area', 'gol_01', 'gol_02', 'ball_spawn'])
+import { BALL_RADIUS, GOAL_FRAME_FRICTION, GOAL_FRAME_RESTITUTION, PLAYER_HEIGHT } from '../constants'
 
 /** Escala do gramado em relação ao modelo base field.glb */
 export const FIELD_SCALE = 1.5
+
+export type GoalFrameCollider = {
+  position: [number, number, number]
+  halfExtents: [number, number, number]
+  friction: number
+  restitution: number
+  part: 'post' | 'crossbar'
+}
+
+const GOAL_POST_RADIUS = 0.055
+const GOAL_CROSSBAR_RADIUS = 0.052
+/** Espessura dos colisores de trave/travessão ao longo do eixo Z (na linha) */
+const GOAL_FRAME_DEPTH_HALF = 0.5
+/** Travessão um pouco mais grossa que a trave — CCD sem volume gigante */
+const GOAL_CROSSBAR_DEPTH_HALF = 0.5
+
+type GoalAnchor = {
+  centerX: number
+  goalLineZ: number
+}
+
+/** Medidas da boca do gol — lidas do cubo gol_XX do Blender (já em world space). */
+type GoalMouth = {
+  anchor: GoalAnchor
+  minX: number
+  maxX: number
+  height: number
+  netDepth: number
+}
+
+function goalMouthFromBox(
+  team: 'home' | 'away',
+  box: THREE.Box3,
+  groundY: number,
+): GoalMouth {
+  const minX = box.min.x
+  const maxX = box.max.x
+  return {
+    anchor: {
+      centerX: (minX + maxX) / 2,
+      goalLineZ: team === 'home' ? box.min.z : box.max.z,
+    },
+    minX,
+    maxX,
+    height: Math.max(box.max.y - groundY, box.max.y - box.min.y, 0.4),
+    netDepth: Math.max(box.max.z - box.min.z, 0.12),
+  }
+}
+
+/** Traves + travessão — encaixam no cubo de referência do Blender */
+function buildGoalFrameColliders(
+  mouth: GoalMouth,
+  groundY: number,
+): GoalFrameCollider[] {
+  const { anchor, minX, maxX, height } = mouth
+  const { centerX, goalLineZ } = anchor
+  const postHalfH = height / 2
+  const postMidY = groundY + postHalfH
+  const leftX = minX + GOAL_POST_RADIUS
+  const rightX = maxX - GOAL_POST_RADIUS
+  const barY = groundY + height - GOAL_CROSSBAR_RADIUS
+  const barHalfW = Math.max((maxX - minX) / 2 - GOAL_POST_RADIUS * 1.4, 0.2)
+
+  const metal = {
+    friction: GOAL_FRAME_FRICTION,
+    restitution: GOAL_FRAME_RESTITUTION,
+  }
+
+  return [
+    {
+      part: 'post',
+      position: [leftX, postMidY, goalLineZ],
+      halfExtents: [GOAL_POST_RADIUS, postHalfH, GOAL_FRAME_DEPTH_HALF],
+      ...metal,
+    },
+    {
+      part: 'post',
+      position: [rightX, postMidY, goalLineZ],
+      halfExtents: [GOAL_POST_RADIUS, postHalfH, GOAL_FRAME_DEPTH_HALF],
+      ...metal,
+    },
+    {
+      part: 'crossbar',
+      position: [centerX, barY, goalLineZ],
+      halfExtents: [barHalfW, GOAL_CROSSBAR_RADIUS, GOAL_CROSSBAR_DEPTH_HALF],
+      ...metal,
+    },
+  ]
+}
+
+function buildGoalZone(team: 'home' | 'away', mouth: GoalMouth, groundY: number): GoalZone {
+  const inset = BALL_RADIUS * 0.9
+  const { anchor, minX, maxX, height, netDepth } = mouth
+  const { centerX, goalLineZ } = anchor
+  const halfMouth = (maxX - minX) / 2 - inset
+
+  if (team === 'home') {
+    return {
+      team,
+      minX: centerX - halfMouth,
+      maxX: centerX + halfMouth,
+      minY: groundY,
+      maxY: groundY + height + inset,
+      minZ: goalLineZ,
+      maxZ: goalLineZ + netDepth,
+    }
+  }
+
+  return {
+    team,
+    minX: centerX - halfMouth,
+    maxX: centerX + halfMouth,
+    minY: groundY,
+    maxY: groundY + height + inset,
+    minZ: goalLineZ - netDepth,
+    maxZ: goalLineZ,
+  }
+}
+
+
+const HIDDEN_NODES = new Set(['gol_01', 'gol_02', 'ball_spawn'])
 
 const BASE_HALF_X = 6.5
 const BASE_HALF_Z = 9.5
@@ -47,6 +166,25 @@ export function hideDebugNodes(scene: THREE.Object3D) {
   })
 }
 
+const DEBUG_WIREFRAME = new THREE.MeshBasicMaterial({
+  color: 0x22d3ee,
+  wireframe: true,
+  transparent: true,
+  opacity: 0.72,
+  depthTest: false,
+})
+
+/** Mostra nós de referência do GLB (gols, spawn) em wireframe */
+export function showDebugNodes(scene: THREE.Object3D) {
+  scene.traverse((child) => {
+    if (!HIDDEN_NODES.has(child.name)) return
+    child.visible = true
+    if (child instanceof THREE.Mesh) {
+      child.material = DEBUG_WIREFRAME
+    }
+  })
+}
+
 export function getPitchColliderFromBounds(bounds: FieldBounds) {
   const halfY = 0.06
   const halfX = (bounds.maxX - bounds.minX) / 2
@@ -75,6 +213,7 @@ export function getPitchCollider() {
 export function extractFieldData(scene: THREE.Object3D): {
   bounds: FieldBounds
   goals: GoalZone[]
+  goalColliders: GoalFrameCollider[]
   spawn: Vec3
   collider: ReturnType<typeof getPitchColliderFromBounds>
 } {
@@ -113,36 +252,29 @@ export function extractFieldData(scene: THREE.Object3D): {
   const awayGoal = boxes[0]
   const homeGoal = boxes[boxes.length - 1]
 
-  const awayScoringGoalZ = awayGoal?.z ?? pitchMinZ
-  const homeScoringGoalZ = homeGoal?.z ?? pitchMaxZ
+  const awayScoringGoalZ = awayGoal?.box.max.z ?? pitchMinZ
+  const homeScoringGoalZ = homeGoal?.box.min.z ?? pitchMaxZ
 
   const goals: GoalZone[] = []
+  const goalColliders: GoalFrameCollider[] = []
 
   if (awayGoal) {
-    const g = awayGoal.box
-    goals.push({
-      team: 'away',
-      minX: g.min.x,
-      maxX: g.max.x,
-      minY: g.min.y,
-      maxY: g.max.y + 1.5,
-      minZ: g.min.z - 0.5,
-      maxZ: g.max.z + 0.3,
-    })
+    const mouth = goalMouthFromBox('away', awayGoal.box, groundY)
+    goals.push(buildGoalZone('away', mouth, groundY))
+    goalColliders.push(...buildGoalFrameColliders(mouth, groundY))
   }
 
   if (homeGoal && homeGoal !== awayGoal) {
-    const g = homeGoal.box
-    goals.push({
-      team: 'home',
-      minX: g.min.x,
-      maxX: g.max.x,
-      minY: g.min.y,
-      maxY: g.max.y + 1.5,
-      minZ: g.min.z - 0.3,
-      maxZ: g.max.z + 0.5,
-    })
+    const mouth = goalMouthFromBox('home', homeGoal.box, groundY)
+    goals.push(buildGoalZone('home', mouth, groundY))
+    goalColliders.push(...buildGoalFrameColliders(mouth, groundY))
   }
+
+  const refGoalBox = homeGoal?.box ?? awayGoal?.box
+  const goalWidth = refGoalBox ? refGoalBox.max.x - refGoalBox.min.x : 7.32 * FIELD_SCALE
+  const goalHeight = refGoalBox
+    ? Math.max(refGoalBox.max.y - groundY, refGoalBox.max.y - refGoalBox.min.y)
+    : 2.44 * FIELD_SCALE
 
   const center: Vec3 = {
     x: fieldBox ? (pitchMinX + pitchMaxX) / 2 : spawnPos.x,
@@ -158,8 +290,8 @@ export function extractFieldData(scene: THREE.Object3D): {
     center,
     homeScoringGoalZ,
     awayScoringGoalZ,
-    goalWidth: 7.32 * FIELD_SCALE,
-    goalHeight: 2.44,
+    goalWidth,
+    goalHeight,
     corners: [
       { x: pitchMinX, y: groundY, z: pitchMinZ },
       { x: pitchMaxX, y: groundY, z: pitchMinZ },
@@ -171,6 +303,7 @@ export function extractFieldData(scene: THREE.Object3D): {
   return {
     bounds,
     goals,
+    goalColliders,
     spawn: { x: spawnPos.x, y: groundY, z: spawnPos.z },
     collider: getPitchColliderFromBounds(bounds),
   }

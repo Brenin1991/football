@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { PlayerAnim, TeamId, Vec3 } from '../types'
-import { ballRef, playerRegistry } from './entityRegistry'
+import { ballRef, ballBodyRef, playerRegistry } from './entityRegistry'
 import { refereeState } from './referee'
 import { getAttackingGoalZ, getAttackSign } from './teamField'
 import { isBallInGoal } from './rules'
@@ -20,11 +20,21 @@ export interface ReplayPlayerSnap {
   z: number
   rotation: number
   anim: PlayerAnim
+  animTime: number
+}
+
+export interface ReplayBallQuat {
+  x: number
+  y: number
+  z: number
+  w: number
 }
 
 export interface ReplayFrame {
   ball: Vec3
   ballVel: Vec3
+  ballQuat: ReplayBallQuat
+  ballAngVel: Vec3
   players: ReplayPlayerSnap[]
   refereeX: number
   refereeZ: number
@@ -34,7 +44,7 @@ export type ReplayCameraMode = 'broadcast' | 'goalSide' | 'dramatic'
 
 type SeqState = 'idle' | 'celebrating' | 'transitioning' | 'replaying'
 
-const BUFFER_SECONDS = 4.2
+const BUFFER_SECONDS = 8.4
 const RECORD_HZ = 30
 const RECORD_INTERVAL = 1 / RECORD_HZ
 const MAX_FRAMES = Math.ceil(BUFFER_SECONDS * RECORD_HZ) + 4
@@ -43,21 +53,28 @@ const GOAL_CELEBRATION_SEC = 2.35
 const FADE_OUT_MS = 480
 const FADE_IN_MS = 620
 
+/** Velocidade do replay (< 1 = câmera lenta) */
+const REPLAY_SLOW_MO = 0.42
+
 const PLAYBACK_SPEED: Record<ReplayEventType, number> = {
-  goal: 0.32,
-  shot: 0.36,
-  save: 0.34,
-  foul: 0.38,
-  offside: 0.38,
+  goal: REPLAY_SLOW_MO,
+  shot: REPLAY_SLOW_MO,
+  save: REPLAY_SLOW_MO,
+  foul: REPLAY_SLOW_MO,
+  offside: REPLAY_SLOW_MO,
 }
 
 const LOOKBACK: Record<ReplayEventType, number> = {
-  goal: 3.6,
-  shot: 2.7,
-  save: 2.9,
-  foul: 2.5,
-  offside: 2.5,
+  goal: 7.2,
+  shot: 5.4,
+  save: 5.8,
+  foul: 6.2,
+  offside: 5.4,
 }
+
+/** Grava mais um pouco após o apito antes de congelar o clip — mostra o carrinho/queda completa */
+const FOUL_REPLAY_TAIL_SEC = 1.45
+const OFFSIDE_REPLAY_TAIL_SEC = 1.1
 
 const EVENT_LABEL: Record<ReplayEventType, string> = {
   goal: 'MARCOU GOL',
@@ -90,6 +107,14 @@ interface ReplayMeta {
   foulSpot?: Vec3
   offsideLineZ?: number
   focusPlayerId?: string | null
+  force?: boolean
+}
+
+interface PendingEventReplay {
+  type: 'foul' | 'offside'
+  meta: ReplayMeta
+  onComplete: () => void
+  armedAt: number
 }
 
 class ReplaySystem {
@@ -102,7 +127,7 @@ class ReplaySystem {
   private playbackFrames: ReplayFrame[] = []
   private playbackTime = 0
   private playbackDuration = 0
-  private playbackSpeed = 0.36
+  private playbackSpeed = REPLAY_SLOW_MO
   private segments: ReplaySegment[] = []
   private onComplete: (() => void) | null = null
 
@@ -116,8 +141,10 @@ class ReplaySystem {
 
   private lastReplayAt = 0
   private pendingShot: PendingShot | null = null
+  private pendingEventReplay: PendingEventReplay | null = null
 
   private interpFrame: ReplayFrame | null = null
+  private discreteFrame: ReplayFrame | null = null
   private playerSnapMap = new Map<string, ReplayPlayerSnap>()
   private liveSnapshot: ReplayFrame | null = null
   private frozenClip: ReplayFrame[] = []
@@ -229,13 +256,47 @@ class ReplaySystem {
   }
 
   getPlayerSnap(id: string): ReplayPlayerSnap | undefined {
-    return this.playerSnapMap.get(id)
+    const pos = this.playerSnapMap.get(id)
+    const discrete = this.discreteFrame?.players.find((p) => p.id === id)
+    if (!pos) return discrete
+    if (!discrete) return pos
+    return {
+      ...pos,
+      anim: discrete.anim,
+      animTime: discrete.animTime,
+    }
   }
 
-  private canStartReplay(force = false) {
-    if (this.isSequenceRunning()) return false
-    if (force) return true
-    return performance.now() - this.lastReplayAt >= MIN_REPLAY_GAP_MS
+  getBallPlayback(): Pick<ReplayFrame, 'ball' | 'ballVel' | 'ballQuat' | 'ballAngVel'> | null {
+    if (!this.interpFrame) return null
+    return {
+      ball: this.interpFrame.ball,
+      ballVel: this.interpFrame.ballVel,
+      ballQuat: this.interpFrame.ballQuat,
+      ballAngVel: this.interpFrame.ballAngVel,
+    }
+  }
+
+  private defaultBallQuat(): ReplayBallQuat {
+    return { x: 0, y: 0, z: 0, w: 1 }
+  }
+
+  private readBallPhysics(): { quat: ReplayBallQuat; angVel: Vec3 } {
+    const body = ballBodyRef.current as {
+      rotation: () => { x: number; y: number; z: number; w: number }
+      angvel: () => { x: number; y: number; z: number }
+    } | null
+
+    if (!body) {
+      return { quat: this.defaultBallQuat(), angVel: { x: 0, y: 0, z: 0 } }
+    }
+
+    const r = body.rotation()
+    const av = body.angvel()
+    return {
+      quat: { x: r.x, y: r.y, z: r.z, w: r.w },
+      angVel: { x: av.x, y: av.y, z: av.z },
+    }
   }
 
   private captureFrame(): ReplayFrame {
@@ -248,11 +309,15 @@ class ReplaySystem {
         z: p.position.z,
         rotation: p.rotation,
         anim: p.anim,
+        animTime: p.animTime ?? 0,
       })
     }
+    const ballPhys = this.readBallPhysics()
     return {
       ball: { ...ballRef.current },
       ballVel: { ...ballRef.velocity },
+      ballQuat: ballPhys.quat,
+      ballAngVel: ballPhys.angVel,
       players,
       refereeX: refereeState.x,
       refereeZ: refereeState.z,
@@ -282,10 +347,21 @@ class ReplaySystem {
     return this.ring.slice(-count).map((f) => ({
       ball: { ...f.ball },
       ballVel: { ...f.ballVel },
-      players: f.players.map((p) => ({ ...p })),
+      ballQuat: { ...(f.ballQuat ?? this.defaultBallQuat()) },
+      ballAngVel: { ...(f.ballAngVel ?? { x: 0, y: 0, z: 0 }) },
+      players: f.players.map((p) => ({
+        ...p,
+        animTime: p.animTime ?? 0,
+      })),
       refereeX: f.refereeX,
       refereeZ: f.refereeZ,
     }))
+  }
+
+  private canStartReplay(force = false) {
+    if (this.isSequenceRunning()) return false
+    if (force) return true
+    return performance.now() - this.lastReplayAt >= MIN_REPLAY_GAP_MS
   }
 
   private buildSegments(type: ReplayEventType): ReplaySegment[] {
@@ -342,7 +418,7 @@ class ReplaySystem {
 
     useGameStore.setState({
       phase: 'goal-celebration',
-      ballFrozen: true,
+      ballFrozen: false,
       ballPossession: null,
       passIntent: null,
       message: `GOL do ${scoringTeam === 'home' ? 'Time Casa' : 'Time Visitante'}!`,
@@ -352,7 +428,7 @@ class ReplaySystem {
   private runReplayWithFades(
     type: ReplayEventType,
     frames: ReplayFrame[],
-    meta: ReplayMeta & { force?: boolean },
+    meta: ReplayMeta,
     onComplete: () => void,
   ) {
     if (frames.length < 6 || !this.canStartReplay(meta.force ?? type === 'goal')) {
@@ -374,9 +450,34 @@ class ReplaySystem {
       })
   }
 
+  private scheduleEventReplay(pending: PendingEventReplay) {
+    if (this.pendingEventReplay || this.isSequenceRunning()) {
+      pending.onComplete()
+      return
+    }
+    this.pendingEventReplay = pending
+  }
+
+  private tickPendingEventReplay() {
+    const pending = this.pendingEventReplay
+    if (!pending) return
+
+    const tailSec =
+      pending.type === 'foul' ? FOUL_REPLAY_TAIL_SEC : OFFSIDE_REPLAY_TAIL_SEC
+    if (performance.now() - pending.armedAt < tailSec * 1000) return
+
+    const lookback = LOOKBACK[pending.type] + tailSec
+    const frames = this.sliceLookback(lookback)
+    const { type, meta, onComplete } = pending
+    this.pendingEventReplay = null
+
+    this.runReplayWithFades(type, frames, { ...meta, force: true }, onComplete)
+  }
+
   private finishPlayback() {
     this.playbackActive = false
     this.interpFrame = null
+    this.discreteFrame = null
     this.playerSnapMap.clear()
     this.offsideLineZ = null
     this.focusPlayerId = null
@@ -401,6 +502,7 @@ class ReplaySystem {
     this.finishPlayback()
     this.seqState = 'idle'
     this.celebrationTeam = null
+    this.pendingEventReplay = null
     this.onComplete = null
   }
 
@@ -428,13 +530,12 @@ class ReplaySystem {
   ) {
     const bounds = useGameStore.getState().fieldBounds
     const goalZ = bounds ? getAttackingGoalZ(fouledTeam, bounds) : spot.z
-    const frames = this.sliceLookback(LOOKBACK.foul)
-    this.runReplayWithFades(
-      'foul',
-      frames,
-      { team: fouledTeam, goalZ, foulSpot: spot, focusPlayerId: foulerId },
+    this.scheduleEventReplay({
+      type: 'foul',
+      meta: { team: fouledTeam, goalZ, foulSpot: spot, focusPlayerId: foulerId },
       onComplete,
-    )
+      armedAt: performance.now(),
+    })
   }
 
   requestOffsideReplay(
@@ -446,11 +547,9 @@ class ReplaySystem {
   ) {
     const bounds = useGameStore.getState().fieldBounds
     const goalZ = bounds ? getAttackingGoalZ(defendingTeam, bounds) : spot.z
-    const frames = this.sliceLookback(LOOKBACK.offside)
-    this.runReplayWithFades(
-      'offside',
-      frames,
-      {
+    this.scheduleEventReplay({
+      type: 'offside',
+      meta: {
         team: defendingTeam,
         goalZ,
         foulSpot: spot,
@@ -458,7 +557,8 @@ class ReplaySystem {
         focusPlayerId: receiverId,
       },
       onComplete,
-    )
+      armedAt: performance.now(),
+    })
   }
 
   requestShotReplay(
@@ -562,6 +662,8 @@ class ReplaySystem {
   }
 
   updateSequence(delta: number) {
+    this.tickPendingEventReplay()
+
     if (this.seqState === 'celebrating') {
       this.celebrationTimer += delta
       if (this.celebrationTimer >= GOAL_CELEBRATION_SEC) {
@@ -611,12 +713,32 @@ class ReplaySystem {
         ref.position = { x: p.x, y: p.y, z: p.z }
         ref.rotation = p.rotation
         ref.velocity = { x: 0, y: 0, z: 0 }
+        ref.anim = p.anim
+        ref.animTime = p.animTime ?? 0
       }
     }
   }
 
   private lerp(a: number, b: number, t: number) {
     return a + (b - a) * t
+  }
+
+  private lerpAngle(a: number, b: number, t: number) {
+    let delta = b - a
+    while (delta > Math.PI) delta -= Math.PI * 2
+    while (delta < -Math.PI) delta += Math.PI * 2
+    return a + delta * t
+  }
+
+  private lerpQuat(
+    a: ReplayBallQuat,
+    b: ReplayBallQuat,
+    t: number,
+  ): ReplayBallQuat {
+    const qa = new THREE.Quaternion(a.x, a.y, a.z, a.w)
+    const qb = new THREE.Quaternion(b.x, b.y, b.z, b.w)
+    qa.slerp(qb, t)
+    return { x: qa.x, y: qa.y, z: qa.z, w: qa.w }
   }
 
   private lerpFrame(a: ReplayFrame, b: ReplayFrame, t: number): ReplayFrame {
@@ -628,15 +750,20 @@ class ReplaySystem {
         x: this.lerp(pa.x, pb.x, t),
         y: this.lerp(pa.y, pb.y, t),
         z: this.lerp(pa.z, pb.z, t),
-        rotation: pa.rotation,
-        anim: pa.anim ?? 'idle',
+        rotation: this.lerpAngle(pa.rotation, pb.rotation, t),
+        anim: pa.anim ?? 'player_idle',
+        animTime: this.lerp(pa.animTime ?? 0, pb.animTime ?? 0, t),
       }
     })
     for (const pb of b.players) {
       if (!players.some((p) => p.id === pb.id)) {
-        players.push({ ...pb })
+        players.push({ ...pb, animTime: pb.animTime ?? 0 })
       }
     }
+    const aq = a.ballQuat ?? this.defaultBallQuat()
+    const bq = b.ballQuat ?? this.defaultBallQuat()
+    const aav = a.ballAngVel ?? { x: 0, y: 0, z: 0 }
+    const bav = b.ballAngVel ?? { x: 0, y: 0, z: 0 }
     return {
       ball: {
         x: this.lerp(a.ball.x, b.ball.x, t),
@@ -647,6 +774,12 @@ class ReplaySystem {
         x: this.lerp(a.ballVel.x, b.ballVel.x, t),
         y: this.lerp(a.ballVel.y, b.ballVel.y, t),
         z: this.lerp(a.ballVel.z, b.ballVel.z, t),
+      },
+      ballQuat: this.lerpQuat(aq, bq, t),
+      ballAngVel: {
+        x: this.lerp(aav.x, bav.x, t),
+        y: this.lerp(aav.y, bav.y, t),
+        z: this.lerp(aav.z, bav.z, t),
       },
       players,
       refereeX: this.lerp(a.refereeX, b.refereeX, t),
@@ -681,6 +814,11 @@ class ReplaySystem {
 
     this.playbackTime += delta * this.playbackSpeed
     const progress = Math.min(1, this.playbackTime / this.playbackDuration)
+    const discreteIdx = Math.min(
+      this.playbackFrames.length - 1,
+      Math.max(0, Math.floor(this.playbackTime * RECORD_HZ)),
+    )
+    this.discreteFrame = this.playbackFrames[discreteIdx] ?? null
     const frame = this.sampleFrame(this.playbackTime)
     this.interpFrame = frame
 
@@ -691,7 +829,7 @@ class ReplaySystem {
 
     this.applyFrame(frame)
 
-    return progress < 1
+    return progress < 1 - 1e-5
   }
 
   getCameraState(

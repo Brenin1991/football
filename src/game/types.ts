@@ -37,16 +37,20 @@ export type PlayerActionAnim =
   | 'player_trip'
   | 'player_header'
   | 'player_receive'
+  | 'player_throw_in'
+  | 'player_spin'
 
 export type PlayerAnim = PlayerLocoAnim | PlayerActionAnim
 
 export type GoalkeeperAnim =
   | 'gk_idle'
   | 'gk_idle_ball'
+  | 'gk_catch'
   | 'gk_diving_save_left'
   | 'gk_diving_save_right'
   | 'gk_body_save_left'
   | 'gk_body_save_right'
+  | 'gk_miss_middle'
   | 'gk_hand_pass'
 
 export type PlayerRole = 'gk' | 'def' | 'mid' | 'fwd'
@@ -69,9 +73,9 @@ export interface FieldBounds {
   minZ: number
   maxZ: number
   center: Vec3
-  /** Z do gol onde a CASA marca (gol_02 no GLB) */
+  /** Z da linha de gol onde a CASA marca (face do gol virada pro campo) */
   homeScoringGoalZ: number
-  /** Z do gol onde o VISITANTE marca (gol_01 no GLB) */
+  /** Z da linha de gol onde o VISITANTE marca */
   awayScoringGoalZ: number
   goalWidth: number
   goalHeight: number

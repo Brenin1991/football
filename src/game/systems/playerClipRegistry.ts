@@ -16,6 +16,8 @@ export const PLAYER_CLIP_ALIASES: Record<PlayerAnim, readonly string[]> = {
   player_trip: ['player_trip', 'cair'],
   player_header: ['player_header'],
   player_receive: ['player_receive'],
+  player_throw_in: ['player_throw_in'],
+  player_spin: ['player_spin'],
 }
 
 export const PLAYER_LOCO_ANIMS: PlayerLocoAnim[] = [
@@ -39,6 +41,8 @@ export const PLAYER_ACTION_ANIMS: PlayerAnim[] = [
   'player_trip',
   'player_header',
   'player_receive',
+  'player_throw_in',
+  'player_spin',
 ]
 
 export function buildClipNameSet(clips: AnimationClip[]): Set<string> {

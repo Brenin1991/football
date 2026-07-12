@@ -922,19 +922,36 @@ body,
 }
 
 /* —— Nome do jogador selecionado (acima da cabeça) —— */
+.psx-player-selection-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+
 .psx-player-selection-name {
   font-family: var(--font-hud);
   font-weight: var(--pes-font-medium);
   color: #fff;
-  font-size: 24px;
+  font-size: 13px;
   line-height: 1;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   white-space: nowrap;
-  text-shadow: var(--we-text-shadow);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
 
 .psx-player-selection-name--yellow {
   color: #fbbf24;
+}
+
+.psx-player-selection-indicator {
+  display: block;
+  width: 25px;
+  height: auto;
+  margin-top: 0px;
+  pointer-events: none;
+  user-select: none;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.95));
 }
 
 .psx-toast {
@@ -1207,10 +1224,20 @@ body,
   text-transform: uppercase;
 }
 
-.graphics-toggle {
+.graphics-toggle-wrap {
   position: absolute;
   top: 1.25rem;
   right: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.45rem;
+  pointer-events: auto;
+  z-index: 20;
+}
+
+.graphics-toggle {
+  position: static;
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -1218,8 +1245,32 @@ body,
   background: rgba(0, 0, 0, 0.62);
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 8px;
-  pointer-events: auto;
-  z-index: 20;
+}
+
+.graphics-resolution-select {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.45rem;
+  background: rgba(0, 0, 0, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+}
+
+.graphics-resolution-select select {
+  font: inherit;
+  font-size: 0.72rem;
+  color: #f3f4f6;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 0.2rem 0.35rem;
+  cursor: pointer;
+}
+
+.graphics-resolution-select select:focus {
+  outline: 1px solid rgba(251, 191, 36, 0.65);
+  outline-offset: 1px;
 }
 
 .graphics-toggle-label {
@@ -1883,8 +1934,8 @@ body,
 
 .hud,
 .hud *,
-.graphics-toggle,
-.graphics-toggle *,
+.graphics-toggle-wrap,
+.graphics-toggle-wrap *,
 .replay-tv,
 .replay-tv * {
   text-shadow: var(--psx-text-shadow);

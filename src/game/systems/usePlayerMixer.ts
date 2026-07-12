@@ -7,6 +7,7 @@ import {
   PLAYER_CLIP_ALIASES,
   resolveClipName,
 } from './playerClipRegistry'
+import { GK_CLIP_ALIASES, resolveGkClipName } from './gkClipRegistry'
 
 export type ClipAnimName = PlayerAnim | GoalkeeperAnim
 
@@ -30,8 +31,14 @@ export function usePlayerMixer(
       const clip = clips.find((c) => c.name === resolved)
       if (clip) map.set(anim, clip)
     }
+    for (const anim of Object.keys(GK_CLIP_ALIASES) as GoalkeeperAnim[]) {
+      const resolved = resolveGkClipName(anim, available)
+      if (!resolved) continue
+      const clip = clips.find((c) => c.name === resolved)
+      if (clip) map.set(anim, clip)
+    }
     for (const clip of clips) {
-      if (clip.name.startsWith('gk_')) map.set(clip.name, clip)
+      if (clip.name.startsWith('gk_') && !map.has(clip.name)) map.set(clip.name, clip)
     }
     return map
   }, [clips])
@@ -63,5 +70,5 @@ export function usePlayerMixer(
     return map
   }, [animToClip, mixer])
 
-  return { mixer, actions }
+  return { mixer, actions, animToClip }
 }

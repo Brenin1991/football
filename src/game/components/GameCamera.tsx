@@ -19,6 +19,7 @@ const TRACK_FOCUS_X = 0.26
 const CORNER_CAM_BEHIND = 3.1
 const CORNER_CAM_HEIGHT = 2.45
 const CORNER_LOOK_AHEAD = 5.5
+const REPLAY_FOV = 40
 
 export function GameCamera() {
   const { camera } = useThree()
@@ -76,6 +77,11 @@ export function GameCamera() {
       camera.position.lerp(replayPos.current, t)
       lookAt.current.lerp(replayLook.current, t)
       camera.lookAt(lookAt.current)
+      if (camera instanceof THREE.PerspectiveCamera) {
+        const fovT = 1 - Math.exp(-7.5 * delta)
+        camera.fov = THREE.MathUtils.lerp(camera.fov, REPLAY_FOV, fovT)
+        camera.updateProjectionMatrix()
+      }
       camera.getWorldDirection(camDir.current)
       updateCameraBasis(camDir.current.x, camDir.current.z)
       return

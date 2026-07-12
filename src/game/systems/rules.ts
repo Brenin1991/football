@@ -1,4 +1,5 @@
 import type { FieldBounds, GoalZone, OutType, TeamId, Vec3 } from '../types'
+import { BALL_RADIUS } from '../constants'
 import { getOpponent } from '../store/gameStore'
 import {
   getAttackingGoalZ,
@@ -26,16 +27,18 @@ export function isBallInBounds(
 
 export function isBallInGoal(pos: Vec3, goals: GoalZone[]): TeamId | null {
   for (const goal of goals) {
-    if (
-      pos.x >= goal.minX &&
-      pos.x <= goal.maxX &&
-      pos.y >= goal.minY &&
-      pos.y <= goal.maxY &&
-      pos.z >= goal.minZ &&
-      pos.z <= goal.maxZ
-    ) {
-      return getScoringTeamForGoalZone(goal.team)
-    }
+    if (pos.x < goal.minX || pos.x > goal.maxX) continue
+    if (pos.y < goal.minY || pos.y > goal.maxY) continue
+    if (pos.z < goal.minZ || pos.z > goal.maxZ) continue
+
+    const lineZ = goal.team === 'home' ? goal.minZ : goal.maxZ
+    const crossed =
+      goal.team === 'home'
+        ? pos.z - BALL_RADIUS > lineZ
+        : pos.z + BALL_RADIUS < lineZ
+    if (!crossed) continue
+
+    return getScoringTeamForGoalZone(goal.team)
   }
   return null
 }

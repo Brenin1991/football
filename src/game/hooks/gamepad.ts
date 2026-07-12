@@ -80,12 +80,16 @@ export function pollXboxGamepad(
     cancelCharge: boolean
     aimLeft: boolean
     aimRight: boolean
+    skillX: number
+    skillZ: number
   },
 ): boolean {
   const pad = getActiveGamepad()
   if (!pad) {
     out.moveX = 0
     out.moveZ = 0
+    out.skillX = 0
+    out.skillZ = 0
     return false
   }
 
@@ -94,7 +98,11 @@ export function pollXboxGamepad(
   out.moveX = -lx
   out.moveZ = -ly
 
-  out.sprint = buttonPressed(pad, XBOX.RB)
+  // Analógico direito — drible/finta (player_spin), separado do de andar.
+  const rx = applyDeadzone(pad.axes[XBOX.AXIS_RX] ?? 0, 0.22)
+  const ry = applyDeadzone(pad.axes[XBOX.AXIS_RY] ?? 0, 0.22)
+  out.skillX = rx
+  out.skillZ = -ry
 
   out.passHeld = buttonPressed(pad, XBOX.A)
   out.throughHeld = buttonPressed(pad, XBOX.Y)
@@ -108,7 +116,8 @@ export function pollXboxGamepad(
   out.shieldHeld = triggerValue(pad, XBOX.LT) > TRIGGER_SPRINT
   out.cancelCharge = lbPressed && !edge.prevButtons[XBOX.LB]
 
-  const rx = applyDeadzone(pad.axes[XBOX.AXIS_RX] ?? 0, 0.22)
+  out.sprint = buttonPressed(pad, XBOX.RB)
+
   out.aimLeft =
     buttonPressed(pad, XBOX.DPAD_LEFT) || rx < -0.35
   out.aimRight =

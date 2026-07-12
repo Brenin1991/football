@@ -1,7 +1,18 @@
 import { create } from 'zustand'
 import { getGoalkeeperId, HALF_DURATION, MATCH_DURATION } from '../constants'
+import { ACTION_BUFFER_WINDOW_MS } from '../systems/shotPower'
 import type { PowerBarMode } from '../systems/shotPower'
 import type { FieldBounds, GoalZone, MatchPhase, TeamId, Vec3 } from '../types'
+import type { GoalFrameCollider } from '../systems/fieldData'
+import { clearDribbleState } from '../systems/ballDribble'
+import { playerRegistry } from '../systems/entityRegistry'
+
+const claimBlockUntilByPlayer = new Map<string, number>()
+
+export type PitchColliderDebug = {
+  halfExtents: [number, number, number]
+  position: [number, number, number]
+}
 
 export interface StrikeAimState {
   originX: number
@@ -58,9 +69,13 @@ interface GameStore {
   countdown: number
   fieldBounds: FieldBounds | null
   goalZones: GoalZone[]
+  pitchCollider: PitchColliderDebug | null
+  goalFrameColliders: GoalFrameCollider[]
   ballFrozen: boolean
   /** Jogador ativo do time controlado (casa) — troca automática estilo FIFA */
   activePlayerId: string
+  /** Evita auto-troca logo após LB manual */
+  manualSwitchUntil: number
   /** Bola presa no pé de um jogador, ou solta */
   ballPossession: BallPossession | null
   /** Evita roubo instantâneo ping-pong */
@@ -69,6 +84,8 @@ interface GameStore {
   passIntent: PassIntent | null
   passBlockPlayerId: string | null
   passBlockUntil: number
+  /** Bloqueia domínio por distância — só física de contato */
+  ballClaimFreezeUntil: number
   /** Incrementado a cada saída de bola — reposiciona jogadores na formação */
   kickoffResetVersion: number
   /** Direção da cobrança (lateral, escanteio, tiro de meta) */
@@ -82,6 +99,9 @@ interface GameStore {
   /** Escanteio / tiro de meta — dispara animação shoot no cobrador */
   setPieceShootAnim: { kickerId: string; at: number } | null
 
+  /** Lateral — animação de arremesso (bola sai no contato) */
+  setPieceThrowAnim: { kickerId: string; at: number; power: number } | null
+
   /** Saída de bola — animação de passe no cobrador */
   kickoffStrikeAnim: { kickerId: string; at: number } | null
 
@@ -89,12 +109,24 @@ interface GameStore {
   shotChargeActive: boolean
   shotChargePower: number
   powerBarMode: PowerBarMode
-  pendingUserShot: { power: number; playerId: string; queuedAt: number } | null
+  pendingUserShot: {
+    power: number
+    playerId: string
+    queuedAt: number
+    dirX: number
+    dirZ: number
+    /** Pré-agendado antes de dominar (first-time / rebote) */
+    buffered?: boolean
+  } | null
   pendingUserPass: {
     type: 'pass' | 'through' | 'cross'
     power: number
     playerId: string
     queuedAt: number
+    dirX?: number
+    dirZ?: number
+    /** Pré-agendado antes de receber a bola (first-time / antecipação) */
+    buffered: boolean
   } | null
   pendingSetPiecePower: number
 
@@ -117,7 +149,11 @@ interface GameStore {
   /** Última escala antes de pausar — restaurada ao despausar */
   resumeTimeScale: number
 
-  setFieldData: (bounds: FieldBounds, goals: GoalZone[]) => void
+  setFieldData: (
+    bounds: FieldBounds,
+    goals: GoalZone[],
+    colliders?: { pitch: PitchColliderDebug; frames: GoalFrameCollider[] },
+  ) => void
   setTimeScale: (scale: number) => void
   togglePause: () => void
   resetTimeScale: () => void
@@ -126,11 +162,13 @@ interface GameStore {
   setCountdown: (countdown: number) => void
   setBallFrozen: (frozen: boolean) => void
   setLastTouch: (team: TeamId) => void
-  setActivePlayer: (id: string) => void
+  setActivePlayer: (id: string, manual?: boolean) => void
   setPossession: (playerId: string, team: TeamId) => void
   clearPossession: () => void
   setPassIntent: (intent: PassIntent | null) => void
   blockPasserClaim: (playerId: string, ms: number) => void
+  freezeDistanceBallClaims: (ms: number) => void
+  canDistanceClaimBall: () => boolean
   canPlayerClaimBall: (playerId: string) => boolean
   tickMatchTime: (delta: number) => void
   scoreGoal: (scoringTeam: TeamId) => void
@@ -146,12 +184,27 @@ interface GameStore {
   setSetPieceAim: (angle: number) => void
   setSetPieceKickPending: (pending: boolean) => void
   setShotCharge: (power: number, active: boolean, mode?: PowerBarMode) => void
-  setPendingUserShot: (power: number) => void
-  consumePendingUserShot: (playerId: string) => number | null
-  setPendingUserPass: (type: 'pass' | 'through' | 'cross', power: number) => void
+  setPendingUserShot: (
+    power: number,
+    dirX?: number,
+    dirZ?: number,
+    buffered?: boolean,
+  ) => void
+  consumePendingUserShot: (
+    playerId: string,
+  ) => { power: number; dirX: number; dirZ: number } | null
+  setPendingUserPass: (
+    type: 'pass' | 'through' | 'cross',
+    power: number,
+    buffered?: boolean,
+    dirX?: number,
+    dirZ?: number,
+  ) => void
   consumePendingUserPass: (playerId: string) => {
     type: 'pass' | 'through' | 'cross'
     power: number
+    dirX?: number
+    dirZ?: number
   } | null
   setPendingSetPiecePower: (power: number) => void
   takePendingSetPiecePower: () => number
@@ -185,19 +238,24 @@ export const useGameStore = create<GameStore>((set, get) => ({
   countdown: 0,
   fieldBounds: null,
   goalZones: [],
+  pitchCollider: null,
+  goalFrameColliders: [],
   ballFrozen: true,
   activePlayerId: 'home-9',
+  manualSwitchUntil: 0,
   ballPossession: null,
   possessionSince: 0,
   passIntent: null,
   passBlockPlayerId: null,
   passBlockUntil: 0,
+  ballClaimFreezeUntil: 0,
   kickoffResetVersion: 0,
   setPieceAimAngle: 0,
   setPieceGuardUntil: 0,
   setPieceGuardPos: null,
   setPieceKickPending: false,
   setPieceShootAnim: null,
+  setPieceThrowAnim: null,
   kickoffStrikeAnim: null,
   shotChargeActive: false,
   shotChargePower: 0,
@@ -220,7 +278,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({ userTeam: team, activePlayerId: `${team}-9` })
   },
 
-  setFieldData: (bounds, goals) => set({ fieldBounds: bounds, goalZones: goals }),
+  setFieldData: (bounds, goals, colliders) =>
+    set({
+      fieldBounds: bounds,
+      goalZones: goals,
+      pitchCollider: colliders?.pitch ?? null,
+      goalFrameColliders: colliders?.frames ?? [],
+    }),
 
   setTimeScale: (scale) => {
     const clamped = Math.max(0, Math.min(3, scale))
@@ -256,26 +320,48 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setLastTouch: (team) => set({ lastTouchTeam: team }),
 
-  setActivePlayer: (id) => {
+  setActivePlayer: (id, manual = false) => {
     if (id === getGoalkeeperId(get().userTeam)) return
     if (get().sentOffPlayers.includes(id)) return
-    set({ activePlayerId: id })
+    if (id === get().activePlayerId) return
+    const poss = get().ballPossession
+    if (manual && poss?.team === get().userTeam && poss.playerId !== id) return
+    set({
+      activePlayerId: id,
+      ...(manual ? { manualSwitchUntil: performance.now() + 1100 } : {}),
+    })
   },
 
   setPossession: (playerId, team) => {
-    const userTeam = get().userTeam
+    const state = get()
+    const current = state.ballPossession
+    if (current?.playerId === playerId && current.team === team) return
+
+    const userTeam = state.userTeam
     const switchActive =
       team === userTeam && playerId !== getGoalkeeperId(userTeam)
+    const nextActive =
+      switchActive && playerId !== state.activePlayerId
+        ? playerId
+        : state.activePlayerId
+
     set({
       ballPossession: { playerId, team },
       possessionSince: performance.now(),
       lastTouchTeam: team,
-      activePlayerId: switchActive ? playerId : get().activePlayerId,
+      activePlayerId: nextActive,
       passIntent: null,
+      ...(team !== userTeam
+        ? { pendingUserPass: null, pendingUserShot: null }
+        : {}),
     })
   },
 
-  clearPossession: () => set({ ballPossession: null }),
+  clearPossession: () => {
+    if (get().ballPossession === null) return
+    clearDribbleState()
+    set({ ballPossession: null })
+  },
 
   setPassIntent: (intent) => {
     if (!intent) {
@@ -284,35 +370,46 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
 
     const receiverId = intent.receiverId
-    const userTeam = get().userTeam
-    const selectReceiver =
-      receiverId.startsWith(`${userTeam}-`) &&
-      receiverId !== getGoalkeeperId(userTeam) &&
-      !get().sentOffPlayers.includes(receiverId)
+
+    const pending = get().pendingUserPass
+    const keepBufferedPass =
+      pending?.buffered &&
+      pending.playerId === receiverId
 
     set({
       passIntent: intent,
       pendingUserShot: null,
-      pendingUserPass: null,
+      pendingUserPass: keepBufferedPass ? pending : null,
       shotChargeActive: false,
       shotChargePower: 0,
       powerBarMode: null,
-      ...(selectReceiver ? { activePlayerId: receiverId } : {}),
     })
   },
 
-  blockPasserClaim: (playerId, ms) =>
+  blockPasserClaim: (playerId, ms) => {
+    const until = performance.now() + ms
+    claimBlockUntilByPlayer.set(
+      playerId,
+      Math.max(claimBlockUntilByPlayer.get(playerId) ?? 0, until),
+    )
     set({
       passBlockPlayerId: playerId,
-      passBlockUntil: performance.now() + ms,
+      passBlockUntil: until,
+    })
+  },
+
+  freezeDistanceBallClaims: (ms) =>
+    set({
+      ballClaimFreezeUntil: performance.now() + ms,
     }),
 
+  canDistanceClaimBall: () => performance.now() >= get().ballClaimFreezeUntil,
+
   canPlayerClaimBall: (playerId) => {
-    const { passBlockPlayerId, passBlockUntil, sentOffPlayers } = get()
+    const { sentOffPlayers } = get()
     if (sentOffPlayers.includes(playerId)) return false
-    if (passBlockPlayerId === playerId && performance.now() < passBlockUntil) {
-      return false
-    }
+    const blockedUntil = claimBlockUntilByPlayer.get(playerId)
+    if (blockedUntil != null && performance.now() < blockedUntil) return false
     return true
   },
 
@@ -352,7 +449,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       scoreHome: scoringTeam === 'home' ? state.scoreHome + 1 : state.scoreHome,
       scoreAway: scoringTeam === 'away' ? state.scoreAway + 1 : state.scoreAway,
       phase: 'goal',
-      ballFrozen: true,
+      ballFrozen: false,
       ballPossession: null,
       message: `GOL do ${scoringTeam === 'home' ? 'Time Casa' : 'Time Visitante'}!`,
       kickoffTeam: scoringTeam === 'home' ? 'away' : 'home',
@@ -371,6 +468,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       countdown: 0,
       setPieceKickPending: false,
       setPieceShootAnim: null,
+  setPieceThrowAnim: null,
       kickoffStrikeAnim: null,
     })
   },
@@ -407,22 +505,51 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setSetPieceKickPending: (pending) => set({ setPieceKickPending: pending }),
 
-  setShotCharge: (power, active, mode = null) =>
+  setShotCharge: (power, active, mode = null) => {
+    const rounded = Math.round(power * 40) / 40
+    const state = get()
+    const nextMode = active ? mode : null
+    if (
+      state.shotChargeActive === active &&
+      state.shotChargePower === rounded &&
+      state.powerBarMode === nextMode
+    ) {
+      return
+    }
     set({
-      shotChargePower: power,
+      shotChargePower: rounded,
       shotChargeActive: active,
-      powerBarMode: active ? mode : null,
-    }),
+      powerBarMode: nextMode,
+    })
+  },
 
-  setPendingUserShot: (power) =>
+  setPendingUserShot: (power, dirX, dirZ, buffered = false) => {
+    const state = get()
+    const aim = state.strikeAim
+    let playerId = state.activePlayerId
+
+    if (buffered && state.passIntent) {
+      const receiver = playerRegistry.get(state.passIntent.receiverId)
+      if (receiver && receiver.team === getUserTeam()) {
+        playerId = state.passIntent.receiverId
+        if (playerId !== state.activePlayerId) {
+          get().setActivePlayer(playerId)
+        }
+      }
+    }
+
     set({
       pendingUserShot: {
         power,
-        playerId: get().activePlayerId,
+        playerId,
         queuedAt: performance.now(),
+        dirX: dirX ?? aim?.dirX ?? 0,
+        dirZ: dirZ ?? aim?.dirZ ?? 1,
+        buffered,
       },
       pendingUserPass: null,
-    }),
+    })
+  },
 
   consumePendingUserShot: (playerId) => {
     const state = get()
@@ -430,21 +557,63 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!pending || pending.playerId !== playerId) return null
     const poss = state.ballPossession
     if (!poss || poss.playerId !== playerId) return null
-    if (pending.queuedAt < state.possessionSince) return null
+    if (pending.buffered) {
+      if (performance.now() - pending.queuedAt > ACTION_BUFFER_WINDOW_MS) {
+        return null
+      }
+    } else if (pending.queuedAt < state.possessionSince) {
+      return null
+    }
     set({ pendingUserShot: null })
-    return pending.power
+    return {
+      power: pending.power,
+      dirX: pending.dirX,
+      dirZ: pending.dirZ,
+    }
   },
 
-  setPendingUserPass: (type, power) =>
+  setPendingUserPass: (type, power, buffered = false, dirX, dirZ) => {
+    const state = get()
+    const aim = state.strikeAim
+    let playerId = state.activePlayerId
+
+    if (buffered && state.passIntent) {
+      const receiver = playerRegistry.get(state.passIntent.receiverId)
+      if (receiver && receiver.team === getUserTeam()) {
+        playerId = state.passIntent.receiverId
+        if (playerId !== state.activePlayerId) {
+          get().setActivePlayer(playerId)
+        }
+      }
+    }
+
+    const nextDirX = dirX ?? aim?.dirX
+    const nextDirZ = dirZ ?? aim?.dirZ
+    const prev = state.pendingUserPass
+    if (
+      prev &&
+      prev.playerId === playerId &&
+      prev.type === type &&
+      prev.power === power &&
+      prev.buffered === buffered &&
+      prev.dirX === nextDirX &&
+      prev.dirZ === nextDirZ
+    ) {
+      return
+    }
     set({
       pendingUserPass: {
         type,
         power,
-        playerId: get().activePlayerId,
+        playerId,
         queuedAt: performance.now(),
+        buffered,
+        dirX: nextDirX,
+        dirZ: nextDirZ,
       },
       pendingUserShot: null,
-    }),
+    })
+  },
 
   consumePendingUserPass: (playerId) => {
     const state = get()
@@ -452,9 +621,20 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!pending || pending.playerId !== playerId) return null
     const poss = state.ballPossession
     if (!poss || poss.playerId !== playerId) return null
-    if (pending.queuedAt < state.possessionSince) return null
+    if (pending.buffered) {
+      if (performance.now() - pending.queuedAt > ACTION_BUFFER_WINDOW_MS) {
+        return null
+      }
+    } else if (pending.queuedAt < state.possessionSince) {
+      return null
+    }
     set({ pendingUserPass: null })
-    return { type: pending.type, power: pending.power }
+    return {
+      type: pending.type,
+      power: pending.power,
+      dirX: pending.dirX,
+      dirZ: pending.dirZ,
+    }
   },
 
   setPendingSetPiecePower: (power) => set({ pendingSetPiecePower: power }),
@@ -488,18 +668,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setStrikeAim: (aim) => {
     const prev = get().strikeAim
+    if (prev === aim) return
     if (
-      prev === aim ||
-      (prev &&
-        aim &&
-        prev.originX === aim.originX &&
-        prev.originZ === aim.originZ &&
-        prev.dirX === aim.dirX &&
-        prev.dirZ === aim.dirZ &&
-        prev.facingDot === aim.facingDot &&
-        prev.mode === aim.mode &&
-        prev.power === aim.power &&
-        prev.charging === aim.charging)
+      prev &&
+      aim &&
+      prev.dirX === aim.dirX &&
+      prev.dirZ === aim.dirZ &&
+      prev.facingDot === aim.facingDot &&
+      prev.mode === aim.mode &&
+      prev.power === aim.power &&
+      prev.charging === aim.charging
     ) {
       return
     }
