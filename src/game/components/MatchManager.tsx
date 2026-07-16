@@ -143,7 +143,7 @@ export function MatchManager() {
             position = resolveCorner(crossBall, fieldBounds, team)
             message =
               team === getUserTeam()
-                ? `Escanteio — ← → mirar · Espaço chutar`
+                ? `Escanteio — ← → mirar · Espaço chute · E passe · Q cruzamento`
                 : `Escanteio — Visitante`
           } else {
             position = resolveGoalKick(fieldBounds, team)
@@ -246,8 +246,7 @@ export function MatchManager() {
       timerRef.current >= GOAL_CELEBRATION_TIME &&
       !transitionBusyRef.current
     ) {
-      const center = getKickoffPosition(fieldBounds.center)
-      center.y = ballRestY()
+      const center = getKickoffPosition(fieldBounds)
       transitionBusyRef.current = true
       void runScreenTransition(() => {
         setupKickoff(store.kickoffTeam, center)

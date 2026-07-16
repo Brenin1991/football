@@ -129,12 +129,94 @@ const HIDDEN_NODES = new Set(['gol_01', 'gol_02', 'ball_spawn'])
 const BASE_HALF_X = 6.5
 const BASE_HALF_Z = 9.5
 
-/** Volume ortográfico da shadow map — ajustado ao campo para não desperdiçar resolução */
+/** Volume ortográfico fallback — cobre campo + margem (luz em ângulo precisa de folga) */
 export const SHADOW_CAMERA = {
-  halfX: BASE_HALF_X * FIELD_SCALE * 1.1,
-  halfZ: BASE_HALF_Z * FIELD_SCALE * 1.1,
-  near: 2,
-  far: 90,
+  halfX: BASE_HALF_X * FIELD_SCALE * 2.4,
+  halfZ: BASE_HALF_Z * FIELD_SCALE * 2.4,
+  near: 1,
+  far: 220,
+}
+
+/**
+ * Ajusta a shadow camera do sol para cobrir o campo inteiro (e um pouco do entorno).
+ * Usa o AABB do field_area no espaço da câmera de sombra — evita o “quadrado só no meio”.
+ */
+export function fitDirectionalLightShadowToField(
+  light: THREE.DirectionalLight,
+  scene: THREE.Object3D,
+  pad = 1.45,
+): void {
+  if (!light.shadow) return
+
+  const cam = light.shadow.camera as THREE.OrthographicCamera
+  const fieldArea = scene.getObjectByName('field_area')
+  const box = fieldArea
+    ? new THREE.Box3().setFromObject(fieldArea)
+    : new THREE.Box3(
+        new THREE.Vector3(PITCH_LIMITS.minX, PITCH_LIMITS.groundY, PITCH_LIMITS.minZ),
+        new THREE.Vector3(PITCH_LIMITS.maxX, PITCH_LIMITS.groundY + 4, PITCH_LIMITS.maxZ),
+      )
+
+  // Inclui altura de jogadores / postes pra sombra não cortar em pé
+  box.min.y = Math.min(box.min.y, PITCH_LIMITS.groundY - 0.5)
+  box.max.y = Math.max(box.max.y, PITCH_LIMITS.groundY + 6)
+
+  const center = box.getCenter(new THREE.Vector3())
+  light.target.position.copy(center)
+  if (!light.target.parent) {
+    scene.add(light.target)
+  }
+  light.target.updateMatrixWorld(true)
+  light.updateMatrixWorld(true)
+
+  // A shadow camera do DirectionalLight é quem aponta pro alvo (não a luz em si)
+  cam.position.copy(light.position)
+  cam.lookAt(light.target.position)
+  cam.updateMatrixWorld(true)
+
+  const corners = [
+    new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+  ]
+
+  const inv = cam.matrixWorld.clone().invert()
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  let minZ = Infinity
+  let maxZ = -Infinity
+
+  for (const c of corners) {
+    c.applyMatrix4(inv)
+    minX = Math.min(minX, c.x)
+    maxX = Math.max(maxX, c.x)
+    minY = Math.min(minY, c.y)
+    maxY = Math.max(maxY, c.y)
+    minZ = Math.min(minZ, c.z)
+    maxZ = Math.max(maxZ, c.z)
+  }
+
+  const halfW = Math.max(4, (maxX - minX) * 0.5 * pad)
+  const halfH = Math.max(4, (maxY - minY) * 0.5 * pad)
+  const cx = (minX + maxX) * 0.5
+  const cy = (minY + maxY) * 0.5
+
+  cam.left = cx - halfW
+  cam.right = cx + halfW
+  cam.top = cy + halfH
+  cam.bottom = cy - halfH
+  // near/far: pontos no espaço da câmera (Three olha -Z)
+  cam.near = Math.max(0.5, -maxZ - 8)
+  cam.far = Math.max(cam.near + 40, -minZ + 24)
+  cam.updateProjectionMatrix()
+  light.shadow.needsUpdate = true
 }
 
 /** Fallback se field_area não existir no GLB */
@@ -298,6 +380,7 @@ export function extractFieldData(scene: THREE.Object3D): {
       { x: pitchMaxX, y: groundY, z: pitchMaxZ },
       { x: pitchMinX, y: groundY, z: pitchMaxZ },
     ],
+    ballSpawn: { x: spawnPos.x, y: groundY, z: spawnPos.z },
   }
 
   return {
@@ -311,6 +394,12 @@ export function extractFieldData(scene: THREE.Object3D): {
 
 export function ballRestY(radius = 0.11) {
   return pitchGroundY + radius
+}
+
+/** Centro da saída de bola — usa ball_spawn do mapa quando existir */
+export function getBallSpawnPosition(bounds: FieldBounds): Vec3 {
+  const p = bounds.ballSpawn ?? bounds.center
+  return { x: p.x, y: ballRestY(), z: p.z }
 }
 
 export function getPitchGroundY(): number {

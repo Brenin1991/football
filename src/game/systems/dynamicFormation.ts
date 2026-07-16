@@ -1,9 +1,11 @@
 import type { BallPossession, PassIntent } from '../store/gameStore'
 import { useGameStore } from '../store/gameStore'
 import type { FieldBounds, FormationSlot, PlayerRole, TeamId, Vec3 } from '../types'
-import { MARKER_SWITCH_MARGIN, STEAL_DISTANCE, WORLD_SCALE } from '../constants'
-import { ballRef, playerRegistry } from './entityRegistry'
-import { getBallAtFeet, scorePassInterceptPosition } from './possession'
+import { MARKER_SWITCH_MARGIN, OWN_PASS_CONTEST_DIST, OWN_PASS_TARGET_CONTEST_DIST, WORLD_SCALE } from '../constants'
+import { ballRef, playerRegistry, type PlayerRef } from './entityRegistry'
+import { getHeldBallPoint, scorePassInterceptPosition } from './possession'
+import { adjustInterceptScore, getMatchDifficulty, scaleCompactDefense, scalePressWeight, shouldAssignCoverPresser, shouldSkipBallPressure } from './difficulty'
+import { getUserTeam } from '../store/gameStore'
 import { isGkBallProtected } from './goalkeeper'
 import { distance2D } from './rules'
 import { GOAL_MOUTH_BUFFER, clampForwardFromGoalMouth, getOffsideLineZ } from './offside'
@@ -15,6 +17,44 @@ import {
 } from './teamField'
 
 export type TeamPhase = 'attack' | 'defense' | 'neutral'
+
+export { getMarkerPursuitIntensity } from './difficulty'
+
+/** Passe do próprio time ainda em voo */
+export function isOwnPassInFlight(team: TeamId): boolean {
+  const store = useGameStore.getState()
+  const pi = store.passIntent
+  if (!pi) return false
+  return pi.passingTeam === team || store.lastTouchTeam === team
+}
+
+/** Passe adversário ainda em voo */
+export function isOpponentPassInFlight(team: TeamId): boolean {
+  const store = useGameStore.getState()
+  const pi = store.passIntent
+  if (!pi) return false
+  const passerTeam = pi.passingTeam ?? store.lastTouchTeam
+  return passerTeam != null && passerTeam !== team
+}
+
+/** Posse efetiva para marcação — inclui portador durante passe em voo */
+function getThreatPossession(
+  possession: BallPossession | null,
+): BallPossession | null {
+  if (possession) return possession
+
+  const store = useGameStore.getState()
+  if (!store.passIntent) return null
+
+  const passerId = store.passBlockPlayerId
+  const passerTeam = store.passIntent.passingTeam ?? store.lastTouchTeam
+  if (!passerId || !passerTeam) return null
+
+  const passer = playerRegistry.get(passerId)
+  if (!passer || passer.team !== passerTeam) return null
+
+  return { playerId: passerId, team: passerTeam }
+}
 
 /** Progresso da bola: 0 = gol próprio, 1 = gol adversário */
 function getBallProgress(ball: Vec3, team: TeamId, bounds: FieldBounds): number {
@@ -133,6 +173,13 @@ export function getTeamPhase(
 ): TeamPhase {
   if (possession?.team === team) return 'attack'
   if (possession && possession.team !== team) return 'defense'
+
+  const store = useGameStore.getState()
+  const passTeam = store.passIntent?.passingTeam ?? lastTouch
+
+  if (store.passIntent && passTeam === team) return 'attack'
+  if (store.passIntent && passTeam && passTeam !== team) return 'defense'
+
   if (lastTouch === team) return 'attack'
   if (lastTouch) return 'defense'
   return 'neutral'
@@ -285,7 +332,7 @@ export function getLooseBallAttackPosition(
   }
 }
 
-/** Apoio durante passe em voo — companheiros avançam para a zona do recebedor */
+/** Apoio durante passe em voo — mantém altura ofensiva, nunca recua o bloco */
 export function getPassFlightSupportPosition(
   team: TeamId,
   slot: FormationSlot,
@@ -293,36 +340,39 @@ export function getPassFlightSupportPosition(
   passIntent: { targetX: number; targetZ: number },
 ): { x: number; z: number } {
   const attackSign = getAttackSign(team, bounds)
-  const targetZ = passIntent.targetZ
-  const targetX = passIntent.targetX
-  const halfW = (bounds.maxX - bounds.minX) / 2 - 0.8
-  const wideX = bounds.center.x + slot.x * halfW * 0.9
+  const anchor = {
+    x: passIntent.targetX,
+    y: 0,
+    z: passIntent.targetZ,
+  }
+  const base = getLooseBallAttackPosition(team, slot, bounds, anchor, passIntent)
 
   if (slot.role === 'fwd') {
-    const z = targetZ + attackSign * (1.4 + (1 - slot.z) * 1.2)
+    const pushZ = passIntent.targetZ + attackSign * (2.0 + (1 - slot.z) * 1.4)
     return {
-      x: clamp(wideX + (targetX - wideX) * 0.25, bounds.minX + 0.8, bounds.maxX - 0.8),
-      z: clampForwardFromGoalMouth(team, z, bounds),
+      x: base.x,
+      z: clampForwardFromGoalMouth(
+        team,
+        attackSign > 0 ? Math.max(base.z, pushZ) : Math.min(base.z, pushZ),
+        bounds,
+      ),
     }
   }
 
   if (slot.role === 'mid') {
-    const z = targetZ + attackSign * (0.2 + Math.abs(slot.x) * 0.35)
+    const pushZ = passIntent.targetZ + attackSign * (1.0 + Math.abs(slot.x) * 0.35)
     return {
-      x: clamp(wideX, bounds.minX + 0.8, bounds.maxX - 0.8),
-      z,
+      x: base.x,
+      z: attackSign > 0 ? Math.max(base.z, pushZ) : Math.min(base.z, pushZ),
     }
   }
 
-  if (slot.role === 'def') {
-    const z = targetZ - attackSign * (2.8 + Math.abs(slot.x) * 0.4)
-    return {
-      x: clamp(wideX, bounds.minX + 0.8, bounds.maxX - 0.8),
-      z,
-    }
+  // Zagueiros sobem a linha com a jogada — não recuam
+  const holdZ = passIntent.targetZ + attackSign * (0.55 + Math.abs(slot.x) * 0.12)
+  return {
+    x: base.x,
+    z: attackSign > 0 ? Math.max(base.z, holdZ) : Math.min(base.z, holdZ),
   }
-
-  return getLooseBallAttackPosition(team, slot, bounds, { x: targetX, y: 0, z: targetZ }, passIntent)
 }
 
 /** Posição defensiva — bloco compacto com deslocamento lateral à bola */
@@ -362,7 +412,10 @@ export function getDefensiveShapePosition(
     y: 0,
     z: base.z + (ball.z - base.z) * 0.12,
   }
-  const w = getDefensiveCompactWeight(slot.role, ball, team, bounds)
+  const w = scaleCompactDefense(
+    getDefensiveCompactWeight(slot.role, ball, team, bounds),
+    team,
+  )
   return getBlendedTarget(base, compactPoint, w)
 }
 
@@ -371,16 +424,19 @@ export function getCoverPressTarget(
   team: TeamId,
   slot: FormationSlot,
   bounds: FieldBounds,
-  carrier: Vec3,
+  carrier: PlayerRef,
   shapeBase: { x: number; z: number },
 ): { x: number; z: number } {
   const goalDir = -getAttackSign(team, bounds)
   const shadow: Vec3 = {
-    x: carrier.x * 0.38 + shapeBase.x * 0.62,
+    x: carrier.position.x * 0.38 + shapeBase.x * 0.62,
     y: 0,
-    z: carrier.z + goalDir * (slot.role === 'mid' ? 2.1 : 1.55),
+    z: carrier.position.z + goalDir * (slot.role === 'mid' ? 1.85 : 1.55),
   }
-  const w = slot.role === 'mid' ? 0.58 : slot.role === 'fwd' ? 0.48 : 0.4
+  const w = scalePressWeight(
+    slot.role === 'mid' ? 0.92 : slot.role === 'fwd' ? 0.8 : 0.72,
+    team,
+  )
   return getBlendedTarget(shapeBase, shadow, w)
 }
 
@@ -388,12 +444,13 @@ export function getPressBallWeight(
   isMarker: boolean,
   phase: TeamPhase,
   distBall: number,
+  team: TeamId,
 ): number {
   if (!isMarker) return 0
   const base = 0.88
   const phaseBoost = phase === 'defense' ? 0.07 : phase === 'neutral' ? 0.04 : 0
-  const closeBoost = distBall < 4 ? 0.05 : 0
-  return clamp(base + phaseBoost + closeBoost, 0, 0.96)
+  const closeBoost = distBall < 4 ? 0.06 : distBall < 7 ? 0.03 : 0
+  return scalePressWeight(clamp(base + phaseBoost + closeBoost, 0, 0.96), team)
 }
 
 export function getDefensiveCompactWeight(
@@ -404,9 +461,9 @@ export function getDefensiveCompactWeight(
 ): number {
   const inOwn = isBallInDefensiveThird(ball, team, bounds)
   if (inOwn) {
-    return role === 'def' ? 0.22 : role === 'mid' ? 0.18 : 0.12
+    return role === 'def' ? 0.42 : role === 'mid' ? 0.34 : 0.24
   }
-  return role === 'def' ? 0.14 : role === 'mid' ? 0.1 : 0.06
+  return role === 'def' ? 0.32 : role === 'mid' ? 0.26 : 0.18
 }
 
 export function getBlendedTarget(
@@ -488,31 +545,56 @@ export function getMarkingPoint(
 ): Vec3 {
   if (possession) {
     const carrier = playerRegistry.get(possession.playerId)
-    if (carrier) return carrier.position
+    if (carrier) {
+      const held = getHeldBallPoint(carrier, possession.playerId)
+      return { x: held.x, y: ball.y, z: held.z }
+    }
   }
   return ball
 }
 
-/** Alvo de pressão 1:1 — cola na bola no pé do portador para disputar */
+export function getHolderFacing(carrier: PlayerRef): { x: number; z: number } {
+  const speed = Math.hypot(carrier.velocity.x, carrier.velocity.z)
+  if (speed > 0.22) {
+    return { x: carrier.velocity.x / speed, z: carrier.velocity.z / speed }
+  }
+  return { x: Math.sin(carrier.rotation), z: Math.cos(carrier.rotation) }
+}
+
+/** Dot produto: >0 = marcador na frente do portador (hemisfério de ataque). */
+export function getMarkerFrontDot(
+  markerPos: { x: number; z: number },
+  holderPos: { x: number; z: number },
+  face: { x: number; z: number },
+): number {
+  const toX = markerPos.x - holderPos.x
+  const toZ = markerPos.z - holderPos.z
+  const len = Math.hypot(toX, toZ)
+  if (len < 0.08) return 1
+  return (toX * face.x + toZ * face.z) / len
+}
+
+export function isMarkerBehindHolder(
+  markerPos: { x: number; z: number },
+  carrier: PlayerRef,
+): boolean {
+  return getMarkerFrontDot(markerPos, carrier.position, getHolderFacing(carrier)) < 0.08
+}
+
 export function getTackleTarget(
   possession: BallPossession,
-  defendingTeam: TeamId,
+  _defendingTeam: TeamId,
   bounds: FieldBounds,
   ball?: Vec3,
+  _markerPos?: { x: number; z: number },
 ): { x: number; z: number } {
   const carrier = playerRegistry.get(possession.playerId)
-  if (!carrier) {
-    const fallback = ball ?? { x: bounds.center.x, y: 0, z: bounds.center.z }
-    return { x: fallback.x, z: fallback.z }
+  if (carrier) {
+    const held = getHeldBallPoint(carrier, possession.playerId)
+    return { x: held.x, z: held.z }
   }
-
-  const foot = getBallAtFeet(carrier)
-  const goalDir = -getAttackSign(defendingTeam, bounds)
-
-  return {
-    x: foot.x,
-    z: foot.z + goalDir * STEAL_DISTANCE * 0.25,
-  }
+  const fallback = ball ?? { x: bounds.center.x, y: 0, z: bounds.center.z }
+  return { x: fallback.x, z: fallback.z }
 }
 
 /** Ponto de marcação em bola solta */
@@ -536,6 +618,7 @@ const coverPresserByTeam: Record<TeamId, string | null> = { home: null, away: nu
 const passLaneBlockerByTeam: Record<TeamId, string | null> = { home: null, away: null }
 const passInterceptorByTeam: Record<TeamId, string | null> = { home: null, away: null }
 const passInterceptorSecondaryByTeam: Record<TeamId, string | null> = { home: null, away: null }
+const looseBallChaserByTeam: Record<TeamId, string | null> = { home: null, away: null }
 
 // --- Marcação individual (man-marking) -------------------------------------
 // defenderId -> opponentId. Cada time defensor cola seus zagueiros/meias nos
@@ -545,11 +628,11 @@ const manMarkByTeam: Record<TeamId, Map<string, string>> = {
   away: new Map(),
 }
 /** Tempo mínimo que uma marcação individual persiste antes de reavaliar. */
-const MAN_MARK_STICK = 2.4 * WORLD_SCALE
+const MAN_MARK_STICK = 2.85 * WORLD_SCALE
 /** Só marca adversários dentro deste alcance do defensor. */
-const MAN_MARK_MAX_DIST = 17 * WORLD_SCALE
+const MAN_MARK_MAX_DIST = 18.5 * WORLD_SCALE
 /** Deslocamento goal-side (fica entre o marcado e o próprio gol). */
-const MAN_MARK_GOALSIDE = 1.15 * WORLD_SCALE
+const MAN_MARK_GOALSIDE = 1.35 * WORLD_SCALE
 
 function resolveManMarking(
   team: TeamId,
@@ -558,8 +641,9 @@ function resolveManMarking(
   const assignments = manMarkByTeam[team]
   const store = useGameStore.getState()
 
-  // Só marca individualmente quando o adversário controla a bola (construção).
-  const defending = possession != null && possession.team !== team
+  // Marca individualmente quando o adversário controla a bola ou está no passe deles.
+  const threat = getThreatPossession(possession)
+  const defending = threat != null && threat.team !== team
   if (
     !defending ||
     store.ballFrozen ||
@@ -569,15 +653,23 @@ function resolveManMarking(
     return
   }
 
-  const carrierId = possession!.playerId
+  const carrierId = threat!.playerId
+  const carrier = playerRegistry.get(carrierId)
   const primary = markerByTeam[team]
   const cover = coverPresserByTeam[team]
+  const bounds = store.fieldBounds
+  const inOwnThird =
+    bounds != null &&
+    carrier != null &&
+    isBallInDefensiveThird(carrier.position, team, bounds)
 
-  // Defensores elegíveis: zagueiros e meias que não estão pressionando a bola.
+  // Defensores elegíveis: zagueiros e meias; atacantes entram no próprio terço.
   const defenders = [...playerRegistry.values()].filter(
     (p) =>
       p.team === team &&
-      (p.role === 'def' || p.role === 'mid') &&
+      (p.role === 'def' ||
+        p.role === 'mid' ||
+        (p.role === 'fwd' && inOwnThird)) &&
       p.id !== primary &&
       p.id !== cover,
   )
@@ -602,7 +694,15 @@ function resolveManMarking(
     for (const o of targets) {
       const raw = distance2D(d.position, o.position)
       if (raw > MAN_MARK_MAX_DIST) continue
-      const cost = prev === o.id ? raw - MAN_MARK_STICK : raw
+      let danger = 0
+      if (bounds && carrier) {
+        const fwd = (o.position.z - carrier.position.z) * getAttackSign(o.team, bounds)
+        danger += clamp(fwd, 0, 10) * 0.14
+        if (o.role === 'fwd') danger += 1.5
+        else if (o.role === 'mid') danger += 0.75
+        if (isForwardMakingRun(o.id, o.team)) danger += 1.9
+      }
+      const cost = (prev === o.id ? raw - MAN_MARK_STICK : raw) - danger
       pairs.push({ d: d.id, o: o.id, cost, raw })
     }
   }
@@ -639,12 +739,10 @@ export function getManMarkTarget(
   if (!opp) return null
 
   const attackSign = getAttackSign(team, bounds)
-  // Goal-side = entre o adversário e o gol que defendemos (sentido -attackSign).
   const z = opp.position.z - attackSign * MAN_MARK_GOALSIDE
-  // Puxa um pouco pro lado da bola pra cortar a linha de passe.
   const ballSide = ball.x >= opp.position.x ? 1 : -1
   const x = clamp(
-    opp.position.x + ballSide * 0.35 * WORLD_SCALE,
+    opp.position.x + ballSide * 0.34 * WORLD_SCALE,
     bounds.minX + 0.8,
     bounds.maxX - 0.8,
   )
@@ -698,7 +796,9 @@ function refreshForwardRuns(
     if (
       state.runnerId &&
       now < state.until &&
-      state.possessionKey === key
+      (state.possessionKey === key ||
+        (store.passIntent &&
+          (store.passIntent.passingTeam === team || store.lastTouchTeam === team)))
     ) {
       const runner = playerRegistry.get(state.runnerId)
       if (!runner || runner.team !== team || runner.role !== 'fwd') {
@@ -709,7 +809,16 @@ function refreshForwardRuns(
 
     state.runnerId = null
 
-    if (!possession || possession.team !== team) continue
+    if (!possession || possession.team !== team) {
+      if (
+        !(
+          store.passIntent &&
+          (store.passIntent.passingTeam === team || store.lastTouchTeam === team)
+        )
+      ) {
+        continue
+      }
+    }
 
     const ballProgress = getBallProgress(ball, team, bounds)
     if (ballProgress < 0.4) continue
@@ -765,34 +874,80 @@ export function resetTeamMarkers() {
 }
 
 function possessionKey(possession: BallPossession | null): string {
+  const store = useGameStore.getState()
+  if (store.passIntent) {
+    const pt = store.passIntent.passingTeam ?? store.lastTouchTeam ?? '?'
+    return `pass:${pt}:${store.passIntent.receiverId}`
+  }
   return possession ? `${possession.team}:${possession.playerId}` : 'loose'
 }
 
-/** Ponto de disputa — bola no pé do portador ou posição da bola solta */
+/** Ponto de disputa — portador, zona de receção ou bola */
 function getContestPoint(
   possession: BallPossession | null,
   ball: Vec3,
 ): Vec3 {
   if (possession) {
     const carrier = playerRegistry.get(possession.playerId)
-    if (carrier) return getBallAtFeet(carrier)
+    if (carrier) {
+      const held = getHeldBallPoint(carrier, possession.playerId)
+      return { x: held.x, y: 0, z: held.z }
+    }
   }
+
+  const store = useGameStore.getState()
+  const pi = store.passIntent
+  if (pi) {
+    const blend = 0.62
+    return {
+      x: ball.x * (1 - blend) + pi.targetX * blend,
+      y: 0,
+      z: ball.z * (1 - blend) + pi.targetZ * blend,
+    }
+  }
+
   return ball
+}
+
+function scoreMarkerCandidate(
+  player: { role: PlayerRole; id: string },
+  dist: number,
+  userCarrier: boolean,
+): number {
+  if (!userCarrier) return -dist
+  let score = -dist
+  if (player.role === 'def') score += 2.4
+  else if (player.role === 'mid') score += 1.5
+  else if (player.role === 'fwd') score -= 3.2
+  return score
 }
 
 function findClosestMarkerCandidate(
   team: TeamId,
   contestPoint: Vec3,
+  possession: BallPossession | null,
 ): { id: string | null; dist: number } {
+  if (shouldSkipBallPressure(team)) {
+    return { id: null, dist: Infinity }
+  }
+
+  const carrier = possession ? playerRegistry.get(possession.playerId) : null
+  const userCarrier = carrier?.team === getUserTeam()
+
   let bestId: string | null = null
+  let bestScore = -Infinity
   let minDist = Infinity
 
   for (const p of playerRegistry.values()) {
     if (p.team !== team || p.role === 'gk') continue
     const d = distance2D(p.position, contestPoint)
-    if (d < minDist) {
-      minDist = d
+    if (userCarrier && p.role === 'fwd' && d > 2.6) continue
+
+    const score = scoreMarkerCandidate(p, d, userCarrier)
+    if (score > bestScore) {
+      bestScore = score
       bestId = p.id
+      minDist = d
     }
   }
 
@@ -824,16 +979,25 @@ export function resolveTeamMarker(
 
   const key = possessionKey(possession)
   const possessionChanged = key !== lastPossessionKey
-  if (possessionChanged) {
+  if (possessionChanged && !store.passIntent) {
     activeMarker.home = null
     activeMarker.away = null
+  }
+  if (possessionChanged) {
     lastPossessionKey = key
+    if (possession && possession.team === getUserTeam()) {
+      markerCommitUntil[team] = 0
+      if (team !== getUserTeam()) {
+        activeMarker[team] = null
+      }
+    }
   }
 
   const contestPoint = getContestPoint(possession, ball)
   const { id: closestId, dist: closestDist } = findClosestMarkerCandidate(
     team,
     contestPoint,
+    possession,
   )
 
   if (!closestId) {
@@ -852,9 +1016,12 @@ export function resolveTeamMarker(
       // "começa a perseguir a bola e desiste" quando dois defensores ficam
       // quase equidistantes do portador.
       const committed = now < markerCommitUntil[team]
-      const margin = committed
-        ? MARKER_SWITCH_MARGIN + 2.2 * WORLD_SCALE
-        : MARKER_SWITCH_MARGIN
+      const passInFlight = !!store.passIntent
+      const margin = passInFlight
+        ? MARKER_SWITCH_MARGIN * 0.55
+        : committed
+          ? MARKER_SWITCH_MARGIN + 1.4 * WORLD_SCALE
+          : MARKER_SWITCH_MARGIN
       if (closestDist > currentDist - margin) {
         return current
       }
@@ -874,8 +1041,10 @@ function resolveCoverPresser(
   ball: Vec3,
   primaryMarker: string | null,
 ): string | null {
-  if (!possession || possession.team === team || !primaryMarker) return null
-  if (isGkBallProtected(possession)) return null
+  const threat = getThreatPossession(possession)
+  if (!threat || threat.team === team || !primaryMarker) return null
+  if (isGkBallProtected(threat)) return null
+  if (!shouldAssignCoverPresser(team, threat.team)) return null
   const contest = getContestPoint(possession, ball)
   const ranked = [...playerRegistry.values()]
     .filter((p) => p.team === team && p.role !== 'gk')
@@ -884,8 +1053,8 @@ function resolveCoverPresser(
 
   if (ranked.length < 2) return null
   const second = ranked.find((c) => c.id !== primaryMarker) ?? ranked[1]
-  if (!second || second.dist > 15.5) return null
-  if (second.role === 'fwd' && second.dist > 11) return null
+  if (!second || second.dist > 17) return null
+  if (second.role === 'fwd' && second.dist > 12.5) return null
   return second.id
 }
 
@@ -893,24 +1062,49 @@ function resolvePassLaneBlocker(
   team: TeamId,
   possession: BallPossession | null,
 ): string | null {
-  if (!possession || possession.team === team) return null
+  const threat = getThreatPossession(possession)
+  if (!threat || threat.team === team) return null
   const marker = markerByTeam[team]
-  const carrier = playerRegistry.get(possession.playerId)
+  const cover = coverPresserByTeam[team]
+  const carrier = playerRegistry.get(threat.playerId)
   if (!carrier) return null
 
+  const bounds = useGameStore.getState().fieldBounds
+  if (!bounds) return null
+
+  const oppTeammates = [...playerRegistry.values()].filter(
+    (p) => p.team === carrier.team && p.role !== 'gk' && p.id !== carrier.id,
+  )
+  if (oppTeammates.length === 0) return null
+
+  const attackSign = getAttackSign(carrier.team, bounds)
   let bestId: string | null = null
-  let bestDist = Infinity
+  let bestScore = -Infinity
 
   for (const p of playerRegistry.values()) {
-    if (p.team !== team || p.role !== 'mid' || p.id === marker) continue
-    const d = distance2D(p.position, carrier.position)
-    if (d < bestDist) {
-      bestDist = d
-      bestId = p.id
+    if (p.team !== team || p.role === 'gk' || p.id === marker || p.id === cover) continue
+    if (p.role !== 'def' && p.role !== 'mid') continue
+
+    for (const mate of oppTeammates) {
+      const fwd = (mate.position.z - carrier.position.z) * attackSign
+      if (fwd < 0.4) continue
+
+      const cutT = 0.4
+      const laneX = carrier.position.x + (mate.position.x - carrier.position.x) * cutT
+      const laneZ = carrier.position.z + (mate.position.z - carrier.position.z) * cutT
+      const distToLane = distance2D(p.position, { x: laneX, y: 0, z: laneZ })
+      if (distToLane > 9.5) continue
+
+      const roleBonus = p.role === 'mid' ? 0.55 : 0.35
+      const score = fwd * 1.15 - distToLane * 0.42 + roleBonus
+      if (score > bestScore) {
+        bestScore = score
+        bestId = p.id
+      }
     }
   }
 
-  return bestId
+  return bestScore > -0.5 ? bestId : null
 }
 
 function resolvePassInterceptors(
@@ -923,20 +1117,28 @@ function resolvePassInterceptors(
   if (!passIntent) return
 
   const store = useGameStore.getState()
-  if (store.ballPossession || store.lastTouchTeam === team) return
+  if (store.ballPossession?.team === team) return
+  if (passIntent.passingTeam === team) return
 
   const vel = ballRef.velocity
+  const hardPlus =
+    getMatchDifficulty() === 'hard' || getMatchDifficulty() === 'expert'
+  const scoreFloor = hardPlus ? -6.4 : -4.4
+  const secondaryGap = hardPlus ? 4.0 : 3.0
   const candidates = [...playerRegistry.values()]
     .filter((p) => p.team === team && p.role !== 'gk')
     .map((p) => ({
       id: p.id,
-      score: scorePassInterceptPosition(p, ball, vel, passIntent),
+      score: adjustInterceptScore(
+        scorePassInterceptPosition(p, ball, vel, passIntent),
+        team,
+      ),
     }))
-    .filter((c) => c.score > -1.5)
+    .filter((c) => c.score > scoreFloor)
     .sort((a, b) => b.score - a.score)
 
   if (candidates.length > 0) passInterceptorByTeam[team] = candidates[0].id
-  if (candidates.length > 1 && candidates[1].score > candidates[0].score - 1.8) {
+  if (candidates.length > 1 && candidates[1].score > candidates[0].score - secondaryGap) {
     passInterceptorSecondaryByTeam[team] = candidates[1].id
   }
 }
@@ -972,17 +1174,76 @@ export function refreshMarkerCache(
   resolvePassInterceptors('home', passIntent, ball)
   resolvePassInterceptors('away', passIntent, ball)
 
+  looseBallChaserByTeam.home = computeLooseBallChaser('home', ball)
+  looseBallChaserByTeam.away = computeLooseBallChaser('away', ball)
+
   const bounds = useGameStore.getState().fieldBounds
   if (bounds) refreshForwardRuns(possession, ball, bounds)
 }
 
+export function buildPassRunnerIds(
+  passerId: string,
+  team: TeamId,
+  receiverId: string,
+  target: { x: number; z: number },
+  passType: 'pass' | 'through' | 'cross' = 'pass',
+): string[] {
+  if (passType !== 'cross') return []
+
+  const bounds = useGameStore.getState().fieldBounds
+  if (!bounds) return []
+  const attackSign = getAttackSign(team, bounds)
+  const runners: string[] = []
+
+  for (const p of playerRegistry.values()) {
+    if (p.team !== team || p.id === passerId || p.id === receiverId || p.role === 'gk') {
+      continue
+    }
+    if (isForwardMakingRun(p.id, team)) {
+      runners.push(p.id)
+      continue
+    }
+    if (p.role === 'fwd') {
+      const ahead =
+        attackSign > 0 ? p.position.z >= target.z - 3 : p.position.z <= target.z + 3
+      if (ahead) runners.push(p.id)
+      continue
+    }
+    if (p.role === 'mid') {
+      const dist = distance2D(p.position, { x: target.x, y: 0, z: target.z })
+      if (dist > 2.5 && dist < 16) runners.push(p.id)
+    }
+  }
+
+  return runners
+    .sort((a, b) => {
+      const pa = playerRegistry.get(a)!
+      const pb = playerRegistry.get(b)!
+      return distance2D(pa.position, { x: target.x, y: 0, z: target.z }) -
+        distance2D(pb.position, { x: target.x, y: 0, z: target.z })
+    })
+    .slice(0, 3)
+}
+
 export function resolveLooseBallChaser(
   team: TeamId,
-  ball: Vec3,
+  _ball: Vec3,
 ): string | null {
+  if (markerCacheFrame >= 0) {
+    return looseBallChaserByTeam[team]
+  }
+  return computeLooseBallChaser(team, _ball)
+}
+
+function computeLooseBallChaser(team: TeamId, ball: Vec3): string | null {
   const store = useGameStore.getState()
   if (store.ballPossession || store.ballFrozen) return null
-  if (store.passIntent) return null
+  if (store.passIntent) {
+    const passerTeam = store.passIntent.passingTeam ?? store.lastTouchTeam
+    if (passerTeam === team) return null
+    const contest = getContestPoint(null, ball)
+    return findClosestMarkerCandidate(team, contest, null).id
+  }
   if (
     store.phase === 'throw-in' ||
     store.phase === 'corner' ||
@@ -994,7 +1255,82 @@ export function resolveLooseBallChaser(
     if (distance2D(ball, store.setPieceGuardPos) < 5) return null
   }
 
-  return findClosestMarkerCandidate(team, ball).id
+  // Bola solta: o mais perto (qualquer função) — não usa pressão/marcação
+  let bestId: string | null = null
+  let bestDist = Infinity
+  for (const p of playerRegistry.values()) {
+    if (p.team !== team || p.role === 'gk') continue
+    if (store.sentOffPlayers.includes(p.id)) continue
+    const d = distance2D(p.position, ball)
+    if (d < bestDist) {
+      bestDist = d
+      bestId = p.id
+    }
+  }
+  return bestId
+}
+
+/** Este jogador deve perseguir a bola solta automaticamente (sem stick). */
+export function shouldAutoChaseLooseBall(playerId: string, team: TeamId): boolean {
+  const store = useGameStore.getState()
+  if (store.ballPossession || store.ballFrozen) return false
+  if (store.phase !== 'playing') return false
+  if (store.passIntent) return false
+  return resolveLooseBallChaser(team, ballRef.current) === playerId
+}
+
+/**
+ * Passe do próprio time: receptor / runners / 2 mais perto da bola
+ * — vão na bola, não na posição dinâmica (evita “olhar pra frente e dar volta”).
+ */
+export function shouldChaseOwnPassBall(
+  playerId: string,
+  team: TeamId,
+  passIntent: PassIntent | null,
+  ball: Vec3,
+): boolean {
+  if (!passIntent) return false
+  const passerTeam = passIntent.passingTeam ?? useGameStore.getState().lastTouchTeam
+  if (passerTeam !== team) return false
+
+  if (passIntent.receiverId === playerId) return true
+  if (passIntent.runnerIds?.includes(playerId)) return true
+
+  const player = playerRegistry.get(playerId)
+  if (!player || player.role === 'gk') return false
+
+  const distBall = distance2D(player.position, ball)
+  const distTarget = distance2D(player.position, {
+    x: passIntent.targetX,
+    y: 0,
+    z: passIntent.targetZ,
+  })
+  const near =
+    distBall < OWN_PASS_CONTEST_DIST || distTarget < OWN_PASS_TARGET_CONTEST_DIST
+  if (!near) return false
+
+  // Entre os 2 de linha mais perto da bola (ou do alvo se a bola ainda saiu)
+  const anchor =
+    distBall < distTarget * 0.85
+      ? ball
+      : { x: passIntent.targetX, y: 0, z: passIntent.targetZ }
+
+  // Exclui quem está longe demais do eixo do passe
+  const ranked: { id: string; d: number }[] = []
+  for (const p of playerRegistry.values()) {
+    if (p.team !== team || p.role === 'gk') continue
+    // Não disputa se está atrás do passador e longe do alvo (deixa a formação)
+    const dBall = distance2D(p.position, ball)
+    const dTgt = distance2D(p.position, {
+      x: passIntent.targetX,
+      y: 0,
+      z: passIntent.targetZ,
+    })
+    if (dBall > OWN_PASS_CONTEST_DIST && dTgt > OWN_PASS_TARGET_CONTEST_DIST) continue
+    ranked.push({ id: p.id, d: distance2D(p.position, anchor) })
+  }
+  ranked.sort((a, b) => a.d - b.d)
+  return ranked[0]?.id === playerId || ranked[1]?.id === playerId
 }
 
 export function getCachedTeamMarker(team: TeamId): string | null {
@@ -1034,12 +1370,18 @@ export function getRoleArriveDist(
   defending: boolean,
   isMarker: boolean,
 ): number {
-  if (isMarker) return 0.16
-  if (!defending) return 0.12
-  if (role === 'def') return 0.22
-  if (role === 'mid') return 0.18
-  if (role === 'fwd') return 0.15
-  return 0.2
+  // Raio de “já estou no posto” — abaixo disso, parado (sem órbita)
+  if (isMarker) return 0.28
+  if (!defending) {
+    if (role === 'def') return 0.62
+    if (role === 'mid') return 0.58
+    if (role === 'fwd') return 0.52
+    return 0.55
+  }
+  if (role === 'def') return 0.72
+  if (role === 'mid') return 0.65
+  if (role === 'fwd') return 0.58
+  return 0.62
 }
 
 function playerFloatSeed(playerId: string): number {
@@ -1065,22 +1407,15 @@ export function applyPlayerSlotBias(
   }
 }
 
-/** Micro-flutuação só quando já parado no slot — alvo oscilante durante corrida causa tremor */
+/** @deprecated Flutuação perto do slot → órbita; não usar na formação. */
 export function applyTacticalFloat(
   playerId: string,
   target: { x: number; z: number },
-  dist: number,
-  maxFloat = 0.55,
+  _dist: number,
+  _maxFloat = 0.55,
 ): { x: number; z: number } {
-  if (dist > maxFloat) return target
-  const t = performance.now() * 0.001
-  const h = playerFloatSeed(playerId)
-  const fade = 1 - dist / maxFloat
-  const amp = fade * 0.28
-  return {
-    x: target.x + Math.sin(t * 0.9 + h * 6.28) * amp,
-    z: target.z + Math.cos(t * 0.7 + h * 12.56) * amp * 0.72,
-  }
+  void playerId
+  return target
 }
 
 export function getPresserRank(

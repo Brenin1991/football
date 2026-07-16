@@ -1,4 +1,9 @@
 import { useCallback, useState } from 'react'
+import {
+  DIFFICULTY_LABELS,
+  DIFFICULTY_ORDER,
+  type DifficultyId,
+} from '../../game/systems/difficulty'
 import { useAppStore } from '../../store/appStore'
 import { useMatchSetupStore } from '../../store/matchSetupStore'
 import { withMenuNavigate, withMenuSelect } from '../menuActions'
@@ -6,11 +11,12 @@ import { MenuPadHints } from '../components/MenuPadHints'
 import { MenuShell } from '../components/MenuShell'
 import { useMenuPad } from '../hooks/useMenuPad'
 
-type FocusZone = 'side' | 'continue'
+type FocusZone = 'side' | 'difficulty' | 'continue'
 
 export function MatchSideScreen() {
   const setView = useAppStore((s) => s.setView)
   const playerSide = useMatchSetupStore((s) => s.draft?.playerSide ?? 'home')
+  const difficulty = useMatchSetupStore((s) => s.draft?.difficulty ?? 'medium')
   const patchDraft = useMatchSetupStore((s) => s.patchDraft)
   const setSetupStep = useMatchSetupStore((s) => s.setSetupStep)
   const backSetupStep = useMatchSetupStore((s) => s.backSetupStep)
@@ -33,11 +39,44 @@ export function MatchSideScreen() {
     [patchDraft],
   )
 
+  const cycleDifficulty = useCallback(
+    (direction: -1 | 1) => {
+      const index = DIFFICULTY_ORDER.indexOf(difficulty)
+      const next =
+        DIFFICULTY_ORDER[
+          (index + direction + DIFFICULTY_ORDER.length) % DIFFICULTY_ORDER.length
+        ]
+      patchDraft({ difficulty: next })
+      setFocus('difficulty')
+    },
+    [difficulty, patchDraft],
+  )
+
+  const selectDifficulty = useCallback(
+    (id: DifficultyId) => {
+      patchDraft({ difficulty: id })
+      setFocus('difficulty')
+    },
+    [patchDraft],
+  )
+
   useMenuPad({
-    onLeft: () => selectSide('home'),
-    onRight: () => selectSide('away'),
-    onDown: () => setFocus('continue'),
-    onUp: () => setFocus('side'),
+    onLeft: () => {
+      if (focus === 'side') selectSide('home')
+      else if (focus === 'difficulty') cycleDifficulty(-1)
+    },
+    onRight: () => {
+      if (focus === 'side') selectSide('away')
+      else if (focus === 'difficulty') cycleDifficulty(1)
+    },
+    onDown: () => {
+      if (focus === 'side') setFocus('difficulty')
+      else if (focus === 'difficulty') setFocus('continue')
+    },
+    onUp: () => {
+      if (focus === 'continue') setFocus('difficulty')
+      else if (focus === 'difficulty') setFocus('side')
+    },
     onConfirm: focus === 'continue' ? confirm : undefined,
     onBack: goBack,
   })
@@ -46,7 +85,7 @@ export function MatchSideScreen() {
     <MenuShell
       variant="wide"
       title="Seleção de lado"
-      subtitle="Escolha mandante ou visitante"
+      subtitle="Escolha mandante ou visitante e a dificuldade"
       padEnabled={false}
       onBack={goBack}
       footer={
@@ -63,7 +102,9 @@ export function MatchSideScreen() {
       }
     >
       <div className="prekick prekick--sides">
-        <div className="prekick-sides__hint">← → escolhe o lado · ↓ continuar</div>
+        <div className="prekick-sides__hint">
+          ← → escolhe · ↓ dificuldade · continuar
+        </div>
         <div className="prekick-sides__arena">
           <div
             role="button"
@@ -89,6 +130,26 @@ export function MatchSideScreen() {
             <span className="prekick-side-panel__label">Visitante</span>
             <span className="prekick-side-panel__role">Away</span>
             {playerSide === 'away' ? <span className="prekick-side-panel__badge">Seu lado</span> : null}
+          </div>
+        </div>
+
+        <div
+          className={`prekick-difficulty${focus === 'difficulty' ? ' prekick-difficulty--focused' : ''}`}
+        >
+          <span className="prekick-difficulty__label">Dificuldade</span>
+          <div className="prekick-difficulty__options" role="listbox" aria-label="Dificuldade">
+            {DIFFICULTY_ORDER.map((id) => (
+              <button
+                key={id}
+                type="button"
+                role="option"
+                aria-selected={difficulty === id}
+                className={`prekick-difficulty__chip${difficulty === id ? ' prekick-difficulty__chip--active' : ''}${focus === 'difficulty' && difficulty === id ? ' prekick-difficulty__chip--focused' : ''}`}
+                onClick={withMenuNavigate(() => selectDifficulty(id))}
+              >
+                {DIFFICULTY_LABELS[id]}
+              </button>
+            ))}
           </div>
         </div>
       </div>

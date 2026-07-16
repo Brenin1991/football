@@ -2,12 +2,15 @@ import { create } from 'zustand'
 import type { TeamWithPlayers } from '../db/types'
 import { menuSfx } from '../menu/menuSfx'
 
+import type { DifficultyId } from '../game/systems/difficulty'
+
 export type MatchSession = {
   home: TeamWithPlayers
   away: TeamWithPlayers
   stadium: string
   matchType: string
   playerSide: 'home' | 'away'
+  difficulty: DifficultyId
 }
 
 export type MatchSetupStep = 'side' | 'team' | 'kit' | 'loading'
@@ -15,6 +18,7 @@ export type MatchSetupStep = 'side' | 'team' | 'kit' | 'loading'
 export type MatchSetupDraft = {
   step: MatchSetupStep
   playerSide: 'home' | 'away'
+  difficulty: DifficultyId
   homeTeamId: string | null
   awayTeamId: string | null
   homeLeagueId: string | null
@@ -26,6 +30,7 @@ export type MatchSetupDraft = {
 const initialDraft = (): MatchSetupDraft => ({
   step: 'side',
   playerSide: 'home',
+  difficulty: 'medium',
   homeTeamId: null,
   awayTeamId: null,
   homeLeagueId: null,

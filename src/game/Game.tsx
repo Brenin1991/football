@@ -1,8 +1,10 @@
 import { Suspense, useEffect } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Ball } from './components/Ball'
+import { BallPhysicsDriver } from './components/BallPhysicsDriver'
 import { ActivePlayerMarker } from './components/ActivePlayerMarker'
 import { Field } from './components/Field'
+import { FloodlightXShadows } from './components/FloodlightXShadows'
 import { GameCamera } from './components/GameCamera'
 import { GameInput } from './components/GameInput'
 import { GraphicsPipeline } from './components/graphics/GraphicsPipeline'
@@ -123,9 +125,11 @@ function Scene(props: SceneProps) {
       />
 
       <PhysicsWorld>
+        <BallPhysicsDriver />
         <MarkerCacheUpdater />
         <Suspense fallback={<Loading />}>
           <Field />
+          <FloodlightXShadows />
           <PhysicsDebug />
           <PlayerAssetsProvider>
             <Ball />
@@ -163,13 +167,17 @@ export function Game({ onExit: _onExit }: { onExit?: () => void }) {
       ? getAaaCanvasDpr(aaaResolution)
       : [PSX_CLASSIC.renderer.dprMin, PSX_CLASSIC.renderer.dprMax]
   const setUserTeam = useGameStore((s) => s.setUserTeam)
+  const setDifficulty = useGameStore((s) => s.setDifficulty)
 
   useEffect(() => {
-    const playerSide = useMatchSetupStore.getState().session?.playerSide
-    if (playerSide && playerSide !== getUserTeam()) {
-      setUserTeam(playerSide)
+    const session = useMatchSetupStore.getState().session
+    if (session?.playerSide && session.playerSide !== getUserTeam()) {
+      setUserTeam(session.playerSide)
     }
-  }, [setUserTeam])
+    if (session?.difficulty) {
+      setDifficulty(session.difficulty)
+    }
+  }, [setDifficulty, setUserTeam])
 
   return (
     <div

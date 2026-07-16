@@ -1,5 +1,7 @@
 import type { RapierRigidBody } from '@react-three/rapier'
+import type { Vec3 } from '../types'
 import {
+  BALL_AIR_DRAG,
   BALL_GROUND_ROLL_BLEND,
   BALL_GROUND_ROLL_MAX,
   BALL_GROUND_ROLL_MIN,
@@ -8,8 +10,19 @@ import {
   KICK_LOFT_HEIGHT,
   KICK_PASS_LOFT_BASE,
 } from '../constants'
-import { ballBodyRef, ballRef } from './entityRegistry'
+import { ballBodyRef, ballRef, playerRegistry } from './entityRegistry'
 import { ballRestY } from './fieldData'
+import { forEachFixedSimStep } from './gameTime'
+import {
+  clearDribbleState,
+  stepPossessedBall,
+  syncDribblePossession,
+} from './ballDribble'
+import { tickCrossTrap } from './crossAssist'
+import { stepGkHeldBall } from './gkBallHold'
+import { getGkRuntime } from './goalkeeper'
+import { isActiveSetPiecePhase } from './setPiece'
+import { useGameStore } from '../store/gameStore'
 
 export type KickOptions = {
   dirX: number
@@ -53,12 +66,23 @@ export function kickBall({ dirX, dirZ, speed, loft = 0 }: KickOptions) {
   const nx = horiz > 0.001 ? dirX / horiz : 0
   const nz = horiz > 0.001 ? dirZ / horiz : 1
 
-  const vy =
-    loft > 0.02
-      ? KICK_LOFT_HEIGHT * loft + speed * (0.14 + 0.32 * loft) * loft
-      : KICK_PASS_LOFT_BASE + speed * 0.022
+  // Loft → altura de pico. Rasteiro no chão; só overcharge sobe de verdade.
+  let vy: number
+  let horizMul = 1
+  if (loft > 0.045) {
+    const peak = KICK_LOFT_HEIGHT * (0.2 + loft * 0.95)
+    const g = 9.81
+    vy = Math.sqrt(Math.max(0.06, 2 * g * peak)) + speed * 0.028 * loft
+    if (loft > 0.28) {
+      horizMul = Math.max(0.72, 1 - (loft - 0.28) * 0.28)
+    }
+  } else if (loft > 0.015) {
+    vy = KICK_PASS_LOFT_BASE * 0.55 + speed * 0.008
+  } else {
+    vy = KICK_PASS_LOFT_BASE * 0.35 + speed * 0.004
+  }
 
-  applyBallVelocity(nx * speed, vy, nz * speed)
+  applyBallVelocity(nx * speed * horizMul, vy, nz * speed * horizMul)
 }
 
 export function applyBallVelocity(vx: number, vy: number, vz: number) {
@@ -81,6 +105,51 @@ export function syncBallFromBody(body: RapierRigidBody) {
   ballRef.velocity = { x: v.x, y: v.y, z: v.z }
 }
 
+let liveBallFrame = -1
+const liveBallCached = {
+  ball: { x: 0, y: 0, z: 0 },
+  velocity: { x: 0, y: 0, z: 0 },
+}
+
+/** Uma leitura Rapier por frame — compartilhada por contato/voleio */
+export function refreshLiveBallState(frame: number) {
+  if (frame === liveBallFrame) return
+  liveBallFrame = frame
+
+  const body = ballBodyRef.current as RapierRigidBody | null
+  if (body) {
+    syncBallFromBody(body)
+  }
+
+  const b = ballRef.current
+  const v = ballRef.velocity
+  liveBallCached.ball.x = b.x
+  liveBallCached.ball.y = b.y ?? 0
+  liveBallCached.ball.z = b.z
+  liveBallCached.velocity.x = v.x
+  liveBallCached.velocity.y = v.y
+  liveBallCached.velocity.z = v.z
+}
+
+/** Posição/velocidade da bola — usa cache por frame quando disponível */
+export function getLiveBallState(): { ball: Vec3; velocity: Vec3 } {
+  if (liveBallFrame < 0) {
+    const body = ballBodyRef.current as RapierRigidBody | null
+    if (body) {
+      syncBallFromBody(body)
+    }
+    const b = ballRef.current
+    const v = ballRef.velocity
+    liveBallCached.ball.x = b.x
+    liveBallCached.ball.y = b.y ?? 0
+    liveBallCached.ball.z = b.z
+    liveBallCached.velocity.x = v.x
+    liveBallCached.velocity.y = v.y
+    liveBallCached.velocity.z = v.z
+  }
+  return liveBallCached
+}
+
 export function kickFromVector(vx: number, vy: number, vz: number) {
   const horiz = Math.hypot(vx, vz)
   if (horiz < 0.01) {
@@ -95,8 +164,35 @@ export function kickFromVector(vx: number, vy: number, vz: number) {
   })
 }
 
+/** Drag no ar — desacelera cruzamentos/lobs sem afetar rolagem no chão. */
+export function stepBallAirDrag(body: RapierRigidBody, delta: number) {
+  if (delta <= 0) return
+
+  const restY = ballRestY(BALL_RADIUS)
+  const t = body.translation()
+  const v = body.linvel()
+  const airborne = t.y > restY + BALL_RADIUS * 0.7 || Math.abs(v.y) > 0.9
+  if (!airborne) return
+
+  const speed = Math.hypot(v.x, v.y, v.z)
+  if (speed < 0.15) return
+
+  const scale = Math.exp(-BALL_AIR_DRAG * delta)
+  // Vertical perde um pouco menos — parábola mais natural
+  body.setLinvel(
+    { x: v.x * scale, y: v.y * Math.exp(-BALL_AIR_DRAG * 0.55 * delta), z: v.z * scale },
+    true,
+  )
+}
+
 /** Rolagem no gramado — drag exponencial contínuo, sem degraus nem trava brusca. */
 export function tickBallGroundRoll(body: RapierRigidBody, delta: number) {
+  forEachFixedSimStep(delta, (stepDt) => {
+    stepBallGroundRoll(body, stepDt)
+  })
+}
+
+export function stepBallGroundRoll(body: RapierRigidBody, delta: number) {
   if (delta <= 0) return
 
   const restY = ballRestY(BALL_RADIUS)
@@ -136,6 +232,96 @@ export function tickBallGroundRoll(body: RapierRigidBody, delta: number) {
     { x: flat.x * scale, y: flat.y, z: flat.z * scale },
     true,
   )
+
+  syncBallFromBody(body)
+}
+
+/**
+ * Lógica customizada da bola — roda antes de cada subpasso Rapier (FPS estável).
+ */
+export function tickBallBeforePhysics(body: RapierRigidBody, stepDt: number): void {
+  if (stepDt <= 0) return
+
+  const store = useGameStore.getState()
+  if (store.phase === 'replay') return
+  if (isSetPieceLaunchActive()) return
+
+  const restY = ballRestY(BALL_RADIUS)
+  const possessed = store.ballPossession
+  const frozen = store.ballFrozen
+  const setPieceWait =
+    frozen && isActiveSetPiecePhase(store.phase) && store.setPiecePosition
+
+  if (setPieceWait) {
+    if (store.phase === 'throw-in' && store.setPieceKickerId) {
+      ensureBallKinematic()
+      stepGkHeldBall(body, store.setPieceKickerId, stepDt)
+    }
+    return
+  }
+
+  if (!possessed && !frozen && tickCrossTrap(body, stepDt, restY)) {
+    return
+  }
+
+  if (possessed || frozen) {
+    if (possessed) {
+      const holder = playerRegistry.get(possessed.playerId)
+      if (holder) {
+        syncDribblePossession(possessed.playerId, store.possessionSince)
+        ensureBallKinematic()
+        body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+        body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+
+        const gkRt =
+          holder.role === 'gk' ? getGkRuntime(possessed.playerId) : null
+        const gkHandsOnly =
+          holder.role === 'gk' &&
+          (gkRt?.mode === 'hold' || gkRt?.mode === 'distribute')
+
+        if (gkHandsOnly) {
+          stepGkHeldBall(body, possessed.playerId, stepDt)
+        } else if (!frozen) {
+          stepPossessedBall(body, holder, stepDt, restY)
+        }
+        return
+      }
+    }
+    return
+  }
+
+  clearDribbleState()
+  ensureBallDynamic()
+  body.wakeUp()
+  stepBallAirDrag(body, stepDt)
+  stepBallGroundRoll(body, stepDt)
+}
+
+/** Mantém ballRef alinhado ao corpo após a integração Rapier. */
+export function syncBallAfterPhysics(body: RapierRigidBody): void {
+  const store = useGameStore.getState()
+  if (store.phase === 'replay') return
+
+  const possessed = store.ballPossession
+  const frozen = store.ballFrozen
+  const setPieceWait =
+    frozen && isActiveSetPiecePhase(store.phase) && store.setPiecePosition
+
+  if (setPieceWait && store.phase !== 'throw-in') return
+  if (possessed || frozen) {
+    if (possessed) {
+      const holder = playerRegistry.get(possessed.playerId)
+      if (!holder) return
+      const gkRt =
+        holder.role === 'gk' ? getGkRuntime(possessed.playerId) : null
+      const gkHandsOnly =
+        holder.role === 'gk' &&
+        (gkRt?.mode === 'hold' || gkRt?.mode === 'distribute')
+      if (!gkHandsOnly && !frozen) return
+    } else {
+      return
+    }
+  }
 
   syncBallFromBody(body)
 }

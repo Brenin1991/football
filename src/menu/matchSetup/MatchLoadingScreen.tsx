@@ -15,6 +15,7 @@ export function MatchLoadingScreen() {
   const setSession = useMatchSetupStore((s) => s.setSession)
   const clearSetup = useMatchSetupStore((s) => s.clearSetup)
   const setUserTeam = useGameStore((s) => s.setUserTeam)
+  const setDifficulty = useGameStore((s) => s.setDifficulty)
   const { teams } = useMatchSetupData()
 
   const [progress, setProgress] = useState(0)
@@ -48,19 +49,21 @@ export function MatchLoadingScreen() {
       if (!home || !away) return
 
       setUserTeam(draft.playerSide)
+      setDifficulty(draft.difficulty)
       setSession({
         home,
         away,
         stadium: 'Arena Municipal',
         matchType: 'AMISTOSO',
         playerSide: draft.playerSide,
+        difficulty: draft.difficulty,
       })
       clearSetup()
       startGame()
     }, LOAD_MS)
 
     return () => window.clearTimeout(timer)
-  }, [clearSetup, draft, setSession, setUserTeam, startGame])
+  }, [clearSetup, draft, setDifficulty, setSession, setUserTeam, startGame])
 
   return (
     <MenuShell variant="wide" title="Carregando" subtitle="Preparando a partida" padEnabled={false}>

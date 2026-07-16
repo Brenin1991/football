@@ -1,6 +1,5 @@
 import * as THREE from 'three'
 import {
-  PASS_SPEED_BASE,
   PASS_SPEED_MAX,
 } from '../constants'
 import type { FieldBounds, TeamId, Vec3 } from '../types'
@@ -15,10 +14,13 @@ import { getAttackingGoalZ, getAttackSign } from './teamField'
 export const THROUGH_RECEIVE_MAX_SPEED_MUL = 1.28
 
 export function throughPassSpeedForDistance(dist: number): number {
+  const d = Math.max(dist, 2.5)
+  const travelT = THREE.MathUtils.clamp(0.55 + d * 0.042, 0.6, 1.35)
+  const raw = (d / travelT) * 1.2
   return THREE.MathUtils.clamp(
-    dist * 0.9 + PASS_SPEED_BASE * 1.2,
-    PASS_SPEED_MAX * 0.95,
-    PASS_SPEED_MAX * 1.48,
+    raw,
+    PASS_SPEED_MAX * 0.72,
+    PASS_SPEED_MAX * 1.35,
   )
 }
 

@@ -1,6 +1,7 @@
 import type { FieldBounds, GoalZone, OutType, TeamId, Vec3 } from '../types'
 import { BALL_RADIUS } from '../constants'
 import { getOpponent } from '../store/gameStore'
+import { getBallSpawnPosition } from './fieldData'
 import {
   getAttackingGoalZ,
   getAttackingTeamAtGoalLine,
@@ -110,8 +111,8 @@ export function resolveGoalKick(bounds: FieldBounds, defendingTeam: TeamId): Vec
   return getGoalKickPosition(defendingTeam, bounds)
 }
 
-export function getKickoffPosition(center: Vec3): Vec3 {
-  return { x: center.x, y: center.y, z: center.z }
+export function getKickoffPosition(bounds: FieldBounds): Vec3 {
+  return getBallSpawnPosition(bounds)
 }
 
 export function determineSetPieceTeam(
@@ -162,6 +163,14 @@ export function lerpAngle(a: number, b: number, t: number): number {
   return a + diff * t
 }
 
+/** Diferença angular assinada em [-π, π] */
+export function shortestAngleDelta(from: number, to: number): number {
+  let d = to - from
+  while (d > Math.PI) d -= Math.PI * 2
+  while (d < -Math.PI) d += Math.PI * 2
+  return d
+}
+
 /** Gira em direção ao alvo com velocidade constante (rad/s), independente do FPS */
 export function rotateTowardAngle(
   current: number,
@@ -169,9 +178,7 @@ export function rotateTowardAngle(
   maxRadiansPerSec: number,
   delta: number,
 ): number {
-  let diff = target - current
-  while (diff > Math.PI) diff -= Math.PI * 2
-  while (diff < -Math.PI) diff += Math.PI * 2
+  const diff = shortestAngleDelta(current, target)
   const step = maxRadiansPerSec * delta
   if (Math.abs(diff) <= step) return target
   return current + Math.sign(diff) * step

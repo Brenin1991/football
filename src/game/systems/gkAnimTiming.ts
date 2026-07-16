@@ -68,16 +68,17 @@ export function getGkCommitWindow(
   const jitter = opts.jitter ?? 0
 
   if (opts.lowBall) {
+    // Bola rasteira: reage cedo o bastante pra animação (não sprintar no ultimo frame)
     let window =
-      base * (0.24 + closeT * 1.08) + closeT * closeT * 0.32 + jitter
+      base * (0.55 + closeT * 0.95) + closeT * closeT * 0.38 + jitter
 
-    if (d < 4) window += 0.22
-    else if (d < 6.5) window += 0.14
-    else if (d < 9) window += 0.06
+    if (d < 4) window += 0.28
+    else if (d < 6.5) window += 0.18
+    else if (d < 9) window += 0.1
 
-    if (opts.preShot && !opts.preShotImminent) window *= 0.48
+    if (opts.preShot && !opts.preShotImminent) window *= 0.72
 
-    return Math.max(0.1, window)
+    return Math.max(0.22, window)
   }
 
   let window =

@@ -1,27 +1,39 @@
 import * as THREE from 'three'
 import type { FieldBounds, TeamId } from '../types'
 import type { PlayerRef } from './entityRegistry'
-import { PASS_SPEED_BASE, PASS_SPEED_MAX, PASS_RECEIVE_MAX_SPEED } from '../constants'
+import { PASS_SPEED_MIN, PASS_RECEIVE_MAX_SPEED } from '../constants'
 import { distance2D } from './rules'
 import { getAttackingGoalZ, getAttackSign } from './teamField'
 import { isOffsideAtZ } from './offside'
 
-/** Loft alto — cruzamento parabólico */
-export const CROSS_LOFT = 0.94
+/** Loft de cruzamento — arco pra área, sem laser */
+export const CROSS_LOFT = 0.72
 
-/** Deve ser >= crossSpeedForDistance max / PASS_RECEIVE_MAX_SPEED */
-export const CROSS_RECEIVE_MAX_SPEED_MUL = 1.48
+/** Teto de velocidade do cruzamento */
+export const CROSS_RECEIVE_MAX_SPEED_MUL = 1.22
 
 export function maxCrossBallSpeed(): number {
-  return PASS_RECEIVE_MAX_SPEED * CROSS_RECEIVE_MAX_SPEED_MUL * 0.98
+  return PASS_RECEIVE_MAX_SPEED * CROSS_RECEIVE_MAX_SPEED_MUL * 0.96
 }
 
+/**
+ * Velocidade pra cair no recebedor (leve folga pro drag).
+ * Hang um pouco maior = chega no peito/cabeça, não atravessa a área.
+ */
 export function crossSpeedForDistance(dist: number): number {
+  const d = Math.max(dist, 5)
+  const hangT = THREE.MathUtils.clamp(0.82 + d * 0.038, 0.95, 1.7)
+  const raw = (d / hangT) * 1.06
   return THREE.MathUtils.clamp(
-    dist * 0.82 + PASS_SPEED_BASE,
-    PASS_SPEED_MAX * 0.92,
+    raw,
+    PASS_SPEED_MIN * 1.2,
     maxCrossBallSpeed(),
   )
+}
+
+/** Loft cresce com a distância — curto raso, longo flutuante. */
+export function crossLoftForDistance(dist: number): number {
+  return THREE.MathUtils.clamp(0.5 + dist * 0.014, 0.52, 0.82)
 }
 
 /** Companheiro na área / segundo poste para cruzamento */
@@ -80,14 +92,25 @@ export function findCrossTarget(
 
 export function getCrossReceiveLead(
   target: PlayerRef,
+  from: { x: number; z: number },
+  passSpeed: number,
   bounds: FieldBounds,
   team: TeamId,
 ): { x: number; z: number } {
   const attackSign = getAttackSign(team, bounds)
-  const towardGoal = attackSign * 1.8
+  // Antecipação leve — lead forte + speed alta ultrapassava o atacante
+  const towardGoal = attackSign * 0.45
+  const dist = distance2D(
+    { x: from.x, y: 0, z: from.z },
+    target.position,
+  )
+  const travelTime = dist / Math.max(passSpeed, 5)
+  const lead = Math.min(travelTime * 0.4, 0.85)
+  const vx = target.velocity?.x ?? 0
+  const vz = target.velocity?.z ?? 0
   return {
-    x: target.position.x * 0.85,
-    z: target.position.z + towardGoal,
+    x: target.position.x + vx * lead,
+    z: target.position.z + vz * lead + towardGoal * 0.45,
   }
 }
 

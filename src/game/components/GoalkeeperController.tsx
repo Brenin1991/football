@@ -1,5 +1,5 @@
 import { useFrame } from '@react-three/fiber'
-import { tickGoalkeeperDefense, tryGkFeetClaim } from '../systems/goalkeeper'
+import { tickGoalkeeperDefense, tryGkFeetClaim, tryGkEasyCatch } from '../systems/goalkeeper'
 import { useGameStore } from '../store/gameStore'
 import { isUserPauseActive } from '../systems/gameTime'
 import { isFieldParadePhase } from '../systems/matchPhases'
@@ -20,6 +20,7 @@ export function GoalkeeperController() {
     tickGoalkeeperDefense()
 
     if (!store.ballPossession) {
+      tryGkEasyCatch()
       tryGkFeetClaim()
     }
   }, -80)

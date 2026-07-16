@@ -15,6 +15,8 @@ const RECEIVE_TIME_SCALE = 1.18
 const HEADER_TIME_SCALE = 1.08
 const WALK_TIME_SCALE = 1
 const WALK_FALLBACK_TIME_SCALE = 0.65
+const BACKWARD_TIME_SCALE = 0.68
+const SIDE_STRAFE_TIME_SCALE = 0.88
 
 const STRIKE_TIME_SCALE: Partial<Record<PlayerStrikeAnim, number>> = {
   player_pass: 1.42,
@@ -30,7 +32,12 @@ const STRIKE_MOVE_MUL: Partial<Record<PlayerStrikeAnim, number>> = {
 
 const THROW_IN_TIME_SCALE = 1.12
 const THROW_IN_CONTACT_RATIO = 0.56
-const SPIN_TIME_SCALE = 1.05
+const SPIN_TIME_SCALE = 1.14
+/** Novas ações um pouco mais rápidas para não travarem o ritmo do jogo. */
+const FINTA_TIME_SCALE = 1.2
+const IMBALANCE_TIME_SCALE = 1.15
+const SHOULDER_CHARGE_TIME_SCALE = 1.18
+const RUN_STOP_TIME_SCALE = 1.2
 
 const STRIKE_CONTACT_RATIO: Partial<Record<PlayerStrikeAnim, number>> = {
   player_pass: 0.24,
@@ -72,6 +79,8 @@ export class PlayerAnimController {
   private rootMotionSnapshotFired = false
   private holdBallAction: THREE.AnimationAction | null = null
   private holdBallActive = false
+  /** Idle parado no campo (espera passe / formação) — sempre player_idle */
+  private fieldIdleActive = false
 
   constructor(
     private readonly actions: AnimMap,
@@ -82,7 +91,10 @@ export class PlayerAnimController {
     for (const [name, action] of Object.entries(this.actions)) {
       if (!action) continue
       const anim = name as PlayerAnim
-      if (isActionClip(anim)) {
+      if (anim === 'player_shoulder_charge') {
+        action.setLoop(THREE.LoopRepeat, Infinity)
+        action.clampWhenFinished = false
+      } else if (isActionClip(anim)) {
         action.setLoop(THREE.LoopOnce, 1)
         action.clampWhenFinished = false
       } else {
@@ -123,6 +135,7 @@ export class PlayerAnimController {
   getDisplayAnim(): PlayerAnim {
     if (this.action) return this.action
     if (this.holdBallActive) return 'player_idle'
+    if (this.fieldIdleActive) return 'player_idle'
     return this.current
   }
 
@@ -146,8 +159,50 @@ export class PlayerAnimController {
     action.enabled = true
   }
 
+  /** @deprecated Idle de campo usa player_idle; mantido só por compat. */
+  bindFieldIdle(_action?: THREE.AnimationAction) {}
+
+  /** Parado no campo (espera passe / hold de formação). Sem clip extra — evita T-pose. */
+  enterFieldIdle() {
+    if (this.action || this.holdBallActive) return
+    this.ensurePlayerIdle(LOCO_BLEND)
+    this.fieldIdleActive = true
+  }
+
+  exitFieldIdle() {
+    this.fieldIdleActive = false
+  }
+
+  isFieldIdle() {
+    return this.fieldIdleActive
+  }
+
+  /** Garante player_idle rodando com peso 1 (nunca deixa mixer vazio → T-pose). */
+  private ensurePlayerIdle(blend = LOCO_BLEND) {
+    const idle = this.actions.player_idle
+    if (!idle) return
+    const needRestart =
+      this.current !== 'player_idle' ||
+      !idle.isRunning() ||
+      idle.getEffectiveWeight() < 0.05
+    this.current = 'player_idle'
+    idle.enabled = true
+    this.applyScale(idle, 'player_idle')
+    if (needRestart) {
+      if (!idle.isRunning()) {
+        idle.reset()
+        idle.play()
+      }
+      idle.setEffectiveWeight(1)
+      this.fadeOutOthers(idle, undefined, blend)
+    } else {
+      idle.setEffectiveWeight(1)
+    }
+  }
+
   enterThrowInHold() {
     if (this.action || !this.holdBallAction) return
+    this.exitFieldIdle()
     const hold = this.holdBallAction
     if (this.holdBallActive) {
       if (!hold.isRunning() || hold.getEffectiveWeight() < 0.01) {
@@ -220,12 +275,35 @@ export class PlayerAnimController {
     return this.action === 'player_trip'
   }
 
-  /** Animações com deslocamento de esqueleto — carrinho, queda e elástico. */
+  isFinting() {
+    return this.action === 'player_finta_01' || this.action === 'player_finta_180'
+  }
+
+  isImbalancing() {
+    return (
+      this.action === 'player_imbalance_01' ||
+      this.action === 'player_imbalance_stolen'
+    )
+  }
+
+  isShoulderCharging() {
+    return this.action === 'player_shoulder_charge'
+  }
+
+  isRunStopping() {
+    return this.action === 'player_run_stop'
+  }
+
+  /** Animações com deslocamento de esqueleto — corpo segue o último frame. */
   absorbsRootMotion() {
     return (
       this.action === 'player_tackle' ||
       this.action === 'player_trip' ||
-      this.action === 'player_spin'
+      this.action === 'player_spin' ||
+      this.action === 'player_finta_01' ||
+      this.action === 'player_finta_180' ||
+      this.action === 'player_imbalance_01' ||
+      this.action === 'player_imbalance_stolen'
     )
   }
 
@@ -254,6 +332,8 @@ export class PlayerAnimController {
   isBodyLocked() {
     if (isStrike(this.action)) return false
     if (this.action === 'player_receive' || this.action === 'player_header') return false
+    // Ombro em loop — ainda anda no bote; run_stop só planta a parada
+    if (this.action === 'player_shoulder_charge') return false
     return (
       this.lockUntil > 0 &&
       this.action != null &&
@@ -270,7 +350,7 @@ export class PlayerAnimController {
   }
 
   allowsLocomotionDuringAction() {
-    return isStrike(this.action)
+    return isStrike(this.action) || this.action === 'player_shoulder_charge'
   }
 
   getStrikeMoveMultiplier() {
@@ -291,6 +371,8 @@ export class PlayerAnimController {
     if (name === 'player_run' && this.strafeSprint) return SPRINT_TIME_SCALE
     if (name === 'player_receive') return RECEIVE_TIME_SCALE
     if (name === 'player_header') return HEADER_TIME_SCALE
+    if (name === 'player_backward') return BACKWARD_TIME_SCALE
+    if (name === 'player_left' || name === 'player_right') return SIDE_STRAFE_TIME_SCALE
     if (name === 'player_walking') {
       const clipName = this.actions.player_walking?.getClip()?.name
       return clipName === 'player_walking' ? WALK_TIME_SCALE : WALK_FALLBACK_TIME_SCALE
@@ -298,6 +380,14 @@ export class PlayerAnimController {
     if (isStrike(name as PlayerAnim)) return STRIKE_TIME_SCALE[name as PlayerStrikeAnim] ?? 1
     if (name === 'player_throw_in') return THROW_IN_TIME_SCALE
     if (name === 'player_spin') return SPIN_TIME_SCALE
+    if (name === 'player_finta_01' || name === 'player_finta_180') {
+      return FINTA_TIME_SCALE
+    }
+    if (name === 'player_imbalance_01' || name === 'player_imbalance_stolen') {
+      return IMBALANCE_TIME_SCALE
+    }
+    if (name === 'player_shoulder_charge') return SHOULDER_CHARGE_TIME_SCALE
+    if (name === 'player_run_stop') return RUN_STOP_TIME_SCALE
     return 1
   }
 
@@ -400,9 +490,13 @@ export class PlayerAnimController {
 
   setStrafeLocomotion(input: StrafeLocoInput) {
     if (this.holdBallActive) return
+    if (this.fieldIdleActive && !input.moving) return
     if (isStrike(this.action)) return
     if (this.action && this.action !== 'player_receive' && this.action !== 'player_header') return
     if (this.dribbleTouchUntil > 0) return
+
+    if (input.moving) this.exitFieldIdle()
+    else if (this.tryPlayRunStopBeforeIdle()) return
 
     this.strafeSprint = input.sprint
 
@@ -415,8 +509,11 @@ export class PlayerAnimController {
       if (!action) return
       this.applyScale(action, target)
       if (!action.isRunning() || action.getEffectiveWeight() < 0.01) {
+        action.enabled = true
+        action.reset()
         action.play()
         action.setEffectiveWeight(1)
+        this.fadeOutOthers(action, undefined, LOCO_BLEND)
       }
       return
     }
@@ -425,9 +522,13 @@ export class PlayerAnimController {
 
   setDirectLocomotion(input: { moving: boolean; sprint: boolean }) {
     if (this.holdBallActive) return
+    if (this.fieldIdleActive && !input.moving) return
     if (isStrike(this.action)) return
     if (this.action && this.action !== 'player_receive' && this.action !== 'player_header') return
     if (this.dribbleTouchUntil > 0) return
+
+    if (input.moving) this.exitFieldIdle()
+    else if (this.tryPlayRunStopBeforeIdle()) return
 
     this.strafeSprint = input.sprint
 
@@ -438,8 +539,11 @@ export class PlayerAnimController {
       if (!action) return
       this.applyScale(action, target)
       if (!action.isRunning() || action.getEffectiveWeight() < 0.01) {
+        action.enabled = true
+        action.reset()
         action.play()
         action.setEffectiveWeight(1)
+        this.fadeOutOthers(action, undefined, LOCO_BLEND)
       }
       return
     }
@@ -448,9 +552,13 @@ export class PlayerAnimController {
 
   setCarrierLocomotion(input: StrafeLocoInput) {
     if (this.holdBallActive) return
+    if (this.fieldIdleActive && !input.moving) return
     if (isStrike(this.action)) return
     if (this.action && this.action !== 'player_receive' && this.action !== 'player_header') return
     if (this.dribbleTouchUntil > 0) return
+
+    if (input.moving) this.exitFieldIdle()
+    else if (this.tryPlayRunStopBeforeIdle()) return
 
     this.strafeSprint = input.sprint
 
@@ -463,12 +571,24 @@ export class PlayerAnimController {
       if (!action) return
       this.applyScale(action, target)
       if (!action.isRunning() || action.getEffectiveWeight() < 0.01) {
+        action.enabled = true
+        action.reset()
         action.play()
         action.setEffectiveWeight(1)
+        this.fadeOutOthers(action, undefined, LOCO_BLEND)
       }
       return
     }
     this.transition(this.current, target, { warp: true })
+  }
+
+  /** Se estava andando/correndo, toca run_stop em vez de ir direto pro idle. */
+  private tryPlayRunStopBeforeIdle(): boolean {
+    if (this.isRunStopping()) return true
+    if (this.current === 'player_idle') return false
+    if (!this.actions.player_run_stop) return false
+    this.playRunStop()
+    return this.isRunStopping()
   }
 
   playDribbleTouch(
@@ -484,6 +604,8 @@ export class PlayerAnimController {
       return
     }
 
+    this.exitFieldIdle()
+
     if (this.dribbleTouchAnim === anim && this.dribbleTouchUntil > 0) {
       this.dribbleTouchUntil = Math.max(this.dribbleTouchUntil, duration)
       return
@@ -491,14 +613,14 @@ export class PlayerAnimController {
 
     this.dribbleTouchAnim = anim
     this.dribbleTouchUntil = duration
-    this.transition(this.current, anim, { warp: true, duration: 0.12 })
+    this.transition(this.current, anim, { warp: true, duration: 0.2 })
   }
 
   forceIdle() {
     if (this.action) return
     if (this.holdBallActive) return
-    if (this.current === 'player_idle') return
-    this.transition(this.current, 'player_idle', { warp: true })
+    this.exitFieldIdle()
+    this.ensurePlayerIdle(LOCO_BLEND)
   }
 
   private playAction(
@@ -512,6 +634,7 @@ export class PlayerAnimController {
       return
     }
 
+    this.exitFieldIdle()
     this.clearListeners()
     const duration = this.playbackDurationSec(name)
     this.lockUntil = duration
@@ -555,8 +678,8 @@ export class PlayerAnimController {
     this.playAction(name, opts)
   }
 
-  playReceive(onFinished?: () => void) {
-    this.playAction('player_receive', { onFinished })
+  playReceive(opts?: { onContact?: () => void; onFinished?: () => void }) {
+    this.playAction('player_receive', opts)
   }
 
   playHeader(opts?: { onContact?: () => void; onFinished?: () => void }) {
@@ -618,6 +741,150 @@ export class PlayerAnimController {
     this.clearListeners()
     this.fireRootMotionSnapshot()
     this.returnToLocomotion('player_tackle')
+  }
+
+  /** Finta de chute → vira pro lado (root motion, igual carrinho). */
+  playFinta01(onFinished?: () => void) {
+    this.playRootMotionOnce('player_finta_01', onFinished)
+  }
+
+  /** Corte 180° em corrida (root motion). */
+  playFinta180(onFinished?: () => void) {
+    this.playRootMotionOnce('player_finta_180', onFinished)
+  }
+
+  /** Choque corpo a corpo na roubada — desequilíbrio (root motion). */
+  playImbalance(onFinished?: () => void) {
+    this.playRootMotionOnce('player_imbalance_01', onFinished)
+  }
+
+  /** Bola roubada — desequilíbrio (root motion). */
+  playImbalanceStolen(onFinished?: () => void) {
+    this.playRootMotionOnce('player_imbalance_stolen', onFinished)
+  }
+
+  /** Roubador no contato — loop até endShoulderCharge. */
+  playShoulderCharge() {
+    if (this.action === 'player_shoulder_charge') return
+    if (
+      this.action === 'player_tackle' ||
+      this.action === 'player_trip' ||
+      this.action === 'player_finta_01' ||
+      this.action === 'player_finta_180' ||
+      this.action === 'player_imbalance_01' ||
+      this.action === 'player_imbalance_stolen'
+    ) {
+      return
+    }
+    const action = this.actions.player_shoulder_charge
+    if (!action) return
+
+    this.clearListeners()
+    this.lockUntil = 0
+    this.action = 'player_shoulder_charge'
+    action.setLoop(THREE.LoopRepeat, Infinity)
+    this.transition(this.current, 'player_shoulder_charge', {
+      warp: false,
+      duration: ACTION_BLEND,
+    })
+  }
+
+  endShoulderCharge() {
+    if (this.action !== 'player_shoulder_charge') return
+    this.clearListeners()
+    this.returnToLocomotion('player_shoulder_charge')
+  }
+
+  /** Freada após corrida. */
+  playRunStop(onFinished?: () => void) {
+    if (this.action === 'player_run_stop') return
+    if (this.holdBallActive) return
+    if (
+      this.action === 'player_tackle' ||
+      this.action === 'player_trip' ||
+      this.action === 'player_spin' ||
+      this.action === 'player_finta_01' ||
+      this.action === 'player_finta_180' ||
+      this.action === 'player_imbalance_01' ||
+      this.action === 'player_imbalance_stolen'
+    ) {
+      return
+    }
+    const action = this.actions.player_run_stop
+    if (!action) return
+
+    // Interrompe ombro se estiver no loop
+    if (this.action === 'player_shoulder_charge') {
+      this.clearListeners()
+      this.action = null
+      this.lockUntil = 0
+    }
+
+    this.clearListeners()
+    this.lockUntil = this.playbackDurationSec('player_run_stop')
+    this.action = 'player_run_stop'
+    this.transition(this.current, 'player_run_stop', {
+      warp: false,
+      duration: ACTION_BLEND * 0.7,
+    })
+
+    const handleFinished = (event: { action: THREE.AnimationAction }) => {
+      if (event.action !== action) return
+      if (this.action !== 'player_run_stop') return
+      this.clearListeners()
+      onFinished?.()
+      this.releaseToLocomotion('player_run_stop')
+    }
+    this.mixer.addEventListener('finished', handleFinished)
+    this.finishCleanup = () => this.mixer.removeEventListener('finished', handleFinished)
+  }
+
+  private playRootMotionOnce(
+    name:
+      | 'player_finta_01'
+      | 'player_finta_180'
+      | 'player_imbalance_01'
+      | 'player_imbalance_stolen',
+    onFinished?: () => void,
+  ) {
+    if (this.action === name) return
+    if (
+      this.action === 'player_tackle' ||
+      this.action === 'player_trip' ||
+      this.action === 'player_spin' ||
+      this.action === 'player_finta_01' ||
+      this.action === 'player_finta_180' ||
+      this.action === 'player_imbalance_01' ||
+      this.action === 'player_imbalance_stolen'
+    ) {
+      return
+    }
+    if (this.action === 'player_shoulder_charge' || this.action === 'player_run_stop') {
+      this.clearListeners()
+      const prev = this.actions[this.action]
+      prev?.fadeOut(ACTION_BLEND)
+      this.action = null
+      this.lockUntil = 0
+    }
+    const action = this.actions[name]
+    if (!action) return
+
+    this.clearListeners()
+    this.beginRootMotionAction()
+    this.lockUntil = this.playbackDurationSec(name)
+    this.action = name
+    this.transition(this.current, name, { warp: false, duration: ACTION_BLEND })
+
+    const handleFinished = (event: { action: THREE.AnimationAction }) => {
+      if (event.action !== action) return
+      if (this.action !== name) return
+      this.clearListeners()
+      this.fireRootMotionSnapshot()
+      onFinished?.()
+      this.releaseToLocomotion(name)
+    }
+    this.mixer.addEventListener('finished', handleFinished)
+    this.finishCleanup = () => this.mixer.removeEventListener('finished', handleFinished)
   }
 
   dispose() {

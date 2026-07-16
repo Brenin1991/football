@@ -5,10 +5,11 @@ import * as THREE from 'three'
 import { PsxCompositeEffect } from '../../psx/PsxCompositeEffect'
 import { updatePsxShaderTime } from '../../psx/psxMaterial'
 import { PSX_CLASSIC } from '../../psx/psxSettings'
-import { FIELD_SCALE, SHADOW_CAMERA } from '../../systems/fieldData'
+import { FIELD_SCALE, SHADOW_CAMERA, fitDirectionalLightShadowToField } from '../../systems/fieldData'
 // @ts-ignore: three example loader types not present
 import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader'
 import { CubeCamera } from '@react-three/drei'
+import { useGameStore } from '../../store/gameStore'
 
 function PsxEffectPass() {
   const effect = useMemo(() => new PsxCompositeEffect(), [])
@@ -21,6 +22,7 @@ export function PsxPipeline() {
   const lightRef = useRef<THREE.DirectionalLight>(null)
   const exr = useLoader(EXRLoader, '/ambient/sky4.exr')
   const { gl, scene } = useThree()
+  const fieldBounds = useGameStore((s) => s.fieldBounds)
 
   useEffect(() => {
     if (!exr || !gl) return
@@ -60,33 +62,23 @@ export function PsxPipeline() {
       const pos = new THREE.Vector3()
       fieldArea.getWorldPosition(pos)
       light.target.position.copy(pos)
-      // Make sure the target is part of the scene so the light's shadow camera follows it
       scene.add(light.target)
       light.target.updateMatrixWorld()
     } else {
-      // fallback: center at origin
       light.target.position.set(0, 0, 0)
       scene.add(light.target)
     }
-  }, [scene])
+  }, [scene, fieldBounds])
 
   // Configure shadow camera extents and map size to cover the whole pitch
   useLayoutEffect(() => {
     const light = lightRef.current
     if (!light || !light.shadow) return
-    // shadow settings from PSX_CLASSIC
     light.shadow.mapSize.set(shadow.mapSize, shadow.mapSize)
     light.shadow.bias = shadow.bias
     light.shadow.normalBias = shadow.normalBias
 
-    const cam = light.shadow.camera as THREE.OrthographicCamera
-    cam.left = -SHADOW_CAMERA.halfX * 2
-    cam.right = SHADOW_CAMERA.halfX * 2
-    cam.top = SHADOW_CAMERA.halfZ * 4
-    cam.bottom = -SHADOW_CAMERA.halfZ
-    cam.near = SHADOW_CAMERA.near
-    cam.far = SHADOW_CAMERA.far
-    cam.updateProjectionMatrix()
+    fitDirectionalLightShadowToField(light, scene, 1.55)
 
     const map = light.shadow.map?.texture
     if (map) {
@@ -94,7 +86,7 @@ export function PsxPipeline() {
       map.magFilter = THREE.NearestFilter
       map.needsUpdate = true
     }
-  }, [shadow.mapSize, shadow.bias, shadow.normalBias])
+  }, [shadow.mapSize, shadow.bias, shadow.normalBias, scene, fieldBounds])
 
   return (
     <>

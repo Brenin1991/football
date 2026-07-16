@@ -4,6 +4,7 @@ import type * as THREE from 'three'
 import type { PowerBarMode } from '../systems/shotPower'
 import { useGameStore } from '../store/gameStore'
 import { playerRegistry } from '../systems/entityRegistry'
+import { getAnticipatedStrikerId } from '../systems/anticipation'
 import { getPitchGroundY } from '../systems/fieldData'
 
 const AIM_COLORS: Record<NonNullable<PowerBarMode>, string> = {
@@ -15,10 +16,8 @@ const AIM_COLORS: Record<NonNullable<PowerBarMode>, string> = {
 
 const MAX_DASHES = 10
 
-function getPrecisionColor(baseColor: string, facingDot: number) {
-  if (facingDot > 0.25) return baseColor
-  if (facingDot < -0.25) return '#ef4444'
-  return '#fbbf24'
+function getPrecisionColor(baseColor: string, _facingDot: number) {
+  return baseColor
 }
 
 function buildAimDashes(length: number) {
@@ -52,7 +51,9 @@ export function StrikeAimIndicator() {
       return
     }
 
-    const player = playerRegistry.get(useGameStore.getState().activePlayerId)
+    const store = useGameStore.getState()
+    const strikerId = store.ballPossession?.playerId ?? getAnticipatedStrikerId(store) ?? store.activePlayerId
+    const player = playerRegistry.get(strikerId)
     const originX = player?.position.x ?? aim.originX
     const originZ = player?.position.z ?? aim.originZ
 

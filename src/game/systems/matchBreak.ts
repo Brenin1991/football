@@ -32,7 +32,7 @@ export function finishHalfTimeEnter(center: Vec3) {
   entranceSystem.finish()
   const kickoffCenter = { ...center, y: ballRestY() }
   setBallPosition(kickoffCenter)
-  setupKickoff('away', kickoffCenter, '2º tempo — pressione Espaço para iniciar')
+  setupKickoff('away', kickoffCenter, '2º tempo — passe (Espaço / E)')
 }
 
 export function beginFullTimeExit(bounds: FieldBounds) {
@@ -57,7 +57,5 @@ export function finishFullTimeExit() {
 }
 
 export function getHalfTimeKickoffCenter(bounds: FieldBounds): Vec3 {
-  const center = getKickoffPosition(bounds.center)
-  center.y = ballRestY()
-  return center
+  return getKickoffPosition(bounds)
 }

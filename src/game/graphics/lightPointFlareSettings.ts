@@ -29,7 +29,7 @@ export const LIGHT_POINT_FLARES = {
     angle: 100.32,
     penumbra: 0.38,
     decay: 2,
-    castShadow: true,
+    castShadow: false,
     targetLocal: [0, -16, 0] as [number, number, number],
   },
   flare: {

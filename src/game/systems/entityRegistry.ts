@@ -9,10 +9,11 @@ export interface PlayerRef {
   velocity: Vec3
   isControlled: boolean
   isSprinting?: boolean
-  dribbleTouchSeverity?: number
   anim: PlayerAnim
   animTime: number
   dribbleBallOffset?: { x: number; z: number }
+  /** 0..1 — perda de cola da bola (finta/corte) */
+  dribbleTouchSeverity?: number
 }
 
 export const playerRegistry: Map<string, PlayerRef> = new Map()

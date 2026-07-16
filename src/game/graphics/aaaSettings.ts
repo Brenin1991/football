@@ -12,8 +12,8 @@ export const AAA_CANVAS_RESOLUTION_OPTIONS = {
   high: {
     label: 'Alta',
     description: 'Detalhe alto com custo moderado',
-    dprMin: 1.25,
-    dprMax: 1.75,
+    dprMin: 4.25,
+    dprMax: 5.75,
   },
   medium: {
     label: 'Média',
@@ -83,7 +83,7 @@ export const AAA_CLASSIC = {
 
   shadow: {
     enabled: true,
-    mapSize: 2048,
+    mapSize: 4096,
     bias: -0.00035,
     normalBias: 0.035,
   },
@@ -172,7 +172,7 @@ export const AAA_CLASSIC = {
       enabled: true,
       threshold: 0.62,
       softKnee: 0.22,
-      glowStrength: 0.2,
+      glowStrength: 0.4,
       fogTintMix: 0.7,
       radiusPx: 3.5,
       outerRadiusMul: 2.2,
@@ -180,17 +180,17 @@ export const AAA_CLASSIC = {
       fogColor: '#bfbfbf',
     },
     chromaticDirt: {
-      enabled: false,
-      amount: 0.0012,
+      enabled: true,
+      amount: 0.00012,
       radialStrength: 0.6,
       dirtStrength: 0.16,
       dirtScale: 1.7,
-      dirtThreshold: 0.65,
+      dirtThreshold: 0.85,
       centerX: 0.5,
       centerY: 0.5,
     },
     bloom: {
-      intensity: 0.14,
+      intensity: 0.44,
       threshold: 0.88,
       radius: 0.5,
     },

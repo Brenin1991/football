@@ -275,17 +275,40 @@ function isLastDefender(
   return true
 }
 
+export type SlideContactQuality = {
+  hitsBody: boolean
+  hitsBall: boolean
+  /** Contato de corpo realmente próximo — batida feia */
+  heavyBody: boolean
+  bodyDist: number
+}
+
 export function classifySlideContact(
   slider: PlayerRef,
   victim: PlayerRef,
   slideDir: { x: number; z: number },
   victimHasBall: boolean,
+  quality: SlideContactQuality,
 ): { isFoul: boolean; card: CardColor | null; reason: FoulReason; message: string } {
+  // Sem batida feia de corpo: toque na bola / raspão / interceptação = lance normal
+  if (!quality.heavyBody) {
+    return { isFoul: false, card: null, reason: 'dangerous-slide', message: '' }
+  }
+
   const dot = approachDot(slider, victim, slideDir)
-  const fromBehind = dot < 0.2
-  const side = dot >= 0.2 && dot < 0.55
+  // Por trás de verdade (não quase de lado)
+  const fromBehind = dot < 0.05
+  const side = !fromBehind && dot < 0.48
 
   if (victimHasBall) {
+    // Pegou a bola com o pé e não veio de costas → desarme limpo, mesmo com corpo
+    if (quality.hitsBall && !fromBehind) {
+      return { isFoul: false, card: null, reason: 'dangerous-slide', message: '' }
+    }
+    // Frontal forte no homem com bola — disputa física, segue o jogo
+    if (!fromBehind && !side) {
+      return { isFoul: false, card: null, reason: 'dangerous-slide', message: '' }
+    }
     if (fromBehind) {
       return {
         isFoul: true,
@@ -294,7 +317,8 @@ export function classifySlideContact(
         message: 'FALTA — carrinho por trás',
       }
     }
-    if (side) {
+    // Lateral sem alcançar a bola = só perna
+    if (side && !quality.hitsBall) {
       return {
         isFoul: true,
         card: null,
@@ -305,8 +329,9 @@ export function classifySlideContact(
     return { isFoul: false, card: null, reason: 'dangerous-slide', message: '' }
   }
 
+  // Sem bola: batida feia em alguém que não disputa a bola = falta
   const bounds = useGameStore.getState().fieldBounds
-  if (bounds && isLastDefender(slider, victim, bounds)) {
+  if (bounds && isLastDefender(slider, victim, bounds) && fromBehind) {
     return {
       isFoul: true,
       card: 'red',
@@ -315,7 +340,6 @@ export function classifySlideContact(
     }
   }
 
-  // Sem bola: falta normal — cartão só no último homem (vermelho)
   return {
     isFoul: true,
     card: null,
@@ -359,7 +383,7 @@ export function callFoul(call: FoulCall) {
 
   const setupMessage =
     call.fouledTeam === 'home'
-      ? `${call.message}${cardMsg} — ← → mirar · Espaço chutar`
+      ? `${call.message}${cardMsg} — ← → mirar · Espaço chute · E passe · Q cruzamento`
       : `${call.message}${cardMsg} — cobrança visitante`
 
   const finishFoul = () => {
@@ -397,12 +421,19 @@ export function reportSlideFoul(
   victimId: string,
   slideDir: { x: number; z: number },
   victimHasBall: boolean,
+  quality: SlideContactQuality,
 ) {
   const slider = playerRegistry.get(sliderId)
   const victim = playerRegistry.get(victimId)
   if (!slider || !victim) return false
 
-  const verdict = classifySlideContact(slider, victim, slideDir, victimHasBall)
+  const verdict = classifySlideContact(
+    slider,
+    victim,
+    slideDir,
+    victimHasBall,
+    quality,
+  )
   if (!verdict.isFoul) return false
 
   callFoul({
@@ -478,7 +509,7 @@ export function callOffside(flag: OffsidePassFlag, _bounds: FieldBounds) {
       spot,
       'IMPEDIMENTO',
       defendingTeam === 'home'
-        ? 'IMPEDIMENTO — ← → mirar · Espaço chutar'
+        ? 'IMPEDIMENTO — ← → mirar · Espaço chute · E passe · Q cruzamento'
         : 'IMPEDIMENTO — cobrança visitante',
     )
   }

@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import type { RapierRigidBody } from '@react-three/rapier'
 import { PLAYER_RADIUS } from '../constants'
 import type { FieldBounds, Vec3 } from '../types'
-import { getPlayerBodyY } from './fieldData'
+import { getPlayerBodyY, getPitchGroundY } from './fieldData'
 
 const HIP_NAMES = ['mixamorig5:Hips', 'mixamorig5Hips', 'Hips']
 const FOOT_LEFT = ['mixamorig5:LeftFoot', 'mixamorig5LeftFoot']
@@ -37,6 +37,7 @@ export type PlayerBoneRef = {
 type PlayerBoneEntry = {
   hips: THREE.Object3D
   hipsRestLocal: THREE.Vector3
+  hipsWorld: THREE.Vector3
   leftFoot: THREE.Object3D
   rightFoot: THREE.Object3D
   leftFootWorld: THREE.Vector3
@@ -82,6 +83,7 @@ export function registerPlayerBones(playerId: string, modelRoot: THREE.Object3D)
   playerBones.set(playerId, {
     hips,
     hipsRestLocal: hips.position.clone(),
+    hipsWorld: new THREE.Vector3(),
     leftFoot,
     rightFoot,
     leftFootWorld: new THREE.Vector3(),
@@ -151,6 +153,7 @@ export function updatePlayerBonePositions(playerId: string, root?: THREE.Object3
   if (root) root.updateMatrixWorld(true)
   entry.leftFoot.getWorldPosition(entry.leftFootWorld)
   entry.rightFoot.getWorldPosition(entry.rightFootWorld)
+  entry.hips.getWorldPosition(entry.hipsWorld)
 }
 
 export function getPlayerFootWorld(playerId: string, side: 'left' | 'right'): Vec3 | null {
@@ -170,6 +173,46 @@ export function getPlayerSlideFootPoints(playerId: string): Vec3[] {
   ]
 }
 
+/**
+ * Âncora no gramado sob o corpo visual/físico (pés), não a posição lógica do registry.
+ * Atualiza ossos na hora — usar no fim do frame (depois do mixer).
+ */
+export function getPlayerShadowAnchor(playerId: string): { x: number; z: number } | null {
+  const entry = playerBones.get(playerId)
+  if (!entry) return null
+
+  entry.leftFoot.getWorldPosition(entry.leftFootWorld)
+  entry.rightFoot.getWorldPosition(entry.rightFootWorld)
+  entry.hips.getWorldPosition(entry.hipsWorld)
+
+  const fx = (entry.leftFootWorld.x + entry.rightFootWorld.x) * 0.5
+  const fz = (entry.leftFootWorld.z + entry.rightFootWorld.z) * 0.5
+  if (!Number.isFinite(fx) || !Number.isFinite(fz)) {
+    return { x: entry.hipsWorld.x, z: entry.hipsWorld.z }
+  }
+  return { x: fx, z: fz }
+}
+
+export type PlayerShadowPartKind = 'foot' | 'torso'
+
+/** Pontos no gramado por membro — micro-sombras do X (PES 6). */
+export function getPlayerShadowParts(
+  playerId: string,
+): { x: number; z: number; kind: PlayerShadowPartKind }[] {
+  const entry = playerBones.get(playerId)
+  if (!entry) return []
+
+  entry.leftFoot.getWorldPosition(entry.leftFootWorld)
+  entry.rightFoot.getWorldPosition(entry.rightFootWorld)
+  entry.hips.getWorldPosition(entry.hipsWorld)
+
+  return [
+    { x: entry.leftFootWorld.x, z: entry.leftFootWorld.z, kind: 'foot' },
+    { x: entry.rightFootWorld.x, z: entry.rightFootWorld.z, kind: 'foot' },
+    { x: entry.hipsWorld.x, z: entry.hipsWorld.z, kind: 'torso' },
+  ]
+}
+
 export function minPlayerFootDist2D(playerId: string, target: Vec3): number | null {
   const feet = getPlayerSlideFootPoints(playerId)
   if (feet.length === 0) return null
@@ -179,4 +222,54 @@ export function minPlayerFootDist2D(playerId: string, target: Vec3): number | nu
     if (d < best) best = d
   }
   return best
+}
+
+export type PlayerStrikePart = 'head' | 'chest' | 'foot'
+
+/** Pontos de finalização (ossos + fallback) para detectar bola no cruzamento */
+export function getPlayerStrikePoints(
+  playerId: string,
+  anchor: { x: number; z: number },
+): { point: Vec3; part: PlayerStrikePart }[] {
+  const groundY = getPitchGroundY()
+  const points: { point: Vec3; part: PlayerStrikePart }[] = []
+
+  for (const foot of getPlayerSlideFootPoints(playerId)) {
+    points.push({ point: foot, part: 'foot' })
+  }
+
+  const entry = playerBones.get(playerId)
+  if (entry) {
+    points.push({
+      point: {
+        x: entry.hipsWorld.x,
+        y: entry.hipsWorld.y + 0.34,
+        z: entry.hipsWorld.z,
+      },
+      part: 'head',
+    })
+    points.push({
+      point: {
+        x: entry.hipsWorld.x,
+        y: entry.hipsWorld.y + 0.1,
+        z: entry.hipsWorld.z,
+      },
+      part: 'chest',
+    })
+  }
+
+  points.push({
+    point: { x: anchor.x, y: groundY + 0.64, z: anchor.z },
+    part: 'head',
+  })
+  points.push({
+    point: { x: anchor.x, y: groundY + 0.36, z: anchor.z },
+    part: 'chest',
+  })
+  points.push({
+    point: { x: anchor.x, y: groundY + 0.07, z: anchor.z },
+    part: 'foot',
+  })
+
+  return points
 }

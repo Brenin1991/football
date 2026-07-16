@@ -102,7 +102,7 @@ export function setupKickoff(team: TeamId, center: Vec3, message?: string) {
     lastTouchTeam: null,
     kickoffResetVersion: store.kickoffResetVersion + 1,
     activePlayerId: team === getUserTeam() ? kickerId : store.activePlayerId,
-    message: message ?? 'Saída de bola — pressione Espaço para iniciar',
+    message: message ?? 'Saída de bola — passe (Espaço / E)',
   })
 }
 

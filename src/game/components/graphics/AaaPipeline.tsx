@@ -4,9 +4,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { AAA_CLASSIC } from '../../graphics/aaaSettings'
 import { AaaPostProcessing } from './AaaPostProcessing'
-import { FIELD_SCALE, SHADOW_CAMERA } from '../../systems/fieldData'
+import { FIELD_SCALE, SHADOW_CAMERA, fitDirectionalLightShadowToField } from '../../systems/fieldData'
 // @ts-ignore: three example loader types not present
 import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader'
+import { useGameStore } from '../../store/gameStore'
 
 function SetReflection({ texture }: { texture: THREE.Texture | null }) {
   const { scene } = useThree()
@@ -28,6 +29,7 @@ export function AaaPipeline() {
   const exr = useLoader(EXRLoader, '/ambient/sky4.exr')
   const { gl, scene } = useThree()
   const [probeCenter, setProbeCenter] = useState<[number, number, number]>([0, reflectionProbe.height, 0])
+  const fieldBounds = useGameStore((s) => s.fieldBounds)
 
   useEffect(() => {
     if (!exr || !gl || !environment.enabled) return
@@ -74,7 +76,7 @@ export function AaaPipeline() {
     }
     scene.add(light.target)
     light.target.updateMatrixWorld()
-  }, [scene])
+  }, [scene, fieldBounds])
 
   useLayoutEffect(() => {
     const light = sunRef.current
@@ -84,14 +86,8 @@ export function AaaPipeline() {
     light.shadow.bias = shadow.bias
     light.shadow.normalBias = shadow.normalBias
 
-    const cam = light.shadow.camera as THREE.OrthographicCamera
-    cam.left = -SHADOW_CAMERA.halfX
-    cam.right = SHADOW_CAMERA.halfX
-    cam.top = SHADOW_CAMERA.halfZ
-    cam.bottom = -SHADOW_CAMERA.halfZ
-    cam.near = SHADOW_CAMERA.near
-    cam.far = SHADOW_CAMERA.far
-    cam.updateProjectionMatrix()
+    // Cobre o campo inteiro (não só um quadrado no centro)
+    fitDirectionalLightShadowToField(light, scene, 1.55)
 
     const map = light.shadow.map?.texture
     if (map) {
@@ -101,7 +97,7 @@ export function AaaPipeline() {
     }
 
     light.shadow.needsUpdate = true
-  }, [shadow.bias, shadow.mapSize, shadow.normalBias])
+  }, [shadow.bias, shadow.mapSize, shadow.normalBias, scene, fieldBounds])
 
   return (
     <>

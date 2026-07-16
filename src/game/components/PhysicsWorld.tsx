@@ -12,6 +12,9 @@ export function PhysicsWorld({ children }: { children: ReactNode }) {
       gravity={[0, -9.81, 0]}
       timeStep={getPhysicsTimeStep()}
       paused={isPhysicsPaused()}
+      interpolate
+      maxCcdSubsteps={2}
+      numSolverIterations={4}
     >
       {children}
     </Physics>

@@ -1,25 +1,103 @@
 import {
   SLIDE_COOLDOWN_MS,
   SLIDE_CONTACT_DIST,
+  SLIDE_HEAVY_BODY_DIST,
   SLIDE_DURATION_MS,
   SLIDE_REACH,
+  SLIDE_AI_INTERCEPT_CHANCE_DEF,
+  SLIDE_AI_INTERCEPT_CHANCE_FWD,
+  SLIDE_AI_INTERCEPT_CHANCE_MID,
+  SLIDE_AI_DUEL_CHANCE_DEF,
+  SLIDE_AI_DUEL_CHANCE_FWD,
+  SLIDE_AI_DUEL_CHANCE_MID,
+  SLIDE_AI_GOAL_BOX_CHANCE_DEF,
+  SLIDE_AI_GOAL_DANGER_CHANCE_DEF,
+  SLIDE_AI_GOAL_BOX_MAX_DIST,
+  SLIDE_AI_GOAL_DANGER_MAX_DIST,
+  SLIDE_AI_ROLL_CHANCE_DEF,
+  SLIDE_AI_ROLL_CHANCE_FWD,
+  SLIDE_AI_ROLL_CHANCE_MID,
+  SLIDE_AI_SECOND_CHANCE_MUL,
+  PHYSICAL_DUEL_SLIDE_MIN_MS,
+  WORLD_SCALE,
 } from '../constants'
 import { useGameStore } from '../store/gameStore'
-import { ballBodyRef, playerRegistry, type PlayerRef } from './entityRegistry'
+import type { FieldBounds } from '../types'
+import type { PlayerRole, TeamId } from '../types'
+import { playerRegistry, type PlayerRef } from './entityRegistry'
 import { getHeldBallPoint, STEAL_COOLDOWN_MS } from './possession'
 import { isBallShielding } from './ballShield'
 import { reportSlideFoul, canPlayerPlay } from './referee'
 import { distance2D, normalize2D } from './rules'
 import { minPlayerFootDist2D } from './playerSkeleton'
-import { ensureBallDynamic, syncBallFromBody } from './ballPhysics'
-import { clearDribbleState } from './ballDribble'
-import type { RapierRigidBody } from '@react-three/rapier'
+import { clearPlayerDuelState, applySlideContactBrake, releaseBallFromSlideTackle } from './playerPhysicalDuel'
+import { getAttackSign, getDefensiveGoalZ, isInPenaltyArea } from './teamField'
 
-const SLIDE_CLAIM_BLOCK_MS = 720
-const SLIDE_DISLODGE_SPEED = 4.8
+export type DefenderGoalThreat = 'box' | 'danger'
 
-export const HEAVY_TACKLE_DIST = SLIDE_CONTACT_DIST
+export const HEAVY_TACKLE_DIST = SLIDE_HEAVY_BODY_DIST
 export const KNOCKDOWN_DURATION_MS = 1900
+
+/** Perigo na própria área / perto do gol que o zagueiro deve cortar com carrinho. */
+export function getDefenderGoalThreat(
+  defendingTeam: TeamId,
+  bounds: FieldBounds,
+  ball: { x: number; z: number },
+  holder: PlayerRef,
+): DefenderGoalThreat | null {
+  if (
+    isInPenaltyArea({ x: ball.x, y: 0, z: ball.z }, defendingTeam, bounds) ||
+    isInPenaltyArea(holder.position, defendingTeam, bounds)
+  ) {
+    return 'box'
+  }
+
+  const goalZ = getDefensiveGoalZ(defendingTeam, bounds)
+  const ballDist = Math.abs(ball.z - goalZ)
+  const holderDist = Math.abs(holder.position.z - goalZ)
+  const dangerDist = 18 * WORLD_SCALE
+  if (ballDist < dangerDist || holderDist < dangerDist) {
+    return 'danger'
+  }
+  return null
+}
+
+/** Perto do gol o zagueiro não hesita — critério bem mais solto que no meio-campo. */
+export function canEmergencySlideNearGoal(
+  slider: PlayerRef,
+  holder: PlayerRef,
+  bounds: FieldBounds,
+  threat: DefenderGoalThreat,
+): boolean {
+  if (slider.role !== 'def') return false
+
+  const dist = distance2D(slider.position, holder.position)
+  const maxDist =
+    threat === 'box' ? SLIDE_AI_GOAL_BOX_MAX_DIST : SLIDE_AI_GOAL_DANGER_MAX_DIST
+  if (dist > maxDist || dist < 0.2) return false
+
+  const toHolder = normalize2D(
+    holder.position.x - slider.position.x,
+    holder.position.z - slider.position.z,
+  )
+  const faceX = Math.sin(slider.rotation)
+  const faceZ = Math.cos(slider.rotation)
+  const facing = toHolder.x * faceX + toHolder.z * faceZ
+  if (facing < 0.1) return false
+
+  if (threat === 'box') return true
+
+  const attackSign = getAttackSign(holder.team, bounds)
+  const goalSide =
+    (holder.position.z - slider.position.z) * attackSign > 0.04 * WORLD_SCALE
+  return goalSide || dist < 1.05 * WORLD_SCALE
+}
+
+export function getAISlideChanceNearGoal(threat: DefenderGoalThreat): number {
+  return threat === 'box'
+    ? SLIDE_AI_GOAL_BOX_CHANCE_DEF
+    : SLIDE_AI_GOAL_DANGER_CHANCE_DEF
+}
 
 interface SlideState {
   startedAt: number
@@ -41,6 +119,7 @@ export function clearPlayerPhysicalState(playerId: string) {
   slides.delete(playerId)
   knockdowns.delete(playerId)
   slideCooldownUntil.delete(playerId)
+  clearPlayerDuelState(playerId)
 }
 
 export function isPlayerKnockedDown(playerId: string): boolean {
@@ -61,8 +140,181 @@ export function getSlideDirection(playerId: string): { x: number; z: number } | 
 
 export function canStartSlide(playerId: string): boolean {
   if (!canPlayerPlay(playerId)) return false
+  const player = playerRegistry.get(playerId)
+  if (player?.role === 'gk') return false
   if (isPlayerKnockedDown(playerId) || isPlayerSliding(playerId)) return false
   return performance.now() >= (slideCooldownUntil.get(playerId) ?? 0)
+}
+
+/** Carrinho no portador — zagueiro pela frente; demais funções com critério mais rígido. */
+export function canSlideOnHolder(
+  slider: PlayerRef,
+  holder: PlayerRef,
+  bounds: FieldBounds,
+): boolean {
+  const holderSpeed = Math.hypot(holder.velocity?.x ?? 0, holder.velocity?.z ?? 0)
+  const faceX =
+    holderSpeed > 0.25 ? holder.velocity!.x / holderSpeed : Math.sin(holder.rotation)
+  const faceZ =
+    holderSpeed > 0.25 ? holder.velocity!.z / holderSpeed : Math.cos(holder.rotation)
+
+  const toSliderX = slider.position.x - holder.position.x
+  const toSliderZ = slider.position.z - holder.position.z
+  const toSliderLen = Math.hypot(toSliderX, toSliderZ)
+  if (toSliderLen < 0.01) return false
+
+  // Ângulo lateral ok, mas não de qualquer lado — evita carrinho em massa
+  const frontMin = slider.role === 'def' ? -0.28 : slider.role === 'mid' ? -0.14 : 0.02
+  const holderSeesFront =
+    (toSliderX * faceX + toSliderZ * faceZ) / toSliderLen > frontMin
+
+  const attackSign = getAttackSign(holder.team, bounds)
+  const goalSideMin =
+    slider.role === 'def' ? 0.12 : slider.role === 'mid' ? 0.06 : 0.04
+  const goalSide =
+    (holder.position.z - slider.position.z) * attackSign > goalSideMin * WORLD_SCALE
+
+  const toHolderX = -toSliderX
+  const toHolderZ = -toSliderZ
+  const sliderFaceX = Math.sin(slider.rotation)
+  const sliderFaceZ = Math.cos(slider.rotation)
+  const facingMin =
+    slider.role === 'def' ? 0.32 : slider.role === 'mid' ? 0.4 : 0.5
+  const facingHolder =
+    (toHolderX * sliderFaceX + toHolderZ * sliderFaceZ) / toSliderLen > facingMin
+
+  if (slider.role === 'def') {
+    return facingHolder && holderSeesFront && goalSide
+  }
+  if (slider.role === 'mid') {
+    return (
+      facingHolder &&
+      holderSeesFront &&
+      (goalSide || toSliderLen < 1.2 * WORLD_SCALE)
+    )
+  }
+  return (
+    holderSeesFront &&
+    facingHolder &&
+    goalSide &&
+    toSliderLen < 1.1 * WORLD_SCALE
+  )
+}
+
+/** @deprecated use canSlideOnHolder */
+export function canSlideFromFront(
+  slider: PlayerRef,
+  holder: PlayerRef,
+  bounds: FieldBounds,
+): boolean {
+  return canSlideOnHolder(slider, holder, bounds)
+}
+
+/** Carrinho para cortar passe em voo — perto da bola e do ponto de corte. */
+export function canSlideOnPassIntercept(
+  slider: PlayerRef,
+  ball: { x: number; z: number },
+  velocity: { x: number; y: number; z: number },
+  passIntent: { targetX: number; targetZ: number },
+  interceptPoint: { x: number; z: number },
+): boolean {
+  const distBall = Math.hypot(slider.position.x - ball.x, slider.position.z - ball.z)
+  const distCut = Math.hypot(
+    slider.position.x - interceptPoint.x,
+    slider.position.z - interceptPoint.z,
+  )
+  const maxBall =
+    slider.role === 'def' ? 1.95 : slider.role === 'mid' ? 1.68 : 1.35
+  const maxCut =
+    slider.role === 'def' ? 1.4 : slider.role === 'mid' ? 1.2 : 0.95
+  if (distBall > maxBall || distCut > maxCut) return false
+
+  const ballSpeed = Math.hypot(velocity.x, velocity.z)
+  if (ballSpeed < 0.95) return false
+
+  const toBallX = ball.x - slider.position.x
+  const toBallZ = ball.z - slider.position.z
+  const toBallLen = Math.hypot(toBallX, toBallZ)
+  if (toBallLen < 0.05) return true
+
+  const faceX = Math.sin(slider.rotation)
+  const faceZ = Math.cos(slider.rotation)
+  const facingBall =
+    (toBallX * faceX + toBallZ * faceZ) / toBallLen >
+    (slider.role === 'fwd' ? 0.48 : 0.34)
+
+  const toTargetX = passIntent.targetX - ball.x
+  const toTargetZ = passIntent.targetZ - ball.z
+  const passLen = Math.hypot(toTargetX, toTargetZ)
+  if (passLen < 1.2) return false
+  const velDot =
+    (velocity.x * toTargetX + velocity.z * toTargetZ) / (ballSpeed * passLen)
+
+  return facingBall && velDot > 0.22
+}
+
+export function getAISlideChanceOnHolder(
+  role: PlayerRole,
+  isPrimaryMarker: boolean,
+): number {
+  const base =
+    role === 'def'
+      ? SLIDE_AI_ROLL_CHANCE_DEF
+      : role === 'mid'
+        ? SLIDE_AI_ROLL_CHANCE_MID
+        : SLIDE_AI_ROLL_CHANCE_FWD
+  return isPrimaryMarker ? base : base * SLIDE_AI_SECOND_CHANCE_MUL
+}
+
+export function getAISlideChanceOnIntercept(role: PlayerRole): number {
+  if (role === 'def') return SLIDE_AI_INTERCEPT_CHANCE_DEF
+  if (role === 'mid') return SLIDE_AI_INTERCEPT_CHANCE_MID
+  return SLIDE_AI_INTERCEPT_CHANCE_FWD
+}
+
+/** Carrinho após disputa de corpo prolongada com o portador. */
+export function canSlideInPhysicalDuel(
+  slider: PlayerRef,
+  holder: PlayerRef,
+  duelDurationMs: number,
+): boolean {
+  if (duelDurationMs < PHYSICAL_DUEL_SLIDE_MIN_MS) return false
+
+  const dist = distance2D(slider.position, holder.position)
+  const maxDist =
+    slider.role === 'def' ? 1.42 : slider.role === 'mid' ? 1.28 : 1.1
+  if (dist > maxDist || dist < 0.26) return false
+
+  const toHolder = normalize2D(
+    holder.position.x - slider.position.x,
+    holder.position.z - slider.position.z,
+  )
+  const faceX = Math.sin(slider.rotation)
+  const faceZ = Math.cos(slider.rotation)
+  const facingMin =
+    slider.role === 'def' ? 0.2 : slider.role === 'mid' ? 0.3 : 0.4
+  if (toHolder.x * faceX + toHolder.z * faceZ < facingMin) return false
+
+  const holderSpeed = Math.hypot(holder.velocity?.x ?? 0, holder.velocity?.z ?? 0)
+  const hx =
+    holderSpeed > 0.2 ? holder.velocity!.x / holderSpeed : Math.sin(holder.rotation)
+  const hz =
+    holderSpeed > 0.2 ? holder.velocity!.z / holderSpeed : Math.cos(holder.rotation)
+  const toSliderX = slider.position.x - holder.position.x
+  const toSliderZ = slider.position.z - holder.position.z
+  const toSliderLen = Math.hypot(toSliderX, toSliderZ)
+  if (toSliderLen > 0.01) {
+    const behindHolder = (toSliderX * hx + toSliderZ * hz) / toSliderLen
+    if (behindHolder > 0.55) return false
+  }
+
+  return true
+}
+
+export function getAISlideChanceOnDuel(role: PlayerRole): number {
+  if (role === 'def') return SLIDE_AI_DUEL_CHANCE_DEF
+  if (role === 'mid') return SLIDE_AI_DUEL_CHANCE_MID
+  return SLIDE_AI_DUEL_CHANCE_FWD
 }
 
 export function startSlide(
@@ -71,6 +323,8 @@ export function startSlide(
   dirZ: number,
   durationMs = SLIDE_DURATION_MS,
 ): boolean {
+  const player = playerRegistry.get(playerId)
+  if (player?.role === 'gk') return false
   if (!canStartSlide(playerId)) return false
   const len = Math.hypot(dirX, dirZ)
   const nx = len > 0.001 ? dirX / len : 0
@@ -163,50 +417,55 @@ function canSlideReachTarget(
   return contactDistanceDuringSlide(slider, slide, target) < SLIDE_CONTACT_DIST
 }
 
-function shouldKnockdownOnSlide(
+function measureSlideContactQuality(
   slider: PlayerRef,
-  victim: PlayerRef,
   slide: SlideState,
-): boolean {
-  if (!canSlideReachTarget(slider, slide, victim.position)) return false
-  const dist = contactDistanceDuringSlide(slider, slide, victim.position)
-  return dist < HEAVY_TACKLE_DIST
+  victim: PlayerRef,
+  heldPoint?: { x: number; z: number },
+): {
+  hitsBody: boolean
+  hitsBall: boolean
+  heavyBody: boolean
+  bodyDist: number
+} {
+  const bodyDist = contactDistanceDuringSlide(slider, slide, victim.position)
+  const hitsBody =
+    isVictimInSlideCone(slider, slide, victim.position) &&
+    bodyDist < SLIDE_CONTACT_DIST
+  const heavyBody = hitsBody && bodyDist < HEAVY_TACKLE_DIST
+
+  let hitsBall = false
+  if (heldPoint) {
+    hitsBall = canSlideReachTarget(slider, slide, heldPoint)
+  }
+
+  return { hitsBody, hitsBall, heavyBody, bodyDist }
 }
 
-/** Solta a bola sem dar posse — física/colisores decidem depois. */
+/** Carrinho — solta a bola; física decide quem domina depois. */
 function dislodgeBallOnSlide(
   sliderId: string,
   holderId: string,
   slide: SlideState,
 ) {
-  const store = useGameStore.getState()
   const slider = playerRegistry.get(sliderId)
-  if (store.ballPossession?.playerId === holderId) {
-    store.clearPossession()
-  } else {
-    clearDribbleState()
-  }
-  ensureBallDynamic()
-  const body = ballBodyRef.current as RapierRigidBody | null
-  if (body) {
-    body.wakeUp()
-    const v = body.linvel()
-    body.setLinvel(
-      {
-        x: slide.dirX * SLIDE_DISLODGE_SPEED + v.x * 0.28,
-        y: v.y,
-        z: slide.dirZ * SLIDE_DISLODGE_SPEED + v.z * 0.28,
-      },
-      true,
-    )
-    syncBallFromBody(body)
-  }
-  store.freezeDistanceBallClaims(SLIDE_CLAIM_BLOCK_MS)
-  store.blockPasserClaim(sliderId, SLIDE_CLAIM_BLOCK_MS)
-  store.blockPasserClaim(holderId, SLIDE_CLAIM_BLOCK_MS)
-  if (slider) {
-    store.setLastTouch(slider.team)
-  }
+  const holder = playerRegistry.get(holderId)
+  if (!slider || !holder) return
+
+  const roll = Math.random()
+  const kind =
+    roll < 0.34
+      ? 'ricochet'
+      : roll < 0.62
+        ? 'loose'
+        : roll < 0.82
+          ? 'scrape'
+          : 'tackle'
+  const held = getHeldBallPoint(holder, holderId)
+  releaseBallFromSlideTackle(slider, holder, kind, 0.88, held, {
+    x: slide.dirX,
+    z: slide.dirZ,
+  })
 }
 
 export function processSlideContacts(sliderId: string) {
@@ -235,18 +494,19 @@ export function processSlideContacts(sliderId: string) {
     if (holder && holder.team !== slider.team) {
       if (holder.role === 'gk') return
       const held = getHeldBallPoint(holder, possession.playerId)
-      const hitsBody = canSlideReachTarget(slider, slide, holder.position)
-      const hitsFoot = canSlideReachTarget(slider, slide, held)
+      const quality = measureSlideContactQuality(slider, slide, holder, held)
 
-      if (hitsBody || hitsFoot) {
+      if (quality.hitsBody || quality.hitsBall) {
         slide.resolvedHolder = true
         if (isBallShielding(holder.id)) return
+        applySlideContactBrake(slider.id, holder.id, quality.heavyBody)
         const slideDir = { x: slide.dirX, z: slide.dirZ }
-        if (reportSlideFoul(sliderId, holder.id, slideDir, true)) {
+        if (reportSlideFoul(sliderId, holder.id, slideDir, true, quality)) {
           startKnockdown(holder.id)
           return
         }
-        startKnockdown(holder.id)
+        // Lance limpo / interceptação: derruba só se pegou feio no corpo
+        if (quality.heavyBody) startKnockdown(holder.id)
         dislodgeBallOnSlide(slider.id, holder.id, slide)
         return
       }
@@ -258,15 +518,20 @@ export function processSlideContacts(sliderId: string) {
     if (isPlayerKnockedDown(victim.id)) continue
     if (possession?.playerId === victim.id) continue
 
-    if (shouldKnockdownOnSlide(slider, victim, slide)) {
-      const slideDir = { x: slide.dirX, z: slide.dirZ }
-      const victimHasBall = possession?.playerId === victim.id
-      if (reportSlideFoul(sliderId, victim.id, slideDir, victimHasBall)) {
-        startKnockdown(victim.id)
-        continue
-      }
+    const quality = measureSlideContactQuality(slider, slide, victim)
+    if (!quality.hitsBody) continue
+
+    // Raspão / perto sem bater feio — continua o lance, sem queda nem falta
+    if (!quality.heavyBody) continue
+
+    applySlideContactBrake(sliderId, victim.id, true)
+    const slideDir = { x: slide.dirX, z: slide.dirZ }
+    const victimHasBall = possession?.playerId === victim.id
+    if (reportSlideFoul(sliderId, victim.id, slideDir, victimHasBall, quality)) {
       startKnockdown(victim.id)
+      continue
     }
+    startKnockdown(victim.id)
   }
 }
 

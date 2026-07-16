@@ -1,9 +1,20 @@
 import type { RapierRigidBody } from '@react-three/rapier'
 import { ballRef } from './entityRegistry'
 import { getGkCatchAnchor } from './goalkeeperHands'
+import { forEachFixedSimStep } from './gameTime'
 
 /** Bola presa nas mãos do goleiro — segue o osso durante hold/distribuição. */
 export function updateGkHeldBall(
+  body: RapierRigidBody,
+  gkId: string,
+  delta: number,
+): void {
+  forEachFixedSimStep(delta, (stepDt) => {
+    stepGkHeldBall(body, gkId, stepDt)
+  })
+}
+
+export function stepGkHeldBall(
   body: RapierRigidBody,
   gkId: string,
   delta: number,

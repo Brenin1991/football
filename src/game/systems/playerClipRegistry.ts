@@ -18,6 +18,12 @@ export const PLAYER_CLIP_ALIASES: Record<PlayerAnim, readonly string[]> = {
   player_receive: ['player_receive'],
   player_throw_in: ['player_throw_in'],
   player_spin: ['player_spin'],
+  player_finta_01: ['player_finta_01'],
+  player_finta_180: ['player_finta_180'],
+  player_imbalance_01: ['player_imbalance_01'],
+  player_imbalance_stolen: ['player_imbalance_01.001', 'player_imbalance_stolen'],
+  player_shoulder_charge: ['player_shoulder_charge'],
+  player_run_stop: ['player_run_stop'],
 }
 
 export const PLAYER_LOCO_ANIMS: PlayerLocoAnim[] = [
@@ -43,6 +49,12 @@ export const PLAYER_ACTION_ANIMS: PlayerAnim[] = [
   'player_receive',
   'player_throw_in',
   'player_spin',
+  'player_finta_01',
+  'player_finta_180',
+  'player_imbalance_01',
+  'player_imbalance_stolen',
+  'player_shoulder_charge',
+  'player_run_stop',
 ]
 
 export function buildClipNameSet(clips: AnimationClip[]): Set<string> {

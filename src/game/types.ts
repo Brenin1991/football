@@ -39,6 +39,12 @@ export type PlayerActionAnim =
   | 'player_receive'
   | 'player_throw_in'
   | 'player_spin'
+  | 'player_finta_01'
+  | 'player_finta_180'
+  | 'player_imbalance_01'
+  | 'player_imbalance_stolen'
+  | 'player_shoulder_charge'
+  | 'player_run_stop'
 
 export type PlayerAnim = PlayerLocoAnim | PlayerActionAnim
 
@@ -80,6 +86,8 @@ export interface FieldBounds {
   goalWidth: number
   goalHeight: number
   corners: Vec3[]
+  /** Ponto ball_spawn do GLB — centro real da saída de bola */
+  ballSpawn?: Vec3
 }
 
 export interface GoalZone {

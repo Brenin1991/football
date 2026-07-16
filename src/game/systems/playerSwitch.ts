@@ -2,6 +2,8 @@ import { getOutfieldIds, WORLD_SCALE } from '../constants'
 import { ballRef, playerRegistry } from './entityRegistry'
 import { distance2D } from './rules'
 import { getPassReceiverId, canManualSwitchPlayer } from './anticipation'
+import { isCrossVolleyArmed } from './crossAssist'
+import { resolveLooseBallChaser } from './dynamicFormation'
 import { getUserTeam, useGameStore } from '../store/gameStore'
 
 const AUTO_SWITCH_MARGIN = 0.38 * WORLD_SCALE
@@ -38,7 +40,10 @@ export function switchUserPlayer() {
   store.setActivePlayer(next.id, true)
 }
 
-/** Bola solta: prioriza o jogador do usuário mais perto da bola (rebotes, disputas). */
+/**
+ * Bola solta / antecipação: seleciona o jogador certo (mais perto / receptor)
+ * para passes e chutes first-time. A corrida na bola solta continua automática.
+ */
 export function syncActivePlayerOnLooseBall() {
   const now = performance.now()
   if (now - lastLooseBallSyncAt < LOOSE_BALL_SYNC_MS) return
@@ -51,40 +56,44 @@ export function syncActivePlayerOnLooseBall() {
 
   const receiverId = getPassReceiverId(store)
   if (receiverId) {
+    const passIntent = store.passIntent
+    const crossInFlight =
+      passIntent?.passType === 'cross' && passIntent.passingTeam === getUserTeam()
     const pending = store.pendingUserShot ?? store.pendingUserPass
-    if (pending?.buffered && pending.playerId === receiverId) {
+    const hasBufferedForReceiver =
+      pending?.buffered && pending.playerId === receiverId
+
+    if (crossInFlight || hasBufferedForReceiver || isCrossVolleyArmed(store)) {
       if (store.activePlayerId !== receiverId) {
         store.setActivePlayer(receiverId)
       }
       return
     }
-    if (
-      store.shotChargeActive &&
-      store.powerBarMode === 'shot' &&
-      store.activePlayerId === receiverId
-    ) {
-      return
-    }
   }
 
+  // Bola solta: seleciona o perseguidor (mais perto) — antecipação de passe/chute
+  const userTeam = getUserTeam()
+  const chaserId = resolveLooseBallChaser(userTeam, ballRef.current)
   const sorted = sortedUserOutfieldByBallDist()
   const closest = sorted[0]
-  if (!closest) return
+  const targetId = chaserId ?? closest?.id
+  if (!targetId) return
 
   const current = store.activePlayerId
-  if (current === closest.id) return
+  if (current === targetId) return
 
   const currentP = playerRegistry.get(current)
   if (!currentP) {
-    store.setActivePlayer(closest.id)
+    store.setActivePlayer(targetId)
     return
   }
 
   const ball = ballRef.current
   const dCurrent = distance2D(currentP.position, ball)
-  const dClosest = closest.dist
+  const targetP = playerRegistry.get(targetId)
+  const dTarget = targetP ? distance2D(targetP.position, ball) : closest?.dist ?? 0
 
-  if (dClosest < dCurrent - AUTO_SWITCH_MARGIN || dCurrent > 7.5 * WORLD_SCALE) {
-    store.setActivePlayer(closest.id)
+  if (dTarget < dCurrent - AUTO_SWITCH_MARGIN || dCurrent > 7.5 * WORLD_SCALE) {
+    store.setActivePlayer(targetId)
   }
 }

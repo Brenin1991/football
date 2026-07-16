@@ -1,46 +1,36 @@
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import {
-  LOOSE_BALL_MAX_SPEED,
   PASS_INTENT_TIMEOUT_MS,
-  PASS_RECEIVE_MAX_SPEED,
   PASS_SPEED_MAX,
   PASS_SPEED_BASE,
-  PASS_SPEED_DIST_FACTOR,
   PASS_SPEED_MIN,
 } from '../constants'
-import { CROSS_RECEIVE_MAX_SPEED_MUL } from '../systems/cross'
-import { THROUGH_RECEIVE_MAX_SPEED_MUL } from '../systems/throughPass'
-import { getOpponent, useGameStore, getUserTeam } from '../store/gameStore'
-import { ballRef, playerRegistry } from '../systems/entityRegistry'
+import {
+  clearCrossAssistCache,
+  anyCrossVolleyBuffered,
+  isCrossVolleyArmed,
+  tickBufferedCrossVolleys,
+} from '../systems/crossAssist'
+import { bootstrapReceiveRoutes } from '../systems/receiveRoutes'
+import { getUserTeam, useGameStore } from '../store/gameStore'
+import { playerRegistry } from '../systems/entityRegistry'
 import { clearDribbleState } from '../systems/ballDribble'
 import { applyBallVelocity, ensureBallDynamic, kickBall } from '../systems/ballPhysics'
-import {
-  CLAIM_DISTANCE,
-  findClosestContestant,
-  PASS_RECEIVE_DISTANCE,
-} from '../systems/possession'
-import { resolveLooseBallChaser } from '../systems/dynamicFormation'
-import { distance2D } from '../systems/rules'
-import { shouldDelayPassClaim } from '../systems/passReceiveAnim'
-import { tryCallOffsideOnReceive } from '../systems/referee'
-import { crowdSfx } from '../systems/crowdSfx'
+import { applyMarkerPressureToKick } from '../systems/markerPressure'
 import { narrationSfx } from '../systems/narrationSfx'
+import { crowdSfx } from '../systems/crowdSfx'
 import { isFieldParadePhase } from '../systems/matchPhases'
 import { replaySystem } from '../systems/replaySystem'
-import { isPlayerKnockedDown } from '../systems/tackle'
 import { isUserPauseActive } from '../systems/gameTime'
 import { sfx } from '../systems/sfx'
 import { syncActivePlayerOnLooseBall } from '../systems/playerSwitch'
-import { findNearestPlayerToBall } from '../systems/possession'
+import { tickContactBallClaims } from '../systems/playerFootPhysics'
 
-function claimDistanceToBall(playerId: string, ballPos: { x: number; z: number }) {
-  const p = playerRegistry.get(playerId)
-  if (!p) return Infinity
-  return distance2D(p.position, { x: ballPos.x, y: 0, z: ballPos.z })
-}
-
-/** Posse + troca de jogador só quando a posse muda */
+/**
+ * Posse ativa + timeout de passe.
+ * Domínio: colisão física (pés/corpo) + fallback de contato apertado.
+ */
 export function TeamController() {
   useFrame(() => {
     const store = useGameStore.getState()
@@ -62,9 +52,7 @@ export function TeamController() {
     if (store.phase !== 'playing') return
     if (isUserPauseActive()) return
 
-    const players = [...playerRegistry.values()]
     const possession = store.ballPossession
-    const ballPos = ballRef.current
 
     if (possession) {
       const holder = playerRegistry.get(possession.playerId)
@@ -86,126 +74,29 @@ export function TeamController() {
 
     syncActivePlayerOnLooseBall()
 
-    let passIntent = store.passIntent
+    if (anyCrossVolleyBuffered()) {
+      tickBufferedCrossVolleys()
+    }
+
+    const passIntent = store.passIntent
     if (
       passIntent &&
       performance.now() - passIntent.startedAt > PASS_INTENT_TIMEOUT_MS
     ) {
-      if (!store.ballPossession) {
-        narrationSfx.playPassError()
-      }
-      store.setPassIntent(null)
-      passIntent = null
-    }
-
-    const ballSpeed = Math.hypot(ballRef.velocity.x, ballRef.velocity.z)
-
-    if (
-      store.setPieceGuardPos &&
-      performance.now() < store.setPieceGuardUntil &&
-      !passIntent &&
-      distance2D(ballPos, store.setPieceGuardPos) < 5 &&
-      ballSpeed < 5
-    ) {
-      return
-    }
-
-    if (passIntent) {
-      if (!store.canDistanceClaimBall()) return
-
-      const receiverIds = [
-        passIntent.receiverId,
-        ...(passIntent.runnerIds ?? []).filter((rid) => rid !== passIntent.receiverId),
-      ]
-      const receiveMaxSpeed =
-        passIntent.passType === 'cross'
-          ? PASS_RECEIVE_MAX_SPEED * CROSS_RECEIVE_MAX_SPEED_MUL
-          : passIntent.passType === 'through'
-            ? PASS_RECEIVE_MAX_SPEED * THROUGH_RECEIVE_MAX_SPEED_MUL
-            : PASS_RECEIVE_MAX_SPEED
-
-      for (const rid of receiverIds) {
-        const receiver = playerRegistry.get(rid)
-        if (!receiver || isPlayerKnockedDown(receiver.id)) continue
-        if (!store.canPlayerClaimBall(receiver.id)) continue
-        const toBall = claimDistanceToBall(receiver.id, ballPos)
-
-        if (
-          passIntent.passType === 'cross' &&
-          rid === passIntent.receiverId &&
-          receiver.team === getUserTeam() &&
-          store.crossOneTouchActive &&
-          toBall < 3.4
-        ) {
-          continue
+      const keepCrossVolley =
+        passIntent.passType === 'cross' &&
+        (anyCrossVolleyBuffered() || isCrossVolleyArmed(store))
+      if (!keepCrossVolley) {
+        if (!store.ballPossession) {
+          narrationSfx.playPassError()
         }
-
-        if (toBall < PASS_RECEIVE_DISTANCE && ballSpeed < receiveMaxSpeed) {
-          if (shouldDelayPassClaim(receiver.anim, toBall, ballSpeed)) {
-            continue
-          }
-          if (
-            passIntent.offsideFlag &&
-            tryCallOffsideOnReceive(passIntent.offsideFlag, receiver.id)
-          ) {
-            return
-          }
-          store.setPossession(receiver.id, receiver.team)
-          return
-        }
+        clearCrossAssistCache()
+        store.setPassIntent(null)
       }
     }
 
-    if (!store.canDistanceClaimBall()) return
-
-    const maxClaimSpeed = passIntent
-      ? passIntent.passType === 'cross'
-        ? PASS_RECEIVE_MAX_SPEED * CROSS_RECEIVE_MAX_SPEED_MUL
-        : passIntent.passType === 'through'
-          ? PASS_RECEIVE_MAX_SPEED * THROUGH_RECEIVE_MAX_SPEED_MUL
-          : PASS_RECEIVE_MAX_SPEED
-      : LOOSE_BALL_MAX_SPEED
-    if (ballSpeed > maxClaimSpeed) return
-
-    const contestant =
-      !passIntent && getUserTeam()
-        ? findNearestPlayerToBall(
-            players.filter(
-              (p) =>
-                p.team === getUserTeam() &&
-                p.role !== 'gk' &&
-                !store.sentOffPlayers.includes(p.id),
-            ),
-            ballPos,
-          )
-        : findClosestContestant(players, ballPos, passIntent?.receiverId)
-    if (contestant && !isPlayerKnockedDown(contestant.id) && store.canPlayerClaimBall(contestant.id)) {
-      const toBall = claimDistanceToBall(contestant.id, ballPos)
-      if (toBall >= CLAIM_DISTANCE) return
-
-      if (
-        passIntent?.offsideFlag &&
-        tryCallOffsideOnReceive(passIntent.offsideFlag, contestant.id)
-      ) {
-        return
-      }
-
-      if (!passIntent && contestant.team !== getUserTeam()) {
-        const chaserId = resolveLooseBallChaser(contestant.team, ballPos)
-        if (chaserId && chaserId !== contestant.id) return
-      }
-
-      store.setPossession(contestant.id, contestant.team)
-      const recoveredFromOpponent =
-        !passIntent &&
-        store.lastTouchTeam &&
-        store.lastTouchTeam !== contestant.team
-      if (recoveredFromOpponent) {
-        if (contestant.team === getUserTeam() && store.lastTouchTeam === getOpponent(getUserTeam())) {
-          crowdSfx.notifyHomeSteal()
-        }
-      }
-    }
+    // Contato pé/corpo — fallback se o evento Rapier não disparar
+    tickContactBallClaims()
   })
 
   return null
@@ -235,7 +126,26 @@ export function releaseBallFromFeet(
   if (speed > 0.01) {
     sfx.playKick()
     const passer = passerId ? playerRegistry.get(passerId) : null
-    const loft = opts?.loft ?? (vy > 0.5 ? vy / speed : 0)
+    let loft = opts?.loft ?? (vy > 0.5 ? vy / speed : 0)
+    let dirX = vx / speed
+    let dirZ = vz / speed
+    let outSpeed = speed
+
+    if (passerId && opts?.releaseKind) {
+      const adjusted = applyMarkerPressureToKick(
+        passerId,
+        dirX,
+        dirZ,
+        outSpeed,
+        opts.releaseKind,
+        loft,
+      )
+      dirX = adjusted.dirX
+      dirZ = adjusted.dirZ
+      outSpeed = adjusted.speed
+      loft = adjusted.loft
+    }
+
     if (passer) {
       if (passer.team === getUserTeam() && opts?.releaseKind === 'shot') {
         crowdSfx.notifyHomeShot()
@@ -246,20 +156,34 @@ export function releaseBallFromFeet(
       narrationSfx.notifyBallRelease(opts?.releaseKind)
     }
     kickBall({
-      dirX: vx,
-      dirZ: vz,
-      speed,
+      dirX,
+      dirZ,
+      speed: outSpeed,
       loft,
     })
+    const intent = store.passIntent
+    if (
+      intent &&
+      opts?.releaseKind &&
+      (opts.releaseKind === 'pass' ||
+        opts.releaseKind === 'through' ||
+        opts.releaseKind === 'cross')
+    ) {
+      bootstrapReceiveRoutes(intent)
+    }
   } else {
     applyBallVelocity(vx, vy, vz)
   }
 }
 
 export function passSpeedForDistance(dist: number): number {
-  return THREE.MathUtils.clamp(
-    dist * PASS_SPEED_DIST_FACTOR + PASS_SPEED_BASE,
-    PASS_SPEED_MIN,
-    PASS_SPEED_MAX,
-  )
+  // Distância mínima efetiva: toques colados ainda precisam entregar
+  const d = Math.max(dist, 2.2)
+  // Curto chega em ~0.42–0.55s · médio ~0.9s · longo ~1.35s
+  const travelT = THREE.MathUtils.clamp(0.4 + d * 0.045, 0.42, 1.38)
+  const deliver = (d / travelT) * 1.12
+  // Piso extra nos curtos (<6 m) pra não “morrer” no meio
+  const shortBoost = d < 6 ? THREE.MathUtils.lerp(PASS_SPEED_BASE * 0.55, 0, (d - 2.2) / 3.8) : 0
+  const raw = deliver + PASS_SPEED_BASE * 0.14 + shortBoost
+  return THREE.MathUtils.clamp(raw, PASS_SPEED_MIN, PASS_SPEED_MAX)
 }

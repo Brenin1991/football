@@ -165,6 +165,45 @@ const FREE_KICK_MIN_BALL_DIST = 2.5
 const WALL_DISTANCE = 2.48
 const DANGEROUS_FK_GOAL_DIST = 7.8
 
+/** Spots da falta congelados no 1º cálculo — barreira não gira com a mira */
+const freeKickFrozenSpots = new Map<string, { x: number; z: number }>()
+
+function clearFreeKickFrozenSpots() {
+  freeKickFrozenSpots.clear()
+}
+
+/** Direção bola → gol atacado (barreira sempre nesta linha) */
+function getFreeKickWallDir(
+  ballSpot: Vec3,
+  kickingTeam: TeamId,
+  bounds: FieldBounds,
+): { fx: number; fz: number; angle: number } {
+  const goalZ = getAttackingGoalZ(kickingTeam, bounds)
+  const n = normalize2D(bounds.center.x - ballSpot.x, goalZ - ballSpot.z)
+  return {
+    fx: n.x,
+    fz: n.z,
+    angle: Math.atan2(n.x, n.z),
+  }
+}
+
+/** Cobrança de escanteio/falta: chute, passe ou cruzamento */
+export type SetPieceDeliveryKind = 'shot' | 'pass' | 'cross'
+
+export function canSetPiecePassOrCross(phase: MatchPhase | string): boolean {
+  return phase === 'corner' || phase === 'free-kick'
+}
+
+const SET_PIECE_PASS = {
+  corner: { speed: 5.4 * WORLD_SCALE, vy: 2.0 * WORLD_SCALE },
+  'free-kick': { speed: 5.8 * WORLD_SCALE, vy: 1.6 * WORLD_SCALE },
+} as const
+
+const SET_PIECE_CROSS = {
+  corner: { speed: 7.8 * WORLD_SCALE, vy: 9.6 * WORLD_SCALE },
+  'free-kick': { speed: 7.6 * WORLD_SCALE, vy: 8.4 * WORLD_SCALE },
+} as const
+
 const DEF_SLOT_X = [-0.78, -0.28, 0.28, 0.78] as const
 const WALL_LATERAL = [-0.58, -0.2, 0.2, 0.58] as const
 
@@ -216,15 +255,36 @@ function getFreeKickSetupTarget(
     return getGoalkeeperSetPieceSpot(team, bounds)
   }
 
+  // Só o cobrador acompanha a mira viva
   if (playerId === kickerId) {
     return getKickerStandPosition('free-kick', ballSpot, bounds, aimAngle)
   }
 
-  const fx = Math.sin(aimAngle)
-  const fz = Math.cos(aimAngle)
-  const px = -fz
+  const frozen = freeKickFrozenSpots.get(playerId)
+  if (frozen) return frozen
+
+  const spot = computeFreeKickNonKickerSpot(
+    team,
+    slot,
+    bounds,
+    kickingTeam,
+    ballSpot,
+  )
+  freeKickFrozenSpots.set(playerId, spot)
+  return spot
+}
+
+/** Posição tática na falta — sempre relativa ao gol, nunca à mira do batedor */
+function computeFreeKickNonKickerSpot(
+  team: TeamId,
+  slot: FormationSlot,
+  bounds: FieldBounds,
+  kickingTeam: TeamId,
+  ballSpot: Vec3,
+): { x: number; z: number } {
+  const { fx: wfx, fz: wfz } = getFreeKickWallDir(ballSpot, kickingTeam, bounds)
   const nearGoal = distToAttackingGoal(ballSpot, kickingTeam, bounds) < DANGEROUS_FK_GOAL_DIST
-  const wallBackZ = zFromBallTowardGoal(ballSpot.z, fz, WALL_DISTANCE + 1.3)
+  const wallBackZ = zFromBallTowardGoal(ballSpot.z, wfz, WALL_DISTANCE + 1.3)
 
   if (team !== kickingTeam) {
     const wallIdx = getDefWallIndex(slot)
@@ -233,7 +293,7 @@ function getFreeKickSetupTarget(
       if (nearGoal) {
         return pushMinDistanceFromBall(
           ballSpot,
-          getWallSpot(ballSpot, fx, fz, wallIdx),
+          getWallSpot(ballSpot, wfx, wfz, wallIdx),
           FREE_KICK_MIN_BALL_DIST,
         )
       }
@@ -241,7 +301,7 @@ function getFreeKickSetupTarget(
         const compactIdx = wallIdx === 1 ? 1 : 2
         return pushMinDistanceFromBall(
           ballSpot,
-          getWallSpot(ballSpot, fx, fz, compactIdx),
+          getWallSpot(ballSpot, wfx, wfz, compactIdx),
           FREE_KICK_MIN_BALL_DIST,
         )
       }
@@ -260,11 +320,12 @@ function getFreeKickSetupTarget(
       }
 
       if (slot.role === 'mid') {
+        const wpx = -wfz
         return pushMinDistanceFromBall(
           ballSpot,
           {
-            x: clamp(ballSpot.x + px * (2.6 + slot.x * 1.4), bounds.minX + 1.2, bounds.maxX - 1.2),
-            z: zFromBallTowardGoal(ballSpot.z, fz, WALL_DISTANCE + 0.35),
+            x: clamp(ballSpot.x + wpx * (2.6 + slot.x * 1.4), bounds.minX + 1.2, bounds.maxX - 1.2),
+            z: zFromBallTowardGoal(ballSpot.z, wfz, WALL_DISTANCE + 0.35),
           },
           FREE_KICK_MIN_BALL_DIST,
         )
@@ -291,12 +352,14 @@ function getFreeKickSetupTarget(
     )
   }
 
+  // Time cobrador (exceto batedor): posição fixa na linha do gol, não na mira
+  const px = -wfz
   const spawn = getFormationSpawn(team, slot, bounds)
   const fkZ = (z: number) => clampZForSetPiece(kickingTeam, z, bounds, ballSpot.z)
 
   if (slot.role === 'fwd') {
     const lateral = slot.x < 0 ? -2.6 : 2.6
-    let z = fkZ(ballSpot.z + fz * (nearGoal ? 2.2 : 3.0))
+    let z = fkZ(ballSpot.z + wfz * (nearGoal ? 2.2 : 3.0))
     z = clampForwardFromGoalMouth(kickingTeam, z, bounds)
     return pushMinDistanceFromBall(
       ballSpot,
@@ -310,7 +373,7 @@ function getFreeKickSetupTarget(
 
   if (slot.role === 'mid') {
     const wide = slot.x * 3.2
-    let z = fkZ(ballSpot.z + fz * (nearGoal ? 1.6 : 2.4))
+    let z = fkZ(ballSpot.z + wfz * (nearGoal ? 1.6 : 2.4))
     return pushMinDistanceFromBall(
       ballSpot,
       {
@@ -669,16 +732,30 @@ export function beginSetPiece(
   store.startSetPiece(phase, team, position, message)
 
   resetTeamMarkers()
+  clearFreeKickFrozenSpots()
 
   const kickerId = pickSetPieceKicker(team, position, phase)
+  const wallAim =
+    phase === 'free-kick' && bounds
+      ? getFreeKickWallDir(position, team, bounds).angle
+      : aim
   useGameStore.setState({
     setPieceKickerId: kickerId,
     setPieceAimAngle: aim,
+    // Congela na linha bola→gol; rotateSetPieceAim nunca altera isto
+    setPieceWallAimAngle: wallAim,
   })
   store.clearPossession()
 }
 
 export function executeSetPieceKick(power = 1): boolean {
+  return executeSetPieceDelivery('shot', power)
+}
+
+export function executeSetPieceDelivery(
+  kind: SetPieceDeliveryKind,
+  power = 1,
+): boolean {
   const store = useGameStore.getState()
   const { phase, setPieceTeam, setPieceKickerId, setPiecePosition } = store
 
@@ -707,10 +784,21 @@ export function executeSetPieceKick(power = 1): boolean {
     return true
   }
 
-  return finishSetPieceKickLaunch(power)
+  // Pênalti e tiro de meta: só chute
+  const delivery: SetPieceDeliveryKind =
+    phase === 'penalty' || phase === 'goal-kick'
+      ? 'shot'
+      : canSetPiecePassOrCross(phase)
+        ? kind
+        : 'shot'
+
+  return finishSetPieceKickLaunch(power, delivery)
 }
 
-function finishSetPieceKickLaunch(power = 1): boolean {
+function finishSetPieceKickLaunch(
+  power = 1,
+  delivery: SetPieceDeliveryKind = 'shot',
+): boolean {
   const store = useGameStore.getState()
   const { phase, setPieceTeam, setPieceKickerId, setPiecePosition, setPieceAimAngle } =
     store
@@ -728,27 +816,52 @@ function finishSetPieceKickLaunch(power = 1): boolean {
     return false
   }
 
-  const kick = getSetPieceKickFromAim(phase, setPieceAimAngle)
+  const dirX = Math.sin(setPieceAimAngle)
+  const dirZ = Math.cos(setPieceAimAngle)
   const speedMul = setPieceSpeedMul(power)
   const kickerId = setPieceKickerId
-  const useShootAnim =
-    phase === 'corner' || phase === 'goal-kick' || phase === 'penalty'
+
+  let speed: number
+  let vy: number
+  let passType: 'pass' | 'cross' | undefined
+  let clip: 'player_shoot' | 'player_pass' | 'player_kick' = 'player_shoot'
+
+  if (phase === 'penalty') {
+    const bounds = useGameStore.getState().fieldBounds
+    const goalDist =
+      bounds && setPieceTeam
+        ? distToAttackingGoal(setPiecePosition, setPieceTeam, bounds)
+        : undefined
+    speed = shotSpeedFromPower(power, goalDist) * 1.02
+    vy = shotLoftFromPower(power, goalDist) * SHOT_SPEED * 0.38
+    clip = 'player_shoot'
+  } else if (
+    (delivery === 'pass' || delivery === 'cross') &&
+    (phase === 'corner' || phase === 'free-kick')
+  ) {
+    const cfg = delivery === 'pass' ? SET_PIECE_PASS[phase] : SET_PIECE_CROSS[phase]
+    speed = cfg.speed * speedMul
+    vy = cfg.vy * (0.55 + power * 0.55)
+    passType = delivery === 'pass' ? 'pass' : 'cross'
+    clip = 'player_pass'
+  } else {
+    const kick = getSetPieceKickFromAim(phase, setPieceAimAngle)
+    speed = kick.speed * speedMul
+    vy = kick.vy * (0.55 + power * 0.55)
+    clip =
+      phase === 'free-kick' ? 'player_kick' : phase === 'corner' ? 'player_shoot' : 'player_shoot'
+  }
+
+  const useStrikeAnim =
+    phase === 'corner' ||
+    phase === 'goal-kick' ||
+    phase === 'penalty' ||
+    phase === 'free-kick'
 
   store.setBallFrozen(false)
   store.setPhase('playing')
 
-  if (phase === 'penalty') {
-    const speed = shotSpeedFromPower(power) * 1.02
-    const vy = shotLoftFromPower(power) * SHOT_SPEED * 0.38
-    launchSetPieceBall(kick.dirX, kick.dirZ, speed, vy)
-  } else {
-    launchSetPieceBall(
-      kick.dirX,
-      kick.dirZ,
-      kick.speed * speedMul,
-      kick.vy * (0.55 + power * 0.55),
-    )
-  }
+  launchSetPieceBall(dirX, dirZ, speed, vy)
 
   store.blockPasserClaim(kickerId, SET_PIECE_KICKER_CLAIM_BLOCK_MS)
   store.setLastTouch(setPieceTeam)
@@ -767,16 +880,19 @@ function finishSetPieceKickLaunch(power = 1): boolean {
   if (receivers.receiverId) {
     const primary = playerRegistry.get(receivers.receiverId)
     if (primary) {
+      const range = delivery === 'pass' ? 7 : delivery === 'cross' ? 11 : 9
       const landing = {
-        x: setPiecePosition.x + kick.dirX * 9,
-        z: setPiecePosition.z + kick.dirZ * 9,
+        x: setPiecePosition.x + dirX * range,
+        z: setPiecePosition.z + dirZ * range,
       }
       store.setPassIntent({
         receiverId: receivers.receiverId,
         targetX: landing.x,
         targetZ: landing.z,
         startedAt: performance.now(),
+        passingTeam: setPieceTeam,
         runnerIds: receivers.runnerIds,
+        passType,
       })
     }
   }
@@ -786,21 +902,23 @@ function finishSetPieceKickLaunch(power = 1): boolean {
     setPieceTeam: null,
     setPiecePosition: null,
     setPieceAimAngle: 0,
+    setPieceWallAimAngle: 0,
     setPieceKickPending: false,
     setPieceThrowAnim: null,
-    setPieceShootAnim: useShootAnim
-      ? { kickerId, at: performance.now() }
+    setPieceShootAnim: useStrikeAnim
+      ? { kickerId, at: performance.now(), clip }
       : null,
     setPieceGuardUntil: performance.now() + 900,
     setPieceGuardPos: { x: setPiecePosition.x, y: setPiecePosition.y, z: setPiecePosition.z },
   })
+  clearFreeKickFrozenSpots()
 
   return true
 }
 
 /** Lateral — lança a bola no contato da animação player_throw_in */
 export function executeThrowInLaunch(power = 1): boolean {
-  return finishSetPieceKickLaunch(power)
+  return finishSetPieceKickLaunch(power, 'shot')
 }
 
 export function isKickerReadyForSetPiece(

@@ -1,11 +1,15 @@
 import { create } from 'zustand'
 import { getGoalkeeperId, HALF_DURATION, MATCH_DURATION } from '../constants'
-import { ACTION_BUFFER_WINDOW_MS } from '../systems/shotPower'
+import { ACTION_BUFFER_WINDOW_MS, CROSS_VOLLEY_BUFFER_MS } from '../systems/shotPower'
 import type { PowerBarMode } from '../systems/shotPower'
 import type { FieldBounds, GoalZone, MatchPhase, TeamId, Vec3 } from '../types'
 import type { GoalFrameCollider } from '../systems/fieldData'
+import type { DifficultyId } from '../systems/difficulty'
+import { getPressReliefMs } from '../systems/difficulty'
 import { clearDribbleState } from '../systems/ballDribble'
 import { playerRegistry } from '../systems/entityRegistry'
+import { primeCrossReceive } from '../systems/receiveRoutes'
+import { getBallSpawnPosition } from '../systems/fieldData'
 
 const claimBlockUntilByPlayer = new Map<string, number>()
 
@@ -36,6 +40,8 @@ export interface PassIntent {
   targetX: number
   targetZ: number
   startedAt: number
+  /** Time que iniciou o passe — mantém fase de ataque durante o voo da bola */
+  passingTeam: TeamId
   /** Outros jogadores que também devem atacar a bola (lateral/escanteio) */
   runnerIds?: string[]
   /** Impedimento detectado no passe — bandeira só quando o receptor toca */
@@ -90,14 +96,20 @@ interface GameStore {
   kickoffResetVersion: number
   /** Direção da cobrança (lateral, escanteio, tiro de meta) */
   setPieceAimAngle: number
+  /** Barreira da falta — mira fixa no início (não gira com o batedor) */
+  setPieceWallAimAngle: number
   /** Bloqueia roubo na bandeira logo após o chute */
   setPieceGuardUntil: number
   setPieceGuardPos: Vec3 | null
   /** Escanteio do jogador: aguarda câmera voltar antes de chutar */
   setPieceKickPending: boolean
 
-  /** Escanteio / tiro de meta — dispara animação shoot no cobrador */
-  setPieceShootAnim: { kickerId: string; at: number } | null
+  /** Escanteio / tiro de meta / falta — animação no cobrador */
+  setPieceShootAnim: {
+    kickerId: string
+    at: number
+    clip?: 'player_shoot' | 'player_pass' | 'player_kick'
+  } | null
 
   /** Lateral — animação de arremesso (bola sai no contato) */
   setPieceThrowAnim: { kickerId: string; at: number; power: number } | null
@@ -117,6 +129,8 @@ interface GameStore {
     dirZ: number
     /** Pré-agendado antes de dominar (first-time / rebote) */
     buffered?: boolean
+    /** Finalização aérea no cruzamento — dispara no contato, não ao dominar */
+    crossVolley?: boolean
   } | null
   pendingUserPass: {
     type: 'pass' | 'through' | 'cross'
@@ -139,6 +153,8 @@ interface GameStore {
   /** Portador imune a roubo em pé (finta, etc.) */
   stealImmunityPlayerId: string | null
   stealImmunityUntil: number
+  /** Janela após o jogador ganhar a bola — IA recua e para de pressionar */
+  userPressReliefUntil: number
 
   playerCards: Record<string, { yellow: number; red: boolean }>
   sentOffPlayers: string[]
@@ -182,6 +198,7 @@ interface GameStore {
   resetForKickoff: () => void
   rotateSetPieceAim: (delta: number) => void
   setSetPieceAim: (angle: number) => void
+  setSetPieceWallAim: (angle: number) => void
   setSetPieceKickPending: (pending: boolean) => void
   setShotCharge: (power: number, active: boolean, mode?: PowerBarMode) => void
   setPendingUserShot: (
@@ -189,6 +206,13 @@ interface GameStore {
     dirX?: number,
     dirZ?: number,
     buffered?: boolean,
+  ) => void
+  setPendingBufferedShot: (
+    playerId: string,
+    power: number,
+    dirX: number,
+    dirZ: number,
+    crossVolley?: boolean,
   ) => void
   consumePendingUserShot: (
     playerId: string,
@@ -214,6 +238,8 @@ interface GameStore {
   setStrikeAim: (aim: StrikeAimState | null) => void
   userTeam: TeamId
   setUserTeam: (team: TeamId) => void
+  difficulty: DifficultyId
+  setDifficulty: (difficulty: DifficultyId) => void
 }
 
 export function getUserTeam(): TeamId {
@@ -234,7 +260,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setPieceTeam: null,
   setPiecePosition: null,
   setPieceKickerId: null,
-  message: 'Saída de bola — pressione Espaço para iniciar',
+  message: 'Saída de bola — passe (Espaço / E)',
   countdown: 0,
   fieldBounds: null,
   goalZones: [],
@@ -251,6 +277,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   ballClaimFreezeUntil: 0,
   kickoffResetVersion: 0,
   setPieceAimAngle: 0,
+  setPieceWallAimAngle: 0,
   setPieceGuardUntil: 0,
   setPieceGuardPos: null,
   setPieceKickPending: false,
@@ -267,16 +294,20 @@ export const useGameStore = create<GameStore>((set, get) => ({
   strikeAim: null,
   stealImmunityPlayerId: null,
   stealImmunityUntil: 0,
+  userPressReliefUntil: 0,
   playerCards: {},
   sentOffPlayers: [],
   refereeSignal: null,
   timeScale: 1,
   resumeTimeScale: 1,
   userTeam: 'home',
+  difficulty: 'medium',
 
   setUserTeam: (team) => {
     set({ userTeam: team, activePlayerId: `${team}-9` })
   },
+
+  setDifficulty: (difficulty) => set({ difficulty }),
 
   setFieldData: (bounds, goals, colliders) =>
     set({
@@ -338,6 +369,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (current?.playerId === playerId && current.team === team) return
 
     const userTeam = state.userTeam
+    const stolenFromOpp =
+      current != null && current.team !== team && team === userTeam
+    const userGained =
+      team === userTeam && playerId !== getGoalkeeperId(userTeam)
     const switchActive =
       team === userTeam && playerId !== getGoalkeeperId(userTeam)
     const nextActive =
@@ -345,12 +380,25 @@ export const useGameStore = create<GameStore>((set, get) => ({
         ? playerId
         : state.activePlayerId
 
+    const now = performance.now()
+    const immunityMs = stolenFromOpp ? 2400 : userGained ? 1200 : 0
+    const immunityUntil = now + immunityMs
+    const prevImmunity =
+      state.stealImmunityPlayerId === playerId ? state.stealImmunityUntil : 0
+
     set({
       ballPossession: { playerId, team },
-      possessionSince: performance.now(),
+      possessionSince: now,
       lastTouchTeam: team,
       activePlayerId: nextActive,
       passIntent: null,
+      ...(userGained
+        ? {
+            userPressReliefUntil: now + getPressReliefMs(stolenFromOpp),
+            stealImmunityPlayerId: playerId,
+            stealImmunityUntil: Math.max(immunityUntil, prevImmunity),
+          }
+        : {}),
       ...(team !== userTeam
         ? { pendingUserPass: null, pendingUserShot: null }
         : {}),
@@ -365,7 +413,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   setPassIntent: (intent) => {
     if (!intent) {
-      set({ passIntent: null })
+      set({
+        passIntent: null,
+        crossOneTouchActive: false,
+        shotChargeActive: false,
+        shotChargePower: 0,
+        powerBarMode: null,
+        strikeAim: null,
+      })
       return
     }
 
@@ -376,14 +431,24 @@ export const useGameStore = create<GameStore>((set, get) => ({
       pending?.buffered &&
       pending.playerId === receiverId
 
+    const pendingShot = get().pendingUserShot
+    const keepBufferedCrossShot =
+      pendingShot?.buffered &&
+      (pendingShot.crossVolley || intent.passType === 'cross')
+
     set({
       passIntent: intent,
-      pendingUserShot: null,
+      pendingUserShot: keepBufferedCrossShot ? pendingShot : null,
       pendingUserPass: keepBufferedPass ? pending : null,
       shotChargeActive: false,
       shotChargePower: 0,
       powerBarMode: null,
+      crossOneTouchActive: false,
     })
+
+    if (intent.passType === 'cross') {
+      primeCrossReceive(intent)
+    }
   },
 
   blockPasserClaim: (playerId, ms) => {
@@ -481,7 +546,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       setPiecePosition: null,
       ballFrozen: true,
       ballPossession: null,
-      message: 'Saída de bola — pressione Espaço para iniciar',
+      message: 'Saída de bola — passe (Espaço / E)',
     })
   },
 
@@ -490,7 +555,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({
       phase: 'kickoff',
       setPieceTeam: kickoffTeam,
-      setPiecePosition: fieldBounds?.center ?? { x: 0, y: 0.11, z: 0 },
+      setPiecePosition: fieldBounds ? getBallSpawnPosition(fieldBounds) : { x: 0, y: 0.11, z: 0 },
       ballFrozen: true,
       lastTouchTeam: null,
       ballPossession: null,
@@ -502,6 +567,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   setSetPieceAim: (angle) => set({ setPieceAimAngle: angle }),
+
+  setSetPieceWallAim: (angle) => set({ setPieceWallAimAngle: angle }),
 
   setSetPieceKickPending: (pending) => set({ setPieceKickPending: pending }),
 
@@ -523,19 +590,45 @@ export const useGameStore = create<GameStore>((set, get) => ({
     })
   },
 
+  setPendingBufferedShot: (playerId, power, dirX, dirZ, crossVolley = false) => {
+    set({
+      pendingUserShot: {
+        power,
+        playerId,
+        queuedAt: performance.now(),
+        dirX,
+        dirZ,
+        buffered: true,
+        crossVolley,
+      },
+      pendingUserPass: null,
+    })
+  },
+
   setPendingUserShot: (power, dirX, dirZ, buffered = false) => {
     const state = get()
     const aim = state.strikeAim
     let playerId = state.activePlayerId
 
     if (buffered && state.passIntent) {
-      const receiver = playerRegistry.get(state.passIntent.receiverId)
-      if (receiver && receiver.team === getUserTeam()) {
-        playerId = state.passIntent.receiverId
-        if (playerId !== state.activePlayerId) {
-          get().setActivePlayer(playerId)
+      if (state.passIntent.passType === 'cross') {
+        playerId = state.activePlayerId
+      } else {
+        const receiver = playerRegistry.get(state.passIntent.receiverId)
+        if (receiver && receiver.team === getUserTeam()) {
+          playerId = state.passIntent.receiverId
+          if (playerId !== state.activePlayerId) {
+            get().setActivePlayer(playerId)
+          }
         }
       }
+      get().setPendingBufferedShot(
+        playerId,
+        power,
+        dirX ?? aim?.dirX ?? 0,
+        dirZ ?? aim?.dirZ ?? 1,
+      )
+      return
     }
 
     set({
@@ -555,13 +648,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const state = get()
     const pending = state.pendingUserShot
     if (!pending || pending.playerId !== playerId) return null
+    if (pending.crossVolley) return null
     const poss = state.ballPossession
     if (!poss || poss.playerId !== playerId) return null
     if (pending.buffered) {
-      if (performance.now() - pending.queuedAt > ACTION_BUFFER_WINDOW_MS) {
+      const pi = state.passIntent
+      const bufferMs =
+        pi?.passType === 'cross' ? CROSS_VOLLEY_BUFFER_MS : ACTION_BUFFER_WINDOW_MS * 3
+      if (performance.now() - pending.queuedAt > bufferMs) {
         return null
       }
-    } else if (pending.queuedAt < state.possessionSince) {
+    } else if (pending.queuedAt + 1 < state.possessionSince) {
       return null
     }
     set({ pendingUserShot: null })
@@ -578,11 +675,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
     let playerId = state.activePlayerId
 
     if (buffered && state.passIntent) {
-      const receiver = playerRegistry.get(state.passIntent.receiverId)
-      if (receiver && receiver.team === getUserTeam()) {
-        playerId = state.passIntent.receiverId
-        if (playerId !== state.activePlayerId) {
-          get().setActivePlayer(playerId)
+      if (state.passIntent.passType === 'cross') {
+        playerId = state.activePlayerId
+      } else {
+        const receiver = playerRegistry.get(state.passIntent.receiverId)
+        if (receiver && receiver.team === getUserTeam()) {
+          playerId = state.passIntent.receiverId
+          if (playerId !== state.activePlayerId) {
+            get().setActivePlayer(playerId)
+          }
         }
       }
     }
@@ -622,7 +723,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const poss = state.ballPossession
     if (!poss || poss.playerId !== playerId) return null
     if (pending.buffered) {
-      if (performance.now() - pending.queuedAt > ACTION_BUFFER_WINDOW_MS) {
+      const pi = state.passIntent
+      const bufferMs =
+        pi?.passType === 'cross' ? CROSS_VOLLEY_BUFFER_MS : ACTION_BUFFER_WINDOW_MS * 3
+      if (performance.now() - pending.queuedAt > bufferMs) {
         return null
       }
     } else if (pending.queuedAt < state.possessionSince) {
@@ -652,9 +756,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   setStealImmunity: (playerId, ms) => {
+    const until = performance.now() + ms
+    const state = get()
+    if (
+      state.stealImmunityPlayerId === playerId &&
+      state.stealImmunityUntil >= until
+    ) {
+      return
+    }
     set({
       stealImmunityPlayerId: playerId,
-      stealImmunityUntil: performance.now() + ms,
+      stealImmunityUntil: until,
     })
   },
 

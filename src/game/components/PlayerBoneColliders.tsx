@@ -8,8 +8,8 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import {
+  PHYSICAL_FOOT_COLLIDERS,
   PHYSICAL_FOOT_RADIUS,
-  PHYSICAL_POSSESSION,
   PHYSICS_DEBUG,
   PLAYER_BODY_BONE_RADIUS,
   PLAYER_BONE_FRICTION,
@@ -18,10 +18,12 @@ import {
   PLAYER_SLIDE_FOOT_RADIUS,
 } from '../constants'
 import { useGameStore } from '../store/gameStore'
+import { playerRegistry } from '../systems/entityRegistry'
 import {
   arePlayerPhysicsCollidersActiveCached,
   handlePlayerBallCollision,
 } from '../systems/playerFootPhysics'
+import { isCrossVolleyShooterShielded } from '../systems/crossAssist'
 import {
   getPlayerBoneRefs,
   getPlayerContactBones,
@@ -39,7 +41,7 @@ type BoneEntry = {
 
 function boneRadius(part: PlayerBonePart): number {
   if (part === 'foot') {
-    return PHYSICAL_POSSESSION ? PHYSICAL_FOOT_RADIUS : PLAYER_SLIDE_FOOT_RADIUS
+    return PHYSICAL_FOOT_COLLIDERS ? PHYSICAL_FOOT_RADIUS : PLAYER_SLIDE_FOOT_RADIUS
   }
   if (part === 'leg') return PLAYER_FOOT_RADIUS
   return PLAYER_BODY_BONE_RADIUS
@@ -52,12 +54,18 @@ function boneDebugColor(part: PlayerBonePart): string {
 }
 
 function arePlayerBoneCollidersActive(playerId: string): boolean {
-  if (PHYSICAL_POSSESSION) {
-    return arePlayerPhysicsCollidersActiveCached(playerId)
-  }
+  if (isCrossVolleyShooterShielded(playerId)) return false
+
   const store = useGameStore.getState()
+  const passIntent = store.passIntent
+  if (passIntent?.passType === 'cross') {
+    const player = playerRegistry.get(playerId)
+    if (player && player.team === passIntent.passingTeam) {
+      return false
+    }
+  }
   if (store.phase === 'replay') return false
-  return true
+  return arePlayerPhysicsCollidersActiveCached(playerId)
 }
 
 type PlayerBoneCollidersProps = {
@@ -141,7 +149,6 @@ export function PlayerBoneColliders({ playerId, modelRootRef }: PlayerBoneCollid
               restitutionCombineRule={CoefficientCombineRule.Max}
               frictionCombineRule={CoefficientCombineRule.Max}
               onCollisionEnter={(e) => {
-                if (!PHYSICAL_POSSESSION) return
                 const other = e.other.rigidBodyObject
                 if (!other?.userData?.isBall) return
                 handlePlayerBallCollision(playerId, part)
