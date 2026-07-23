@@ -47,14 +47,14 @@ const OPPONENT_TUNING: Record<DifficultyId, OpponentTuning> = {
   easy: {
     pressWeight: 0.42,
     markBlend: 0.38,
-    compactDefense: 0.55,
+    compactDefense: 0.38,
     interceptChance: 0.32,
     standingStealChance: 0.26,
     standingStealInterval: 2.05,
     slideChance: 0.5,
     slideInterval: 1.7,
     opponentStealBonus: -0.52,
-    userStealBonus: 0.42,
+    userStealBonus: 0.48,
     stealPressReliefMs: 4800,
     softPressReliefMs: 2200,
     pursuitMul: 0.72,
@@ -64,14 +64,14 @@ const OPPONENT_TUNING: Record<DifficultyId, OpponentTuning> = {
   medium: {
     pressWeight: 0.8,
     markBlend: 0.78,
-    compactDefense: 0.92,
+    compactDefense: 0.55,
     interceptChance: 0.88,
     standingStealChance: 0.7,
     standingStealInterval: 1.08,
     slideChance: 0.9,
     slideInterval: 0.95,
-    opponentStealBonus: -0.02,
-    userStealBonus: 0.12,
+    opponentStealBonus: -0.18,
+    userStealBonus: 0.32,
     stealPressReliefMs: 2800,
     softPressReliefMs: 1300,
     pursuitMul: 1.05,
@@ -81,14 +81,14 @@ const OPPONENT_TUNING: Record<DifficultyId, OpponentTuning> = {
   hard: {
     pressWeight: 1.1,
     markBlend: 1.12,
-    compactDefense: 1.12,
+    compactDefense: 0.68,
     interceptChance: 1.28,
-    standingStealChance: 1.15,
-    standingStealInterval: 0.72,
+    standingStealChance: 0.88,
+    standingStealInterval: 0.95,
     slideChance: 1.05,
     slideInterval: 0.72,
-    opponentStealBonus: 0.22,
-    userStealBonus: -0.08,
+    opponentStealBonus: -0.1,
+    userStealBonus: 0.22,
     stealPressReliefMs: 1800,
     softPressReliefMs: 800,
     pursuitMul: 1.28,
@@ -98,14 +98,14 @@ const OPPONENT_TUNING: Record<DifficultyId, OpponentTuning> = {
   expert: {
     pressWeight: 1.22,
     markBlend: 1.25,
-    compactDefense: 1.2,
+    compactDefense: 0.75,
     interceptChance: 1.42,
-    standingStealChance: 1.32,
-    standingStealInterval: 0.58,
+    standingStealChance: 1.02,
+    standingStealInterval: 0.78,
     slideChance: 1.18,
     slideInterval: 0.62,
-    opponentStealBonus: 0.32,
-    userStealBonus: -0.14,
+    opponentStealBonus: -0.02,
+    userStealBonus: 0.14,
     stealPressReliefMs: 1200,
     softPressReliefMs: 550,
     pursuitMul: 1.42,
@@ -194,9 +194,10 @@ export function shouldSkipBallPressure(defendingTeam: TeamId): boolean {
   if (!isOpponentTeam(defendingTeam)) return false
   const relief = getUserPressReliefFactor()
   const diff = getMatchDifficulty()
-  if (diff === 'expert') return relief < 0.26
-  if (diff === 'hard') return relief < 0.32
-  return relief < 0.28
+  // Alívio mais curto — alguém sempre volta a pressionar
+  if (diff === 'expert') return relief < 0.16
+  if (diff === 'hard') return relief < 0.2
+  return relief < 0.18
 }
 
 export function shouldOpponentStandingSteal(holderTeam: TeamId): boolean {
@@ -227,20 +228,20 @@ export function getMarkerPursuitIntensity(
     ? opponentTuning().pursuitMul
     : 1
 
-  // No próprio campo: não cola — só acompanha de longe / bloco
+  // No próprio campo: acompanha mais de perto (antes largava e “perdia” a bola)
   if (zone < 0.45) {
     const dist = distance2D(
       { x: markerPos.x, y: 0, z: markerPos.z },
       carrier.position,
     )
-    if (dist > 3.4) return Math.min(0.26, 0.12 + zone * 0.28)
-    return Math.min(0.4, 0.22 + zone * 0.32)
+    if (dist > 4.2) return Math.min(0.38, 0.2 + zone * 0.35)
+    return Math.min(0.58, 0.34 + zone * 0.4)
   }
 
   // Alívio pós-recuperação — ainda respira, mas a marcação volta logo
   if (intensity < 0.55) {
-    const soft = intensity * (0.48 + pursuitMul * 0.28)
-    return Math.max(0.22, Math.min(0.58, soft))
+    const soft = intensity * (0.55 + pursuitMul * 0.32)
+    return Math.max(0.32, Math.min(0.68, soft))
   }
 
   const dist = distance2D(
@@ -283,9 +284,9 @@ export function scaleMarkBlend(base: number, defendingTeam: TeamId): number {
 export function scaleCompactDefense(base: number, defendingTeam: TeamId): number {
   if (!isOpponentTeam(defendingTeam)) return base
   const zone = getUserBuildUpPressFactor()
-  // Portador no próprio campo → bloco mais compacto / menos pressão alta
-  const buildUpCompact = zone < 0.5 ? 1.15 + (0.5 - zone) * 0.55 : 1
-  return clamp(base * opponentTuning().compactDefense * buildUpCompact, 0.1, 0.92)
+  // Compacto leve no build-up — sem colar o bloco no miolo
+  const buildUpCompact = zone < 0.5 ? 1.05 + (0.5 - zone) * 0.2 : 1
+  return clamp(base * opponentTuning().compactDefense * buildUpCompact, 0.08, 0.55)
 }
 
 export function scaleInterceptChance(base: number, defendingTeam: TeamId): number {
@@ -384,10 +385,10 @@ export function adjustCrossVolleyScore(score: number, attackingTeam: TeamId): nu
 /** Chance mul ao roubar o jogador em disputa em pé (shield do user). */
 export function getOpponentStealVsUserChanceMul(): number {
   const diff = getMatchDifficulty()
-  if (diff === 'expert') return 0.82
-  if (diff === 'hard') return 0.7
-  if (diff === 'medium') return 0.55
-  return 0.38
+  if (diff === 'expert') return 0.58
+  if (diff === 'hard') return 0.48
+  if (diff === 'medium') return 0.4
+  return 0.28
 }
 
 /** Segundo homem na pressão — só aparece de verdade fora do terço defensivo do jogador. */

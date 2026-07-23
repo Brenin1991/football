@@ -15,10 +15,12 @@ import {
   passSpeedFromPower,
   shotLoftFromPower,
   shotSpeedFromPower,
+  ACTION_BUFFER_WINDOW_MS,
   CROSS_VOLLEY_BUFFER_MS,
 } from './shotPower'
 import { clearAICrossVolleyState } from './aiCrossVolley'
 import { useGameStore, getUserTeam } from '../store/gameStore'
+import { replaySystem } from './replaySystem'
 import { sfx } from './sfx'
 import {
   getReceiveInterceptorId,
@@ -612,56 +614,44 @@ function canReachCrossPart(
   return { ok: true, dist3d }
 }
 
-/** Zona de finalização — bola ao vivo + pontos do corpo (cabeça/peito/pé) */
+/** Só libera voleio com bola no corpo — alcance real, não zona de 3 m */
 function canStrikeCrossVolley(
   playerId: string,
   playerPos: { x: number; z: number },
   ball: Vec3,
   ballVel: Vec3,
 ): { ok: boolean; part: CrossTouchPart } {
-  const groundY = getPitchGroundY()
-  const ballY = ball.y ?? groundY
-  const ballHeight = ballY - groundY
   const horiz = Math.hypot(ball.x - playerPos.x, ball.z - playerPos.z)
-
-  // Zona ampla — cruzamento aéreo perto do jogador
-  if (horiz < 2.9 && ballHeight > -0.08 && ballHeight < 3.7) {
-    return { ok: true, part: pickCrossTouchPart(ball, ballVel) }
-  }
-
-  if (horiz > 3.4) {
+  if (horiz > 1.55) {
     return { ok: false, part: 'chest' }
   }
 
+  const preferred = pickCrossTouchPart(ball, ballVel)
+  const parts: CrossTouchPart[] = [preferred, 'foot', 'chest', 'head']
+  for (const part of parts) {
+    const reach = canReachCrossPart(playerPos, ball, ballVel, part, true)
+    if (reach.ok) return { ok: true, part }
+  }
+
+  updatePlayerBonePositions(playerId)
   const strikePoints = getPlayerStrikePoints(playerId, playerPos)
-  const leadTimes = [0, 0.08, 0.16, 0.24, 0.32]
-
+  const ballY = ball.y ?? getPitchGroundY()
   let bestDist = Infinity
-  let bestPart: CrossTouchPart = 'chest'
-
-  for (const t of leadTimes) {
-    const bx = ball.x + ballVel.x * t
-    const by = ballY + ballVel.y * t + 0.5 * GRAVITY * t * t
-    const bz = ball.z + ballVel.z * t
-    const height = by - groundY
-    const h = Math.hypot(bx - playerPos.x, bz - playerPos.z)
-
-    if (height > 4.2 || height < -0.2) continue
-
-    for (const sp of strikePoints) {
-      const d = Math.hypot(bx - sp.point.x, by - sp.point.y, bz - sp.point.z)
-      if (d < bestDist) {
-        bestDist = d
-        bestPart = sp.part
-      }
-    }
-
-    if (h < 2.7 && height > -0.08 && height < 3.6) {
-      return { ok: true, part: pickCrossTouchPart({ y: by }, ballVel) }
+  let bestPart: CrossTouchPart = preferred
+  for (const sp of strikePoints) {
+    const d = Math.hypot(
+      ball.x - sp.point.x,
+      ballY - sp.point.y,
+      ball.z - sp.point.z,
+    )
+    if (d < bestDist) {
+      bestDist = d
+      bestPart = sp.part
     }
   }
 
-  if (bestDist < 2.1) {
+  // Contato real no osso/parte — sem teleporte de chute longe
+  if (bestDist < 0.92) {
     return { ok: true, part: bestPart }
   }
 
@@ -697,14 +687,20 @@ function consumeCrossVolleyIntent(playerId: string):
     shot.playerId === playerId &&
     (shot.crossVolley || store.passIntent?.passType === 'cross')
   ) {
-    if (performance.now() - shot.queuedAt > CROSS_VOLLEY_BUFFER_MS) return null
+    if (performance.now() - shot.queuedAt > CROSS_VOLLEY_BUFFER_MS) {
+      useGameStore.setState({ pendingUserShot: null })
+      return null
+    }
     useGameStore.setState({ pendingUserShot: null })
     return { kind: 'shot', power: shot.power, dirX: shot.dirX, dirZ: shot.dirZ }
   }
 
   const pass = store.pendingUserPass
   if (pass?.buffered && pass.playerId === playerId) {
-    if (performance.now() - pass.queuedAt > CROSS_VOLLEY_BUFFER_MS) return null
+    if (performance.now() - pass.queuedAt > CROSS_VOLLEY_BUFFER_MS) {
+      useGameStore.setState({ pendingUserPass: null })
+      return null
+    }
     useGameStore.setState({ pendingUserPass: null })
     return {
       kind: 'pass',
@@ -746,6 +742,7 @@ function executeCrossVolleyShot(
 
   prepareCrossVolleyKick(playerId, n.x, n.z)
   store.setLastTouch(player.team)
+  replaySystem.notifyShot(player.team, playerId)
 
   ensureBallDynamic()
   sfx.playKick()
@@ -799,14 +796,26 @@ export function releaseCrossVolleyShot(
   return tryCrossBallContact(playerId, player.position, ball, ballVel)
 }
 
-/** Tenta finalizar voleio buffered a cada frame — não depende só do movimento */
+/** Tenta finalizar voleio buffered a cada frame — só no contato real */
 export function tickBufferedCrossVolleys(): void {
   const store = useGameStore.getState()
-  if (store.phase !== 'playing' || store.ballFrozen || store.ballPossession) return
+  if (store.phase !== 'playing' || store.ballFrozen) return
+
+  const now = performance.now()
+  const shot = store.pendingUserShot
+  if (shot?.buffered && now - shot.queuedAt > CROSS_VOLLEY_BUFFER_MS) {
+    useGameStore.setState({ pendingUserShot: null })
+    return
+  }
+  const pass = store.pendingUserPass
+  if (pass?.buffered && now - pass.queuedAt > CROSS_VOLLEY_BUFFER_MS) {
+    useGameStore.setState({ pendingUserPass: null })
+    return
+  }
+
+  if (store.ballPossession) return
 
   const { ball, velocity: ballVel } = getLiveBallState()
-  const shot = store.pendingUserShot
-  const pass = store.pendingUserPass
   const pendingId =
     shot?.buffered && shot.crossVolley
       ? shot.playerId
@@ -819,6 +828,40 @@ export function tickBufferedCrossVolleys(): void {
   if (!player) return
 
   tryCrossBallContact(pendingId, player.position, ball, ballVel)
+}
+
+/** Limpa chute/passe antecipado expirado ou órfão (bola não chegou) */
+export function clearExpiredAnticipationBuffers(): void {
+  const store = useGameStore.getState()
+  const now = performance.now()
+  const shot = store.pendingUserShot
+  const pass = store.pendingUserPass
+  let nextShot = shot
+  let nextPass = pass
+
+  if (shot?.buffered) {
+    const bufferMs = shot.crossVolley
+      ? CROSS_VOLLEY_BUFFER_MS
+      : ACTION_BUFFER_WINDOW_MS * 3
+    if (now - shot.queuedAt > bufferMs) nextShot = null
+    // Passe acabou e não é voleio — perdeu a bola
+    else if (!shot.crossVolley && !store.passIntent) nextShot = null
+  }
+  if (pass?.buffered) {
+    const bufferMs =
+      store.passIntent?.passType === 'cross'
+        ? CROSS_VOLLEY_BUFFER_MS
+        : ACTION_BUFFER_WINDOW_MS * 3
+    if (now - pass.queuedAt > bufferMs) nextPass = null
+    else if (!store.passIntent) nextPass = null
+  }
+
+  if (nextShot !== shot || nextPass !== pass) {
+    useGameStore.setState({
+      pendingUserShot: nextShot,
+      pendingUserPass: nextPass,
+    })
+  }
 }
 
 /** Contato no cruzamento — voleio/passe first-time ou domínio natural */
@@ -842,7 +885,8 @@ export function tryCrossBallContact(
   const ballY = ball.y ?? groundY
   const horiz = Math.hypot(ball.x - pos.x, ball.z - pos.z)
   const ballHeight = ballY - groundY
-  if (horiz > 3.6 || ballHeight < -0.15 || ballHeight > 4.5) return false
+  // Precisa estar no corpo — se não chega, não chuta
+  if (horiz > 1.55 || ballHeight < -0.15 || ballHeight > 4.5) return false
 
   updatePlayerBonePositions(playerId)
 

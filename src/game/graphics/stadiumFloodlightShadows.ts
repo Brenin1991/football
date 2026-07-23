@@ -7,7 +7,7 @@ export const STADIUM_FLOODLIGHT_SHADOWS = {
   /** Sol/key deixa de castar sombra — o X vem só das 4 torres */
   disableKeyShadow: true,
   /** Intensidade de cada torre */
-  intensity: 0.62,
+  intensity: 1.62,
   color: '#fff1d6',
   /** Altura das torres (m, mundo) */
   height: 38,

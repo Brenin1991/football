@@ -23,13 +23,33 @@ export type OutType = 'sideline' | 'goal-line'
 
 export type PlayerLocoAnim =
   | 'player_idle'
+  | 'idle_01'
+  | 'idle_02'
+  | 'idle_03'
+  | 'idle_04'
+  | 'idle_05'
   | 'player_walking'
   | 'player_run'
   | 'player_backward'
   | 'player_left'
   | 'player_right'
 
-export type PlayerStrikeAnim = 'player_pass' | 'player_kick' | 'player_shoot'
+export type PlayerIdleVariantAnim =
+  | 'idle_01'
+  | 'idle_02'
+  | 'idle_03'
+  | 'idle_04'
+  | 'idle_05'
+
+export type PlayerStrikeAnim =
+  | 'player_pass'
+  | 'player_pass_short'
+  | 'player_pass_long'
+  | 'player_kick'
+  | 'player_kick_high'
+  | 'player_kick_medium'
+  | 'player_kick_low'
+  | 'player_shoot'
 
 export type PlayerActionAnim =
   | PlayerStrikeAnim
@@ -45,6 +65,22 @@ export type PlayerActionAnim =
   | 'player_imbalance_stolen'
   | 'player_shoulder_charge'
   | 'player_run_stop'
+  | 'celebration_01'
+  | 'celebration_02'
+  | 'celebration_03'
+  | 'celebration_04'
+  | 'celebration_05'
+  | 'celebration_06'
+  | 'celebration_07'
+
+export type PlayerCelebrationAnim =
+  | 'celebration_01'
+  | 'celebration_02'
+  | 'celebration_03'
+  | 'celebration_04'
+  | 'celebration_05'
+  | 'celebration_06'
+  | 'celebration_07'
 
 export type PlayerAnim = PlayerLocoAnim | PlayerActionAnim
 

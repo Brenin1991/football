@@ -2,15 +2,17 @@ import type { RapierRigidBody } from '@react-three/rapier'
 import type { Vec3 } from '../types'
 import {
   BALL_AIR_DRAG,
+  BALL_BODY_HIT_SPEED_CAP,
   BALL_GROUND_ROLL_BLEND,
   BALL_GROUND_ROLL_MAX,
   BALL_GROUND_ROLL_MIN,
+  BALL_MAX_SPEED,
   BALL_RADIUS,
   BALL_STOP_SPEED,
   KICK_LOFT_HEIGHT,
   KICK_PASS_LOFT_BASE,
 } from '../constants'
-import { ballBodyRef, ballRef, playerRegistry } from './entityRegistry'
+import { ballBodyRef, ballRef, getBallBody, playerRegistry } from './entityRegistry'
 import { ballRestY } from './fieldData'
 import { forEachFixedSimStep } from './gameTime'
 import {
@@ -34,6 +36,22 @@ export type KickOptions = {
 
 let setPieceLaunchUntil = 0
 
+/** Efeito Magnus pós-falta — curva / topspin / knuckle */
+type BallCurlState = {
+  wx: number
+  wy: number
+  wz: number
+  knuckle: boolean
+  until: number
+}
+
+let ballCurl: BallCurlState | null = null
+
+const CURL_MAGNUS = 0.085
+const CURL_VERT_MUL = 0.28
+const CURL_DECAY = 1.1
+const CURL_KNUCKLE = 0.18
+
 export function markSetPieceLaunch() {
   setPieceLaunchUntil = performance.now() + 220
 }
@@ -42,8 +60,108 @@ export function isSetPieceLaunchActive() {
   return performance.now() < setPieceLaunchUntil
 }
 
+export function clearBallCurl() {
+  ballCurl = null
+}
+
+/**
+ * Contato na bola (PES): contactX curva, contactY loft/topspin.
+ * dir = direção do chute no chão.
+ */
+export function applyFreeKickCurl(
+  dirX: number,
+  dirZ: number,
+  contactX: number,
+  contactY: number,
+  power: number,
+) {
+  const horiz = Math.hypot(dirX, dirZ)
+  const nx = horiz > 0.001 ? dirX / horiz : 0
+  const nz = horiz > 0.001 ? dirZ / horiz : 1
+  // Direita do chute (perp no plano XZ)
+  const rx = -nz
+  const rz = nx
+
+  const cx = Math.max(-1, Math.min(1, contactX))
+  const cy = Math.max(-1, Math.min(1, contactY))
+  const p = 0.55 + Math.max(0, Math.min(1, power)) * 0.45
+  const side = Math.abs(cx)
+  const vert = Math.abs(cy)
+  const knuckle = side < 0.12 && vert < 0.12
+
+  // Spin suave — curvinha
+  // Bate no lado esquerdo da bola (cx<0) → curva para a DIREITA (PES)
+  const wy = -cx * 3.2 * p
+  const wr = cy * 2.4 * p
+  const wx = rx * wr
+  const wz = rz * wr
+
+  ballCurl = {
+    wx,
+    wy,
+    wz,
+    knuckle,
+    until: performance.now() + (knuckle ? 900 : 1800),
+  }
+
+  const body = getBallBody()
+  if (body) {
+    try {
+      body.setAngvel({ x: wx * 0.2, y: wy * 0.2, z: wz * 0.2 }, true)
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export function stepBallCurl(body: RapierRigidBody, delta: number) {
+  if (!ballCurl || delta <= 0) return
+  if (performance.now() > ballCurl.until) {
+    ballCurl = null
+    return
+  }
+
+  const restY = ballRestY(BALL_RADIUS)
+  const t = body.translation()
+  const v = body.linvel()
+  const airborne = t.y > restY + BALL_RADIUS * 0.55 || Math.abs(v.y) > 0.55
+  if (!airborne) {
+    ballCurl = null
+    return
+  }
+
+  const speed = Math.hypot(v.x, v.y, v.z)
+  if (speed < 0.8) return
+
+  let { wx, wy, wz } = ballCurl
+  // a = k * (ω × v)
+  let ax = CURL_MAGNUS * (wy * v.z - wz * v.y)
+  let ay = CURL_MAGNUS * CURL_VERT_MUL * (wz * v.x - wx * v.z)
+  let az = CURL_MAGNUS * (wx * v.y - wy * v.x)
+
+  if (ballCurl.knuckle) {
+    const n = performance.now() * 0.01
+    ax += Math.sin(n * 1.7) * CURL_KNUCKLE * delta * 4
+    az += Math.cos(n * 2.1) * CURL_KNUCKLE * delta * 4
+  }
+
+  body.setLinvel(
+    {
+      x: v.x + ax * delta,
+      y: v.y + ay * delta,
+      z: v.z + az * delta,
+    },
+    true,
+  )
+
+  const decay = Math.exp(-CURL_DECAY * delta)
+  ballCurl.wx = wx * decay
+  ballCurl.wy = wy * decay
+  ballCurl.wz = wz * decay
+}
+
 export function ensureBallDynamic() {
-  const body = ballBodyRef.current as RapierRigidBody | null
+  const body = getBallBody()
   if (!body) return
   if (body.bodyType() !== 0) {
     body.setBodyType(0, true)
@@ -52,7 +170,7 @@ export function ensureBallDynamic() {
 }
 
 export function ensureBallKinematic() {
-  const body = ballBodyRef.current as RapierRigidBody | null
+  const body = getBallBody()
   if (!body) return
   if (body.bodyType() !== 2) {
     body.setBodyType(2, true)
@@ -86,23 +204,67 @@ export function kickBall({ dirX, dirZ, speed, loft = 0 }: KickOptions) {
 }
 
 export function applyBallVelocity(vx: number, vy: number, vz: number) {
-  const body = ballBodyRef.current as RapierRigidBody | null
+  const body = getBallBody()
+  const horiz = Math.hypot(vx, vz)
+  let ox = vx
+  let oz = vz
+  if (horiz > BALL_MAX_SPEED) {
+    const s = BALL_MAX_SPEED / horiz
+    ox *= s
+    oz *= s
+  }
   if (!body) {
-    ballRef.velocity = { x: vx, y: vy, z: vz }
+    ballRef.velocity = { x: ox, y: vy, z: oz }
     return
   }
 
   ensureBallDynamic()
   body.wakeUp()
-  body.setLinvel({ x: vx, y: vy, z: vz }, true)
+  body.setLinvel({ x: ox, y: vy, z: oz }, true)
+  syncBallFromBody(body)
+}
+
+/** Corta velocidade absurda (rebote de osso cinemático etc.) */
+export function clampBallSpeed(maxHoriz = BALL_MAX_SPEED) {
+  const body = getBallBody()
+  if (!body) return
+  const v = body.linvel()
+  const horiz = Math.hypot(v.x, v.z)
+  if (horiz <= maxHoriz) return
+  const s = maxHoriz / horiz
+  body.setLinvel({ x: v.x * s, y: Math.min(v.y, maxHoriz * 0.55), z: v.z * s }, true)
+  syncBallFromBody(body)
+}
+
+/** Amortece impacto corpo/perna que o Rapier exagerou */
+export function softenBallBodyHit() {
+  const body = getBallBody()
+  if (!body) return
+  const v = body.linvel()
+  const horiz = Math.hypot(v.x, v.z)
+  const cap = BALL_BODY_HIT_SPEED_CAP
+  if (horiz <= cap && Math.abs(v.y) < 2.2) return
+  const s = horiz > cap ? cap / horiz : 1
+  body.setLinvel(
+    {
+      x: v.x * s * 0.72,
+      y: Math.min(Math.max(v.y * 0.35, 0), 1.1),
+      z: v.z * s * 0.72,
+    },
+    true,
+  )
   syncBallFromBody(body)
 }
 
 export function syncBallFromBody(body: RapierRigidBody) {
-  const t = body.translation()
-  const v = body.linvel()
-  ballRef.current = { x: t.x, y: t.y, z: t.z }
-  ballRef.velocity = { x: v.x, y: v.y, z: v.z }
+  try {
+    const t = body.translation()
+    const v = body.linvel()
+    ballRef.current = { x: t.x, y: t.y, z: t.z }
+    ballRef.velocity = { x: v.x, y: v.y, z: v.z }
+  } catch {
+    if (ballBodyRef.current === body) ballBodyRef.current = null
+  }
 }
 
 let liveBallFrame = -1
@@ -116,7 +278,7 @@ export function refreshLiveBallState(frame: number) {
   if (frame === liveBallFrame) return
   liveBallFrame = frame
 
-  const body = ballBodyRef.current as RapierRigidBody | null
+  const body = getBallBody()
   if (body) {
     syncBallFromBody(body)
   }
@@ -134,7 +296,7 @@ export function refreshLiveBallState(frame: number) {
 /** Posição/velocidade da bola — usa cache por frame quando disponível */
 export function getLiveBallState(): { ball: Vec3; velocity: Vec3 } {
   if (liveBallFrame < 0) {
-    const body = ballBodyRef.current as RapierRigidBody | null
+    const body = getBallBody()
     if (body) {
       syncBallFromBody(body)
     }
@@ -244,7 +406,11 @@ export function tickBallBeforePhysics(body: RapierRigidBody, stepDt: number): vo
 
   const store = useGameStore.getState()
   if (store.phase === 'replay') return
-  if (isSetPieceLaunchActive()) return
+  if (isSetPieceLaunchActive()) {
+    // Curva começa imediatamente após o chute da falta
+    stepBallCurl(body, stepDt)
+    return
+  }
 
   const restY = ballRestY(BALL_RADIUS)
   const possessed = store.ballPossession
@@ -265,6 +431,7 @@ export function tickBallBeforePhysics(body: RapierRigidBody, stepDt: number): vo
   }
 
   if (possessed || frozen) {
+    clearBallCurl()
     if (possessed) {
       const holder = playerRegistry.get(possessed.playerId)
       if (holder) {
@@ -294,7 +461,9 @@ export function tickBallBeforePhysics(body: RapierRigidBody, stepDt: number): vo
   ensureBallDynamic()
   body.wakeUp()
   stepBallAirDrag(body, stepDt)
+  stepBallCurl(body, stepDt)
   stepBallGroundRoll(body, stepDt)
+  clampBallSpeed()
 }
 
 /** Mantém ballRef alinhado ao corpo após a integração Rapier. */
@@ -324,4 +493,7 @@ export function syncBallAfterPhysics(body: RapierRigidBody): void {
   }
 
   syncBallFromBody(body)
+  if (!possessed && !frozen) {
+    clampBallSpeed()
+  }
 }

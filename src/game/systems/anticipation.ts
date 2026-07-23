@@ -154,7 +154,7 @@ export function shouldAutoRunForFirstTime(
   return pi.receiverId === playerId || store.activePlayerId === playerId
 }
 
-/** Jogador em modo chute com a bola (0,5s): automático, só mira. */
+/** Jogador em modo chute cinemático com a bola (wind-up fixo). */
 export function isPlayerInShotChargeMode(
   store: ReturnType<typeof useGameStore.getState>,
   playerId: string,
@@ -206,6 +206,8 @@ export function shouldBlockManualUserControl(
   store: ReturnType<typeof useGameStore.getState>,
   playerId: string,
 ): boolean {
+  // Modo Pro: sempre controla o jogador travado (mesmo sem a bola)
+  if (store.controlMode === 'pro') return false
   const poss = store.ballPossession
   if (poss?.team === getUserTeam() && poss.playerId !== playerId) {
     return true
@@ -216,6 +218,7 @@ export function shouldBlockManualUserControl(
 export function canManualSwitchPlayer(
   store: ReturnType<typeof useGameStore.getState>,
 ): boolean {
+  if (store.controlMode === 'pro') return false
   const poss = store.ballPossession
   if (poss?.team === getUserTeam()) return false
   return true

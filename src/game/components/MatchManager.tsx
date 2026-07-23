@@ -28,6 +28,7 @@ import { narrationSfx } from '../systems/narrationSfx'
 import { sfx } from '../systems/sfx'
 import { getSimDelta } from '../systems/gameTime'
 import { isReplaySequenceRunning, replaySystem } from '../systems/replaySystem'
+import { tickAiTacticsAdapt } from '../systems/aiTacticsAdapt'
 
 const KICKOFF_GRACE = 3
 const MIN_PLAY_TIME_BEFORE_OOB = 0.6
@@ -41,6 +42,7 @@ export function MatchManager() {
   const graceRef = useRef(KICKOFF_GRACE)
   const setPieceTimerRef = useRef(0)
   const transitionBusyRef = useRef(false)
+  const lastScoreKeyRef = useRef('')
   const pendingOobRef = useRef<{
     crossBall: { x: number; y: number; z: number }
     type: 'sideline' | 'goal-line'
@@ -67,6 +69,14 @@ export function MatchManager() {
       playingSinceRef.current += simDelta
       store.tickMatchTime(simDelta * REAL_SECONDS_PER_GAME_MINUTE)
       graceRef.current = Math.max(0, graceRef.current - simDelta)
+
+      const scoreKey = `${store.scoreHome}-${store.scoreAway}`
+      if (scoreKey !== lastScoreKeyRef.current) {
+        lastScoreKeyRef.current = scoreKey
+        tickAiTacticsAdapt(true)
+      } else {
+        tickAiTacticsAdapt(false)
+      }
     }
 
     if (store.phase !== 'playing') {
@@ -217,8 +227,12 @@ export function MatchManager() {
           store.fieldBounds,
           store.setPieceAimAngle,
         )
+      const userControlsSetPiece =
+        store.setPieceTeam === getUserTeam() &&
+        (store.controlMode !== 'pro' ||
+          store.setPieceKickerId === store.activePlayerId)
       const autoKickAway =
-        store.setPieceTeam !== getUserTeam() &&
+        !userControlsSetPiece &&
         kickerReady &&
         setPieceTimerRef.current >= kickDelay
 

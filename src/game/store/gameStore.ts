@@ -7,6 +7,7 @@ import type { GoalFrameCollider } from '../systems/fieldData'
 import type { DifficultyId } from '../systems/difficulty'
 import { getPressReliefMs } from '../systems/difficulty'
 import { clearDribbleState } from '../systems/ballDribble'
+import type { BroadcastCameraPresetId } from '../systems/broadcastCamera'
 import { playerRegistry } from '../systems/entityRegistry'
 import { primeCrossReceive } from '../systems/receiveRoutes'
 import { getBallSpawnPosition } from '../systems/fieldData'
@@ -28,6 +29,8 @@ export interface StrikeAimState {
   mode: PowerBarMode | null
   power: number
   charging: boolean
+  /** Chute cinemático: mira capturada uma vez e congelada */
+  locked?: boolean
 }
 
 export interface BallPossession {
@@ -50,6 +53,11 @@ export interface PassIntent {
   ballZAtPass?: number
   /** Passe rasteiro vs cruzamento alto vs profundidade */
   passType?: 'pass' | 'cross' | 'through'
+  /**
+   * Só o receptor disputa/domina (pedido de bola / Be a Pro).
+   * Travado no início do passe — ballCall some no chute.
+   */
+  soloReceive?: boolean
 }
 
 export interface OffsidePassFlag {
@@ -96,6 +104,12 @@ interface GameStore {
   kickoffResetVersion: number
   /** Direção da cobrança (lateral, escanteio, tiro de meta) */
   setPieceAimAngle: number
+  /** Altura efetiva da trajetória (−1…+1) — sincronizada com contato Y na falta */
+  setPieceAimHeight: number
+  /** Ponto de contato na bola (PES): X = curva (−1 esq … +1 dir) */
+  setPieceContactX: number
+  /** Ponto de contato na bola (PES): Y = loft (−1 baixo … +1 cima) */
+  setPieceContactY: number
   /** Barreira da falta — mira fixa no início (não gira com o batedor) */
   setPieceWallAimAngle: number
   /** Bloqueia roubo na bandeira logo após o chute */
@@ -108,7 +122,15 @@ interface GameStore {
   setPieceShootAnim: {
     kickerId: string
     at: number
-    clip?: 'player_shoot' | 'player_pass' | 'player_kick'
+    clip?:
+      | 'player_shoot'
+      | 'player_pass'
+      | 'player_pass_short'
+      | 'player_pass_long'
+      | 'player_kick'
+      | 'player_kick_high'
+      | 'player_kick_medium'
+      | 'player_kick_low'
   } | null
 
   /** Lateral — animação de arremesso (bola sai no contato) */
@@ -121,6 +143,8 @@ interface GameStore {
   shotChargeActive: boolean
   shotChargePower: number
   powerBarMode: PowerBarMode
+  /** Início do wind-up cinemático do chute (ms) — 0 se inativo */
+  shotChargeStartedAt: number
   pendingUserShot: {
     power: number
     playerId: string
@@ -129,6 +153,8 @@ interface GameStore {
     dirZ: number
     /** Pré-agendado antes de dominar (first-time / rebote) */
     buffered?: boolean
+    /** Contato mais rápido / anim acelerada (chute antecipado) */
+    firstTime?: boolean
     /** Finalização aérea no cruzamento — dispara no contato, não ao dominar */
     crossVolley?: boolean
   } | null
@@ -156,6 +182,17 @@ interface GameStore {
   /** Janela após o jogador ganhar a bola — IA recua e para de pressionar */
   userPressReliefUntil: number
 
+  /**
+   * Pedido de bola (LB / T / companheiro livre):
+   * callerId pede ao portador do time.
+   */
+  ballCall: { callerId: string; until: number; source: 'user' | 'ai' } | null
+  lastBallCallAt: number
+  requestBallCall: () => void
+  /** Companheiro IA pede bola ao jogador — 1 por vez, sem sobrescrever pedido do user */
+  requestAiBallCall: (callerId: string) => boolean
+  clearBallCall: () => void
+
   playerCards: Record<string, { yellow: number; red: boolean }>
   sentOffPlayers: string[]
   refereeSignal: { card: 'yellow' | 'red' | null; at: number; playerId: string } | null
@@ -164,6 +201,13 @@ interface GameStore {
   timeScale: number
   /** Última escala antes de pausar — restaurada ao despausar */
   resumeTimeScale: number
+  /** Menu de pause aberto (START / Esc / P) */
+  pauseMenuOpen: boolean
+  /** Incrementa quando táticas/formação mudam ao vivo — re-render dos Players */
+  tacticsRevision: number
+  /** Preset da câmera de transmissão (pause → Câmera) */
+  broadcastCameraPreset: BroadcastCameraPresetId
+  setBroadcastCameraPreset: (preset: BroadcastCameraPresetId) => void
 
   setFieldData: (
     bounds: FieldBounds,
@@ -172,6 +216,9 @@ interface GameStore {
   ) => void
   setTimeScale: (scale: number) => void
   togglePause: () => void
+  openPauseMenu: () => void
+  closePauseMenu: () => void
+  bumpTacticsRevision: () => void
   resetTimeScale: () => void
   setPhase: (phase: MatchPhase) => void
   setMessage: (message: string) => void
@@ -197,7 +244,11 @@ interface GameStore {
   prepareKickoff: (team: TeamId) => void
   resetForKickoff: () => void
   rotateSetPieceAim: (delta: number) => void
+  adjustSetPieceAimHeight: (delta: number) => void
+  adjustSetPieceContact: (dx: number, dy: number) => void
   setSetPieceAim: (angle: number) => void
+  setSetPieceAimHeight: (height: number) => void
+  setSetPieceContact: (x: number, y: number) => void
   setSetPieceWallAim: (angle: number) => void
   setSetPieceKickPending: (pending: boolean) => void
   setShotCharge: (power: number, active: boolean, mode?: PowerBarMode) => void
@@ -206,6 +257,7 @@ interface GameStore {
     dirX?: number,
     dirZ?: number,
     buffered?: boolean,
+    firstTime?: boolean,
   ) => void
   setPendingBufferedShot: (
     playerId: string,
@@ -216,7 +268,7 @@ interface GameStore {
   ) => void
   consumePendingUserShot: (
     playerId: string,
-  ) => { power: number; dirX: number; dirZ: number } | null
+  ) => { power: number; dirX: number; dirZ: number; firstTime: boolean } | null
   setPendingUserPass: (
     type: 'pass' | 'through' | 'cross',
     power: number,
@@ -238,12 +290,52 @@ interface GameStore {
   setStrikeAim: (aim: StrikeAimState | null) => void
   userTeam: TeamId
   setUserTeam: (team: TeamId) => void
+  /** team = troca livre · pro = um jogador travado em 3ª pessoa */
+  controlMode: 'team' | 'pro'
+  proSlotIndex: number
+  setControlMode: (mode: 'team' | 'pro', proSlotIndex?: number) => void
+  /**
+   * Modo Pro: assisted = marcação/tática/perseguição auto · free = só o stick
+   * Toggle com Select / V
+   */
+  proAssistMode: 'assisted' | 'free'
+  toggleProAssistMode: () => void
   difficulty: DifficultyId
   setDifficulty: (difficulty: DifficultyId) => void
 }
 
 export function getUserTeam(): TeamId {
   return useGameStore.getState().userTeam
+}
+
+export function isProControlMode(): boolean {
+  return useGameStore.getState().controlMode === 'pro'
+}
+
+/** Pedido de bola / Be a Pro: só o receptor na disputa do passe. */
+export function shouldSoloReceivePass(receiverId: string): boolean {
+  const store = useGameStore.getState()
+  if (store.controlMode === 'pro' && receiverId === store.activePlayerId) {
+    return true
+  }
+  const call = store.ballCall
+  return (
+    !!call &&
+    call.callerId === receiverId &&
+    performance.now() < call.until
+  )
+}
+
+/** Pro + livre: sem IA de marcação/perseguição no jogador controlado */
+export function isProFreeControl(): boolean {
+  const s = useGameStore.getState()
+  return s.controlMode === 'pro' && s.proAssistMode === 'free'
+}
+
+export function getProPlayerId(): string | null {
+  const s = useGameStore.getState()
+  if (s.controlMode !== 'pro') return null
+  return `${s.userTeam}-${s.proSlotIndex}`
 }
 
 /** @deprecated Use getUserTeam() */
@@ -277,6 +369,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   ballClaimFreezeUntil: 0,
   kickoffResetVersion: 0,
   setPieceAimAngle: 0,
+  setPieceAimHeight: 0.15,
+  setPieceContactX: 0,
+  setPieceContactY: -0.15,
   setPieceWallAimAngle: 0,
   setPieceGuardUntil: 0,
   setPieceGuardPos: null,
@@ -287,6 +382,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   shotChargeActive: false,
   shotChargePower: 0,
   powerBarMode: null,
+  shotChargeStartedAt: 0,
   pendingUserShot: null,
   pendingUserPass: null,
   pendingSetPiecePower: 1,
@@ -295,17 +391,103 @@ export const useGameStore = create<GameStore>((set, get) => ({
   stealImmunityPlayerId: null,
   stealImmunityUntil: 0,
   userPressReliefUntil: 0,
+  ballCall: null,
+  lastBallCallAt: 0,
   playerCards: {},
   sentOffPlayers: [],
   refereeSignal: null,
   timeScale: 1,
   resumeTimeScale: 1,
+  pauseMenuOpen: false,
+  tacticsRevision: 0,
+  broadcastCameraPreset: 'wide',
   userTeam: 'home',
+  controlMode: 'team',
+  proSlotIndex: 9,
+  proAssistMode: 'assisted',
   difficulty: 'medium',
 
+  setBroadcastCameraPreset: (preset) => set({ broadcastCameraPreset: preset }),
+
   setUserTeam: (team) => {
-    set({ userTeam: team, activePlayerId: `${team}-9` })
+    const state = get()
+    const active =
+      state.controlMode === 'pro'
+        ? `${team}-${state.proSlotIndex}`
+        : `${team}-9`
+    set({ userTeam: team, activePlayerId: active })
   },
+
+  setControlMode: (mode, proSlotIndex) => {
+    const state = get()
+    const slot =
+      proSlotIndex != null
+        ? Math.max(1, Math.min(10, Math.floor(proSlotIndex)))
+        : state.proSlotIndex
+    const active =
+      mode === 'pro' ? `${state.userTeam}-${slot}` : state.activePlayerId
+    set({
+      controlMode: mode,
+      proSlotIndex: slot,
+      activePlayerId: mode === 'pro' ? active : state.activePlayerId,
+      // Sempre começa assistido ao entrar no Pro
+      ...(mode === 'pro' ? { proAssistMode: 'assisted' as const } : {}),
+    })
+  },
+
+  toggleProAssistMode: () => {
+    const state = get()
+    if (state.controlMode !== 'pro') return
+    set({
+      proAssistMode: state.proAssistMode === 'assisted' ? 'free' : 'assisted',
+    })
+  },
+
+  requestBallCall: () => {
+    const state = get()
+    if (state.controlMode !== 'pro') return
+    if (state.phase !== 'playing' || state.ballFrozen) return
+    const poss = state.ballPossession
+    if (!poss || poss.team !== state.userTeam) return
+    if (poss.playerId === state.activePlayerId) return
+    if (state.activePlayerId === `${state.userTeam}-0`) return
+    const now = performance.now()
+    if (now - state.lastBallCallAt < 900) return
+    set({
+      ballCall: {
+        callerId: state.activePlayerId,
+        until: now + 6200,
+        source: 'user',
+      },
+      lastBallCallAt: now,
+    })
+  },
+
+  requestAiBallCall: (callerId) => {
+    const state = get()
+    if (state.controlMode !== 'pro') return false
+    if (state.phase !== 'playing' || state.ballFrozen) return false
+    const poss = state.ballPossession
+    if (!poss || poss.team !== state.userTeam) return false
+    // Só quando o jogador controlado tem a bola
+    if (poss.playerId !== state.activePlayerId) return false
+    if (callerId === state.activePlayerId) return false
+    if (callerId === `${state.userTeam}-0`) return false
+    const now = performance.now()
+    if (state.ballCall && now < state.ballCall.until) return false
+    if (now - state.lastBallCallAt < 2600) return false
+    const caller = playerRegistry.get(callerId)
+    if (!caller || caller.team !== state.userTeam || caller.role === 'gk') {
+      return false
+    }
+    set({
+      ballCall: { callerId, until: now + 4800, source: 'ai' },
+      lastBallCallAt: now,
+    })
+    return true
+  },
+
+  clearBallCall: () => set({ ballCall: null }),
 
   setDifficulty: (difficulty) => set({ difficulty }),
 
@@ -331,13 +513,49 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   togglePause: () => {
-    const { timeScale, resumeTimeScale } = get()
+    const { timeScale, resumeTimeScale, pauseMenuOpen } = get()
+    if (pauseMenuOpen) {
+      get().closePauseMenu()
+      return
+    }
     if (timeScale === 0) {
       set({ timeScale: resumeTimeScale > 0 ? resumeTimeScale : 1 })
     } else {
       set({ timeScale: 0, resumeTimeScale: timeScale })
     }
   },
+
+  openPauseMenu: () => {
+    const { timeScale, resumeTimeScale, pauseMenuOpen, phase } = get()
+    if (
+      phase === 'intro' ||
+      phase === 'replay' ||
+      phase === 'goal-celebration' ||
+      phase === 'half-time-exit' ||
+      phase === 'half-time-enter' ||
+      phase === 'full-time-exit'
+    ) {
+      return
+    }
+    if (pauseMenuOpen) return
+    set({
+      pauseMenuOpen: true,
+      timeScale: 0,
+      resumeTimeScale: timeScale > 0 ? timeScale : resumeTimeScale > 0 ? resumeTimeScale : 1,
+    })
+  },
+
+  closePauseMenu: () => {
+    const { resumeTimeScale, pauseMenuOpen } = get()
+    if (!pauseMenuOpen) return
+    set({
+      pauseMenuOpen: false,
+      timeScale: resumeTimeScale > 0 ? resumeTimeScale : 1,
+    })
+  },
+
+  bumpTacticsRevision: () =>
+    set((state) => ({ tacticsRevision: state.tacticsRevision + 1 })),
 
   resetTimeScale: () => set({ timeScale: 1, resumeTimeScale: 1 }),
 
@@ -352,11 +570,20 @@ export const useGameStore = create<GameStore>((set, get) => ({
   setLastTouch: (team) => set({ lastTouchTeam: team }),
 
   setActivePlayer: (id, manual = false) => {
-    if (id === getGoalkeeperId(get().userTeam)) return
-    if (get().sentOffPlayers.includes(id)) return
-    if (id === get().activePlayerId) return
-    const poss = get().ballPossession
-    if (manual && poss?.team === get().userTeam && poss.playerId !== id) return
+    const state = get()
+    // Modo Pro: nunca troca o jogador travado
+    if (state.controlMode === 'pro') {
+      const locked = `${state.userTeam}-${state.proSlotIndex}`
+      if (id !== locked) return
+      if (id === state.activePlayerId) return
+      set({ activePlayerId: id })
+      return
+    }
+    if (id === getGoalkeeperId(state.userTeam)) return
+    if (state.sentOffPlayers.includes(id)) return
+    if (id === state.activePlayerId) return
+    const poss = state.ballPossession
+    if (manual && poss?.team === state.userTeam && poss.playerId !== id) return
     set({
       activePlayerId: id,
       ...(manual ? { manualSwitchUntil: performance.now() + 1100 } : {}),
@@ -374,7 +601,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const userGained =
       team === userTeam && playerId !== getGoalkeeperId(userTeam)
     const switchActive =
-      team === userTeam && playerId !== getGoalkeeperId(userTeam)
+      state.controlMode !== 'pro' &&
+      team === userTeam &&
+      playerId !== getGoalkeeperId(userTeam)
     const nextActive =
       switchActive && playerId !== state.activePlayerId
         ? playerId
@@ -392,6 +621,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       lastTouchTeam: team,
       activePlayerId: nextActive,
       passIntent: null,
+      ballCall: null,
       ...(userGained
         ? {
             userPressReliefUntil: now + getPressReliefMs(stolenFromOpp),
@@ -408,18 +638,27 @@ export const useGameStore = create<GameStore>((set, get) => ({
   clearPossession: () => {
     if (get().ballPossession === null) return
     clearDribbleState()
-    set({ ballPossession: null })
+    set({ ballPossession: null, ballCall: null })
   },
 
   setPassIntent: (intent) => {
     if (!intent) {
+      const pendingShot = get().pendingUserShot
+      // Voleio ainda no TTL pode esperar a bola; first-time de passe some
+      const keepVolley =
+        pendingShot?.buffered === true &&
+        pendingShot.crossVolley === true &&
+        performance.now() - pendingShot.queuedAt < CROSS_VOLLEY_BUFFER_MS
       set({
         passIntent: null,
         crossOneTouchActive: false,
         shotChargeActive: false,
         shotChargePower: 0,
         powerBarMode: null,
+        shotChargeStartedAt: 0,
         strikeAim: null,
+        pendingUserShot: keepVolley ? pendingShot : null,
+        pendingUserPass: null,
       })
       return
     }
@@ -443,6 +682,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       shotChargeActive: false,
       shotChargePower: 0,
       powerBarMode: null,
+      shotChargeStartedAt: 0,
       crossOneTouchActive: false,
     })
 
@@ -566,7 +806,30 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({ setPieceAimAngle: get().setPieceAimAngle + delta })
   },
 
+  adjustSetPieceAimHeight: (delta) => {
+    const next = Math.max(-1, Math.min(1, get().setPieceAimHeight + delta))
+    set({ setPieceAimHeight: next, setPieceContactY: -next })
+  },
+
+  adjustSetPieceContact: (dx, dy) => {
+    const x = Math.max(-1, Math.min(1, get().setPieceContactX + dx))
+    const y = Math.max(-1, Math.min(1, get().setPieceContactY + dy))
+    // aimHeight = loft efetivo (invertido: baixo na bola = sobe)
+    set({ setPieceContactX: x, setPieceContactY: y, setPieceAimHeight: -y })
+  },
+
   setSetPieceAim: (angle) => set({ setPieceAimAngle: angle }),
+
+  setSetPieceAimHeight: (height) => {
+    const h = Math.max(-1, Math.min(1, height))
+    set({ setPieceAimHeight: h, setPieceContactY: -h })
+  },
+
+  setSetPieceContact: (cx, cy) => {
+    const x = Math.max(-1, Math.min(1, cx))
+    const y = Math.max(-1, Math.min(1, cy))
+    set({ setPieceContactX: x, setPieceContactY: y, setPieceAimHeight: -y })
+  },
 
   setSetPieceWallAim: (angle) => set({ setPieceWallAimAngle: angle }),
 
@@ -576,10 +839,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const rounded = Math.round(power * 40) / 40
     const state = get()
     const nextMode = active ? mode : null
+    const nextStartedAt = active
+      ? state.shotChargeActive
+        ? state.shotChargeStartedAt || performance.now()
+        : performance.now()
+      : 0
     if (
       state.shotChargeActive === active &&
       state.shotChargePower === rounded &&
-      state.powerBarMode === nextMode
+      state.powerBarMode === nextMode &&
+      state.shotChargeStartedAt === nextStartedAt
     ) {
       return
     }
@@ -587,6 +856,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       shotChargePower: rounded,
       shotChargeActive: active,
       powerBarMode: nextMode,
+      shotChargeStartedAt: nextStartedAt,
     })
   },
 
@@ -599,16 +869,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
         dirX,
         dirZ,
         buffered: true,
+        firstTime: true,
         crossVolley,
       },
       pendingUserPass: null,
     })
   },
 
-  setPendingUserShot: (power, dirX, dirZ, buffered = false) => {
+  setPendingUserShot: (power, dirX, dirZ, buffered = false, firstTime) => {
     const state = get()
     const aim = state.strikeAim
     let playerId = state.activePlayerId
+    const isFirstTime = firstTime ?? buffered
 
     if (buffered && state.passIntent) {
       if (state.passIntent.passType === 'cross') {
@@ -639,6 +911,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         dirX: dirX ?? aim?.dirX ?? 0,
         dirZ: dirZ ?? aim?.dirZ ?? 1,
         buffered,
+        firstTime: isFirstTime,
       },
       pendingUserPass: null,
     })
@@ -656,6 +929,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const bufferMs =
         pi?.passType === 'cross' ? CROSS_VOLLEY_BUFFER_MS : ACTION_BUFFER_WINDOW_MS * 3
       if (performance.now() - pending.queuedAt > bufferMs) {
+        set({ pendingUserShot: null })
         return null
       }
     } else if (pending.queuedAt + 1 < state.possessionSince) {
@@ -666,6 +940,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       power: pending.power,
       dirX: pending.dirX,
       dirZ: pending.dirZ,
+      firstTime: !!pending.firstTime || !!pending.buffered,
     }
   },
 
@@ -727,6 +1002,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const bufferMs =
         pi?.passType === 'cross' ? CROSS_VOLLEY_BUFFER_MS : ACTION_BUFFER_WINDOW_MS * 3
       if (performance.now() - pending.queuedAt > bufferMs) {
+        set({ pendingUserPass: null })
         return null
       }
     } else if (pending.queuedAt < state.possessionSince) {
@@ -789,7 +1065,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       prev.facingDot === aim.facingDot &&
       prev.mode === aim.mode &&
       prev.power === aim.power &&
-      prev.charging === aim.charging
+      prev.charging === aim.charging &&
+      prev.locked === aim.locked &&
+      prev.originX === aim.originX &&
+      prev.originZ === aim.originZ
     ) {
       return
     }

@@ -11,7 +11,7 @@ function isStandardLike(src: THREE.Material): src is StandardLike {
 }
 
 function tuneTextureForAaa(texture: THREE.Texture) {
-  texture.anisotropy = 8
+  texture.anisotropy = AAA_CLASSIC.renderer.maxAnisotropy
   texture.minFilter = THREE.LinearMipmapLinearFilter
   texture.magFilter = THREE.LinearFilter
   texture.generateMipmaps = true

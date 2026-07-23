@@ -7,9 +7,10 @@ export function configureAaaRenderer(renderer: THREE.WebGLRenderer) {
   const { shadow } = AAA_CLASSIC
 
   renderer.shadowMap.enabled = shadow.enabled
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  renderer.shadowMap.type =
+    shadow.type === 'pcfsoft' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap
   renderer.shadowMap.autoUpdate = true
-  // HDR + tone mapping ficam no pós-processo (AaaCompositeEffect)
+  // O OutputPass aplica ACES + sRGB no fim da cadeia de pós-processamento.
   renderer.toneMapping = THREE.NoToneMapping
   renderer.toneMappingExposure = 1
   renderer.outputColorSpace = THREE.SRGBColorSpace

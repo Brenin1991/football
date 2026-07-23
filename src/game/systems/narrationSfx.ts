@@ -412,6 +412,12 @@ class NarrationSfxManager {
     })
   }
 
+  /** Para a sequência de narração da intro (ex.: skip) */
+  stopIntroNarration() {
+    this.stopIntroSequence()
+    this.introSequencePending = false
+  }
+
   /** Toca todos os clips de intro em sequência (01 → 02 → …) */
   playIntro() {
     if (!this.unlocked) {

@@ -4,6 +4,8 @@ import { menuSfx } from '../menu/menuSfx'
 
 import type { DifficultyId } from '../game/systems/difficulty'
 
+export type ControlMode = 'team' | 'pro'
+
 export type MatchSession = {
   home: TeamWithPlayers
   away: TeamWithPlayers
@@ -11,14 +13,19 @@ export type MatchSession = {
   matchType: string
   playerSide: 'home' | 'away'
   difficulty: DifficultyId
+  controlMode: ControlMode
+  /** Slot do elenco controlado no modo Pro (1–10; 0 = GK) */
+  proSlotIndex: number
 }
 
-export type MatchSetupStep = 'side' | 'team' | 'kit' | 'loading'
+export type MatchSetupStep = 'side' | 'team' | 'prematch' | 'player' | 'loading'
 
 export type MatchSetupDraft = {
   step: MatchSetupStep
   playerSide: 'home' | 'away'
   difficulty: DifficultyId
+  controlMode: ControlMode
+  proSlotIndex: number
   homeTeamId: string | null
   awayTeamId: string | null
   homeLeagueId: string | null
@@ -31,6 +38,8 @@ const initialDraft = (): MatchSetupDraft => ({
   step: 'side',
   playerSide: 'home',
   difficulty: 'medium',
+  controlMode: 'team',
+  proSlotIndex: 9,
   homeTeamId: null,
   awayTeamId: null,
   homeLeagueId: null,
@@ -76,8 +85,16 @@ export const useMatchSetupStore = create<MatchSetupStore>((set, get) => ({
       return 'menu'
     }
 
-    const previousStep: MatchSetupStep =
-      draft.step === 'loading' ? 'kit' : draft.step === 'kit' ? 'team' : 'side'
+    let previousStep: MatchSetupStep = 'side'
+    if (draft.step === 'loading') {
+      previousStep = draft.controlMode === 'pro' ? 'player' : 'prematch'
+    } else if (draft.step === 'player') {
+      previousStep = 'prematch'
+    } else if (draft.step === 'prematch') {
+      previousStep = 'team'
+    } else if (draft.step === 'team') {
+      previousStep = 'side'
+    }
 
     menuSfx.playOpen()
     set({ draft: { ...draft, step: previousStep } })

@@ -13,7 +13,7 @@ import {
   PHYSICS_DEBUG,
 } from '../constants'
 import { useGameStore } from '../store/gameStore'
-import { ballBodyRef, ballRef } from '../systems/entityRegistry'
+import { ballBodyRef, ballRef, playerRegistry } from '../systems/entityRegistry'
 import { updateGkHandPositions } from '../systems/goalkeeperHands'
 import {
   ensureBallKinematic,
@@ -22,6 +22,7 @@ import {
 } from '../systems/ballPhysics'
 import { ballRestY } from '../systems/fieldData'
 import { isActiveSetPiecePhase } from '../systems/setPiece'
+import { getBallAtFeet } from '../systems/possession'
 
 function isSetPiecePhase(phase: string) {
   return isActiveSetPiecePhase(phase)
@@ -42,23 +43,31 @@ function shouldPinFrozenBall(
 
 export function Ball() {
   const bodyRef = useRef<RapierRigidBody>(null)
-  const restY = ballRestY(BALL_RADIUS)
 
   const ballTexture = useLoader(TextureLoader, '/textures/ball.jpg')
   const ballMaterial = useMemo(() => createBallMaterial(ballTexture), [ballTexture])
 
+  // Mantém a ref global alinhada ao body vivo (e limpa no unmount / remount)
   useEffect(() => {
-    if (bodyRef.current) ballBodyRef.current = bodyRef.current
-  }, [])
+    const body = bodyRef.current
+    if (body) ballBodyRef.current = body
+    return () => {
+      if (ballBodyRef.current === body || ballBodyRef.current === bodyRef.current) {
+        ballBodyRef.current = null
+      }
+    }
+  })
 
   useFrame(() => {
-    if (!bodyRef.current) return
+    const body = bodyRef.current
+    if (!body) return
+    ballBodyRef.current = body
 
     const store = useGameStore.getState()
     if (store.phase === 'replay') return
 
     if (isSetPieceLaunchActive()) {
-      syncBallFromBody(bodyRef.current)
+      syncBallFromBody(body)
       return
     }
 
@@ -73,17 +82,31 @@ export function Ball() {
       return
     }
 
+    const restY = ballRestY(BALL_RADIUS)
     ensureBallKinematic()
-    bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true)
-    bodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true)
-    const pos = {
-      x: store.setPiecePosition!.x,
-      y: restY,
-      z: store.setPiecePosition!.z,
+    try {
+      body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+      body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+
+      // Kickoff: bola nos pés do cobrador (domínio), não solta no centro
+      let pinX = store.setPiecePosition!.x
+      let pinZ = store.setPiecePosition!.z
+      if (store.phase === 'kickoff' && store.ballPossession) {
+        const holder = playerRegistry.get(store.ballPossession.playerId)
+        if (holder) {
+          const feet = getBallAtFeet(holder)
+          pinX = feet.x
+          pinZ = feet.z
+        }
+      }
+
+      const pos = { x: pinX, y: restY, z: pinZ }
+      body.setTranslation(pos, true)
+      ballRef.current = pos
+      ballRef.velocity = { x: 0, y: 0, z: 0 }
+    } catch {
+      ballBodyRef.current = null
     }
-    bodyRef.current.setTranslation(pos, true)
-    ballRef.current = pos
-    ballRef.velocity = { x: 0, y: 0, z: 0 }
   })
 
   return (
@@ -97,14 +120,14 @@ export function Ball() {
       restitution={BALL_RESTITUTION}
       ccd
       canSleep
-      position={[0, restY, 0]}
+      position={[0, ballRestY(BALL_RADIUS), 0]}
       userData={{ isBall: true }}
     >
       <BallCollider
         args={[BALL_RADIUS]}
         friction={BALL_FRICTION}
         restitution={BALL_RESTITUTION}
-        restitutionCombineRule={CoefficientCombineRule.Max}
+        restitutionCombineRule={CoefficientCombineRule.Min}
       />
       <mesh castShadow receiveShadow>
         <sphereGeometry args={[BALL_RADIUS, 36, 36]} />

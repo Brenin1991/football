@@ -78,6 +78,8 @@ export function getTeamAbbr(team: TeamId): string {
 export function getPlayerPositionFromSession(team: TeamId, index: number): string | null {
   const data = getSessionTeam(team)
   if (!data) return null
+  const formation = data.formationSlots?.find((s) => s.slotIndex === index)
+  if (formation?.positionLabel) return formation.positionLabel
   const slot = data.roster.find((p) => p.slotIndex === index)
   return slot?.positionLabel ?? null
 }

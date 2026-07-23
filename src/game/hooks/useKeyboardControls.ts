@@ -1,9 +1,18 @@
 import { useEffect, useRef } from 'react'
 import { sfx } from '../systems/sfx'
+import { useGameStore } from '../store/gameStore'
 import {
   createGamepadEdgeState,
   pollXboxGamepad,
 } from './gamepad'
+
+function isCinematicPhase(phase: string) {
+  return (
+    phase === 'intro' ||
+    phase === 'replay' ||
+    phase === 'goal-celebration'
+  )
+}
 
 export type ControlState = {
   forward: boolean
@@ -20,6 +29,10 @@ export type ControlState = {
   kick: boolean
   slide: boolean
   switchPlayer: boolean
+  /** Select / V — troca assistido ↔ livre (modo Pro) */
+  toggleAssist: boolean
+  /** D-pad ↑ removido — LB / T pede a bola ao companheiro */
+  callForBall: boolean
   /** Segurar RB / F — protege a bola (parado, imune a roubo) */
   shield: boolean
   /** Cancela o carregamento de chute/passe/cruzamento (LT / Esc) */
@@ -53,6 +66,8 @@ const DEFAULT: ControlState = {
   kick: false,
   slide: false,
   switchPlayer: false,
+  toggleAssist: false,
+  callForBall: false,
   shield: false,
   cancelCharge: false,
   moveX: 0,
@@ -77,6 +92,7 @@ export function useKeyboardControls() {
   const kickReleased = useRef(false)
   const prevKickHeld = useRef(false)
   const passPressEdge = useRef(false)
+  const skipPressEdge = useRef(false)
 
   useEffect(() => {
     const map: Record<string, BooleanControlKey> = {
@@ -98,11 +114,23 @@ export function useKeyboardControls() {
       Backspace: 'cancelCharge',
       Space: 'kick',
       Tab: 'switchPlayer',
+      KeyV: 'toggleAssist',
+      KeyT: 'callForBall',
     }
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space') e.preventDefault()
       if (e.repeat) return
+
+      // Só arma skip durante cinemática — senão A/passe fica “salvo” e pula sozinho
+      if (
+        (e.code === 'KeyA' || e.code === 'Enter' || e.code === 'NumpadEnter') &&
+        isCinematicPhase(useGameStore.getState().phase)
+      ) {
+        sfx.unlock()
+        skipPressEdge.current = true
+      }
+
       const action = map[e.code]
       if (!action) return
       sfx.unlock()
@@ -112,6 +140,9 @@ export function useKeyboardControls() {
       if (action === 'pass') {
         keyboardPass.current = true
         passPressEdge.current = true
+        if (isCinematicPhase(useGameStore.getState().phase)) {
+          skipPressEdge.current = true
+        }
       }
       if (action === 'throughPass') keyboardThrough.current = true
       if (action === 'cross') keyboardCross.current = true
@@ -166,6 +197,8 @@ export function useKeyboardControls() {
         kickJustPressed: false,
         slide: false,
         switchPlayer: false,
+        toggleAssist: false,
+        callForBall: false,
         shieldHeld: false,
         cancelCharge: false,
         aimLeft: false,
@@ -187,8 +220,15 @@ export function useKeyboardControls() {
       c.cross = keyboardCross.current || gp.crossHeld
       if (gp.slide) c.slide = true
       if (gp.switchPlayer) c.switchPlayer = true
+      if (gp.toggleAssist) c.toggleAssist = true
+      if (gp.callForBall) c.callForBall = true
       if (gp.kickJustPressed) kickPressEdge.current = true
-      if (gp.passJustPressed) passPressEdge.current = true
+      if (gp.passJustPressed) {
+        passPressEdge.current = true
+        if (isCinematicPhase(useGameStore.getState().phase)) {
+          skipPressEdge.current = true
+        }
+      }
 
       c.shield = keyboardShield.current || gp.shieldHeld
       c.cancelCharge = keyboardCancel.current || gp.cancelCharge
@@ -240,5 +280,43 @@ export function useKeyboardControls() {
     return false
   }
 
-  return { controls, consumeAction, consumeKickRelease, consumePassPress }
+  /** Intro / comemoração / replay — A (controle) ou A / Enter (teclado) */
+  const consumeSkipPress = () => {
+    if (skipPressEdge.current) {
+      skipPressEdge.current = false
+      return true
+    }
+    return false
+  }
+
+  /** Limpa edges presos (entrar/sair de cinemática / skip) */
+  const clearSkipPress = () => {
+    skipPressEdge.current = false
+  }
+
+  const clearStickyActionEdges = () => {
+    skipPressEdge.current = false
+    passPressEdge.current = false
+    kickPressEdge.current = false
+    kickReleased.current = false
+    controls.current.pass = false
+    controls.current.kick = false
+    controls.current.throughPass = false
+    controls.current.cross = false
+    controls.current.slide = false
+    keyboardPass.current = false
+    keyboardKick.current = false
+    keyboardThrough.current = false
+    keyboardCross.current = false
+  }
+
+  return {
+    controls,
+    consumeAction,
+    consumeKickRelease,
+    consumePassPress,
+    consumeSkipPress,
+    clearSkipPress,
+    clearStickyActionEdges,
+  }
 }

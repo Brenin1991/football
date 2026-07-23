@@ -8,7 +8,7 @@ export const STADIUM_CROWD = {
   /** Altura real de um painel (torcedores em pé ~1,75 m) */
   personHeight: 2.95,
   /** Máximo de painéis na arquibancada — 0 = sem limite */
-  maxPanels: 200,
+  maxPanels: 100,
   /** Sobreposição leve entre painéis (0–1) */
   tileOverlap: 10.96,
   /** Distância da superfície do cheering_area para evitar z-fighting */

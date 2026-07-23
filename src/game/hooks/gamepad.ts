@@ -8,6 +8,9 @@ export const XBOX = {
   RB: 5,
   LT: 6,
   RT: 7,
+  /** Back / View / Select */
+  SELECT: 8,
+  START: 9,
   DPAD_UP: 12,
   DPAD_DOWN: 13,
   DPAD_LEFT: 14,
@@ -44,6 +47,16 @@ export function createGamepadEdgeState(): GamepadEdgeState {
   return { prevButtons: [] }
 }
 
+/**
+ * Semeia o edge com o estado atual do gamepad, para que botões já segurados
+ * NÃO sejam detectados como "just pressed" no primeiro frame após religar os
+ * listeners (evita disparos múltiplos ao trocar de tela com o botão apertado).
+ */
+export function seedGamepadEdgeState(edge: GamepadEdgeState): void {
+  const pad = getActiveGamepad()
+  edge.prevButtons = pad ? pad.buttons.map((button) => button.pressed) : []
+}
+
 function buttonPressed(pad: Gamepad, index: number): boolean {
   return pad.buttons[index]?.pressed === true
 }
@@ -76,6 +89,8 @@ export function pollXboxGamepad(
     kickJustPressed: boolean
     slide: boolean
     switchPlayer: boolean
+    toggleAssist: boolean
+    callForBall: boolean
     shieldHeld: boolean
     cancelCharge: boolean
     aimLeft: boolean
@@ -111,17 +126,20 @@ export function pollXboxGamepad(
   out.kickHeld = buttonPressed(pad, XBOX.X)
   if (buttonJustPressed(pad, XBOX.X, edge)) out.kickJustPressed = true
   if (buttonJustPressed(pad, XBOX.B, edge)) out.slide = true
-  if (buttonJustPressed(pad, XBOX.LB, edge)) out.switchPlayer = true
+  if (buttonJustPressed(pad, XBOX.LB, edge)) {
+    // Be a Pro: pedir bola. Modo time: troca de jogador (mesma tecla).
+    out.callForBall = true
+    out.switchPlayer = true
+  }
+  if (buttonJustPressed(pad, XBOX.SELECT, edge)) out.toggleAssist = true
   const lbPressed = buttonPressed(pad, XBOX.LB)
   out.shieldHeld = triggerValue(pad, XBOX.LT) > TRIGGER_SPRINT
   out.cancelCharge = lbPressed && !edge.prevButtons[XBOX.LB]
 
   out.sprint = buttonPressed(pad, XBOX.RB)
 
-  out.aimLeft =
-    buttonPressed(pad, XBOX.DPAD_LEFT) || rx < -0.35
-  out.aimRight =
-    buttonPressed(pad, XBOX.DPAD_RIGHT) || rx > 0.35
+  out.aimLeft = buttonPressed(pad, XBOX.DPAD_LEFT)
+  out.aimRight = buttonPressed(pad, XBOX.DPAD_RIGHT)
 
   edge.prevButtons = pad.buttons.map((b) => b.pressed)
   return true

@@ -9,8 +9,8 @@ export const RADAR_W = 320
 export const RADAR_H = 212
 const PAD = 10
 
-const BORDER_ALPHA = 0.32
-const LINE_ALPHA = 0.58
+const BORDER_ALPHA = 0.18
+const LINE_ALPHA = 0.38
 
 function drawPitch(
   ctx: CanvasRenderingContext2D,
@@ -91,9 +91,9 @@ export function HudRadar() {
       ctx.clearRect(0, 0, RADAR_W, RADAR_H)
 
       const bgGrad = ctx.createLinearGradient(0, 0, 0, RADAR_H)
-      bgGrad.addColorStop(0, 'rgba(48, 52, 60, 0.14)')
-      bgGrad.addColorStop(0.45, 'rgba(28, 32, 38, 0.18)')
-      bgGrad.addColorStop(1, 'rgba(14, 16, 20, 0.22)')
+      bgGrad.addColorStop(0, 'rgba(48, 52, 60, 0.05)')
+      bgGrad.addColorStop(0.45, 'rgba(28, 32, 38, 0.07)')
+      bgGrad.addColorStop(1, 'rgba(14, 16, 20, 0.09)')
       ctx.fillStyle = bgGrad
       ctx.fillRect(0, 0, RADAR_W, RADAR_H)
 

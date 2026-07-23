@@ -383,7 +383,7 @@ export function callFoul(call: FoulCall) {
 
   const setupMessage =
     call.fouledTeam === 'home'
-      ? `${call.message}${cardMsg} — ← → mirar · Espaço chute · E passe · Q cruzamento`
+      ? `${call.message}${cardMsg} — ←→ mirar · contato na bola · Espaço força`
       : `${call.message}${cardMsg} — cobrança visitante`
 
   const finishFoul = () => {

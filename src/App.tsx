@@ -5,11 +5,15 @@ import { Game } from './game/Game'
 import { EditorScreen } from './menu/EditorScreen'
 import { MainMenu } from './menu/MainMenu'
 import { MatchSetupScreen } from './menu/MatchSetupScreen'
+import { TeamManagementScreen } from './menu/TeamManagementScreen'
 import { ViewTransition } from './menu/components/ViewTransition'
 import { useAppStore } from './store/appStore'
 import { useMatchSetupStore } from './store/matchSetupStore'
 import { useGameStore } from './game/store/gameStore'
 import './index.css'
+import './menu/fifa/fifaMenu.css'
+import './menu/fifa/fifaDesignSystem.css'
+import './game/hudDesignSystem.css'
 
 function DbBootstrap({ children }: { children: ReactNode }) {
   const setDbReady = useAppStore((s) => s.setDbReady)
@@ -65,6 +69,8 @@ function AppViewRouter() {
             return <MainMenu />
           case 'match-setup':
             return <MatchSetupScreen />
+          case 'team-management':
+            return <TeamManagementScreen />
           case 'editor':
             return <EditorScreen />
           case 'game':

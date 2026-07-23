@@ -128,6 +128,7 @@ export function applyPlayerMaterials(
   model: THREE.Group,
   appearance: PlayerAppearance,
   highlighted = false,
+  opts?: { preserveSkin?: boolean },
 ) {
   const { kit, skinColor } = appearance
   const shirt = new THREE.Color(kit.shirt)
@@ -136,6 +137,7 @@ export function applyPlayerMaterials(
   const skin = new THREE.Color(skinColor)
   const playerSnap = PSX_CLASSIC.material.playerVertexSnap
   const characterTexture = PSX_CLASSIC.material.texture.character
+  const preserveSkin = opts?.preserveSkin === true
 
   model.traverse((child) => {
     if (!(child as THREE.Mesh).isMesh) return
@@ -162,12 +164,12 @@ export function applyPlayerMaterials(
       return
     }
 
-    if (part === 'body') {
-      paintMesh(mesh, skin, false, playerSnap, characterTexture, 0.02)
-      return
-    }
-
-    if (part === 'skin') {
+    if (part === 'body' || part === 'skin') {
+      if (preserveSkin) return
+      if (part === 'body') {
+        paintMesh(mesh, skin, false, playerSnap, characterTexture, 0.02)
+        return
+      }
       upgradeMesh(mesh, (src) =>
         toPsxStandard(src, { vertexSnap: playerSnap, textureProfile: characterTexture }),
       )

@@ -1,4 +1,4 @@
-export type EntityImageType = 'league' | 'team' | 'player'
+export type EntityImageType = 'league' | 'team' | 'player' | 'country'
 
 export type StoredEntityImage = {
   entityType: EntityImageType
@@ -12,6 +12,7 @@ export const IMAGE_MAX_DIMENSION: Record<EntityImageType, number> = {
   league: 256,
   team: 256,
   player: 192,
+  country: 256,
 }
 
 export const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp'

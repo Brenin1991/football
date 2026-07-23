@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 import { useMatchSetupStore } from '../store/matchSetupStore'
-import { MatchKitScreen } from './matchSetup/MatchKitScreen'
 import { MatchLoadingScreen } from './matchSetup/MatchLoadingScreen'
+import { MatchPlayerScreen } from './matchSetup/MatchPlayerScreen'
+import { MatchPreMatchScreen } from './matchSetup/MatchPreMatchScreen'
 import { MatchSideScreen } from './matchSetup/MatchSideScreen'
 import { MatchTeamScreen } from './matchSetup/MatchTeamScreen'
 import { SetupStepTransition } from './matchSetup/SetupStepTransition'
@@ -20,7 +21,8 @@ export function MatchSetupScreen() {
     <SetupStepTransition step={step}>
       {step === 'side' && <MatchSideScreen />}
       {step === 'team' && <MatchTeamScreen />}
-      {step === 'kit' && <MatchKitScreen />}
+      {step === 'prematch' && <MatchPreMatchScreen />}
+      {step === 'player' && <MatchPlayerScreen />}
       {step === 'loading' && <MatchLoadingScreen />}
     </SetupStepTransition>
   )

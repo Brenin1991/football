@@ -18,11 +18,40 @@ import { distance2D } from './rules'
 import { isOffsideAtZ } from './offside'
 import { minPlayerFootDist2D } from './playerSkeleton'
 import { getInterceptLaneMaxDist } from './difficulty'
+import { getPlayerAttrMultipliers } from './playerAttributes'
 
 export { BALL_FOOT_OFFSET, STEAL_DISTANCE, CLAIM_DISTANCE, PASS_RECEIVE_DISTANCE }
 
 function clamp(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v))
+}
+
+/**
+ * 0..1 — quão protegida está a bola em drible/finta/360.
+ * Usado pra reduzir alcance e chance de roubo em pé.
+ */
+export function getDribbleStealProtect(holder: PlayerRef): number {
+  let p = 0
+  if (holder.dribbleSpinning === true || holder.anim === 'player_spin') {
+    p = Math.max(p, 0.95)
+  }
+  // Corte 180: quase blindado enquanto a finta roda
+  if (holder.anim === 'player_finta_180' || holder.anim === 'player_finta_01') {
+    p = Math.max(p, 0.97)
+  }
+  const sev = holder.dribbleTouchSeverity ?? 0
+  if (sev > 0.1) {
+    p = Math.max(p, 0.55 + sev * 0.4)
+  }
+  const off = holder.dribbleBallOffset
+  const offMag = off ? Math.hypot(off.x, off.z) : 0
+  if (offMag > 0.05) {
+    p = Math.max(p, 0.58 + Math.min(0.32, offMag * 1.35))
+  }
+  const speed = Math.hypot(holder.velocity.x, holder.velocity.z)
+  if (speed > 0.45) p = Math.max(p, 0.26)
+  if (holder.isSprinting === true && speed > 0.55) p = Math.max(p, 0.34)
+  return clamp(p, 0, 1) * (0.85 + getPlayerAttrMultipliers(holder.id).dribbling * 0.15)
 }
 
 /** Alvo de corrida para receber passe — persegue a bola / intercepta a trajetória */
@@ -419,15 +448,26 @@ export function canStealFromHolder(
   const toFoot = distance2D(stealer.position, ballPoint)
   const toBody = distance2D(stealer.position, holder.position)
   const stealerFoot = minPlayerFootDist2D(stealer.id, ballPoint)
+  const protect = getDribbleStealProtect(holder)
+  // Finta/360: precisa colar de verdade — alcance bem menor
+  const reachMul = 1 - protect * 0.72
   const reach =
+    STEAL_DISTANCE *
+    reachMul *
+    (stealer.team === getUserTeam() &&
+    stealer.id === useGameStore.getState().activePlayerId
+      ? 1.18
+      : 1.05)
+  const bodyReach =
     STEAL_DISTANCE *
     (stealer.team === getUserTeam() &&
     stealer.id === useGameStore.getState().activePlayerId
-      ? 1.08
-      : 1.28)
+      ? 1.28
+      : 1.05) *
+    (1 - protect * 0.55)
   return (
     toFoot < reach ||
-    toBody < STEAL_DISTANCE * 1.18 ||
+    toBody < bodyReach ||
     (stealerFoot != null && stealerFoot < reach)
   )
 }

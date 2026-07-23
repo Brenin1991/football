@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { WORLD_SCALE } from '../constants'
 import type { PlayerLocoAnim } from '../types'
+import { getPlayerAttrMultipliers } from './playerAttributes'
 
 export type DribbleTouchAnim = 'player_left' | 'player_right' | 'player_backward'
 
@@ -19,6 +20,10 @@ export type DribbleControlInput = {
   rotation: number
   moveVelX: number
   moveVelZ: number
+  /** IA com bola — limiares mais baixos pra 180/corte (input já vem suave) */
+  aiCarrier?: boolean
+  /** Be a Pro sem bola: só viradas 180/corte, sem toque de drible */
+  offBallLoco?: boolean
 }
 
 export type DribbleControlOutput = {
@@ -98,8 +103,9 @@ const runtimes = new Map<string, Runtime>()
 
 /** ~0.58 s após time-scale: acompanha a duração real do player_finta_180. */
 const STOP_FEINT_DURATION = 0.56
-const STOP_FEINT_MIN_SPEED = 0.28 * WORLD_SCALE
-const STOP_FEINT_COOLDOWN = 0.32
+const STOP_FEINT_MIN_SPEED = 0.55 * WORLD_SCALE
+/** Cooldown longo — evita spam de 180 com stick nervoso */
+const STOP_FEINT_COOLDOWN = 1.15
 const TOUCH_COOLDOWN = 0.24
 const SPRINT_TOUCH_MIN_SPEED = 0.22 * WORLD_SCALE
 const SPRINT_TOUCH_COOLDOWN = 0.2
@@ -110,16 +116,24 @@ const FEINT_BALL_LATERAL = 0.1 * WORLD_SCALE
 /** Velocidade mínima do toque no 180 (m/s) */
 const FEINT_BALL_PUSH_MIN = 2.35 * WORLD_SCALE
 const FEINT_BALL_PUSH_MAX = 3.6 * WORLD_SCALE
-const SPRINT_RELEASE_WINDOW = 4.55
+/** Janela curta após soltar sprint — evita finta “fantasma” segundos depois */
+const SPRINT_RELEASE_WINDOW = 0.42
 const STOP_FEINT_FAST_REF = 5.2 * WORLD_SCALE
+/** Stick tem que estar comprometido — viradinha não conta */
+const FEINT_STICK_COMMIT = 0.58
+/** Dot máximo (input·movimento) pra considerar reversão real (~135°+) */
+const FEINT_REVERSE_DOT = -0.72
 
-const RUN_CUT_MIN_SPEED = 0.22 * WORLD_SCALE
-const RUN_CUT_COOLDOWN = 0.16
-const RUN_CUT_DURATION = 0.22
-const RUN_CUT_BALL_PUSH = 0.22 * WORLD_SCALE
-const RUN_CUT_MAX_TURN_RATE = 3.2
-const RUN_CUT_DOT_MAX = 0.92
+const RUN_CUT_MIN_SPEED = 0.45 * WORLD_SCALE
+const RUN_CUT_COOLDOWN = 0.55
+const RUN_CUT_DURATION = 0.2
+const RUN_CUT_BALL_PUSH = 0.2 * WORLD_SCALE
+const RUN_CUT_MAX_TURN_RATE = 2.85
+/** Só corta de verdade — correção leve fica no locomotion */
+const RUN_CUT_DOT_MAX = 0.38
 const RUN_CUT_DOT_MIN = -0.35
+/** Só anima 180 no corte se for quase reversão */
+const RUN_CUT_FINTA180_SEVERITY = 0.78
 
 /** Pequena variação humana pra tirar a cadência de metrônomo dos toques. */
 function humanize(base: number, spread = 0.16): number {
@@ -347,9 +361,16 @@ function tryStartStopFeint(
   rotation: number,
   moveVelX: number,
   moveVelZ: number,
+  aiCarrier = false,
+  _offBallLoco = false,
 ): boolean {
-  if (rt.feintCooldown > 0 || speed < STOP_FEINT_MIN_SPEED * 0.85) return false
-  if (rawIntentLen < 0.28) return false
+  // 180 só em sprint (ou na janela curta ao soltar o sprint) — andando vira normal
+  if (!sprint && !rt.sprintReleaseActive) return false
+  if (rt.feintCooldown > 0 || speed < STOP_FEINT_MIN_SPEED) return false
+  // Stick fraco / viradinha — nunca (IA um pouco mais fácil pra emular corte)
+  const commit = aiCarrier ? FEINT_STICK_COMMIT * 0.78 : FEINT_STICK_COMMIT
+  const reverseDot = aiCarrier ? FEINT_REVERSE_DOT + 0.18 : FEINT_REVERSE_DOT
+  if (rawIntentLen < commit) return false
 
   const moveDirX = speed > 0.12 ? moveVelX / speed : Math.sin(rotation)
   const moveDirZ = speed > 0.12 ? moveVelZ / speed : Math.cos(rotation)
@@ -359,28 +380,35 @@ function tryStartStopFeint(
 
   const inReleaseWindow =
     !sprint && rt.sprintReleaseActive && rt.sprintReleaseAge < SPRINT_RELEASE_WINDOW
+  if (!sprint && !inReleaseWindow) return false
+
   const lateral = Math.abs(moveDirX * inputDirZ - moveDirZ * inputDirX)
 
-  // PES6 stop-and-play: soltou sprint e cortou ~90° (não dispara em correção leve)
+  // Stop-and-play: soltou sprint e cortou ~90°+ com stick firme
   const stopAndPlay =
-    inReleaseWindow && inputDotMove < 0.28 && lateral > 0.32
+    inReleaseWindow && inputDotMove < -0.08 && lateral > (aiCarrier ? 0.42 : 0.55)
 
   // Reversão clássica após soltar sprint
-  const sprintReverse = inReleaseWindow && inputDotMove < -0.15
+  const sprintReverse = inReleaseWindow && inputDotMove < reverseDot
 
-  // Reversão brusca (trote ou sprint) — PES stop/turn
-  const hardReverse =
-    inputDotMove < (sprint ? -0.48 : -0.32) && speed > STOP_FEINT_MIN_SPEED
+  // Reversão brusca — só enquanto sprinta, quase 180
+  const hardReverse = sprint && inputDotMove < reverseDot
 
-  // Flick do stick: última direção vs nova (Matthews-ish)
+  // Flick: última direção vs nova tem que ser bem oposta (não ruído de stick)
   const lastLen = Math.hypot(rt.lastDirX, rt.lastDirZ)
+  const flickDot =
+    lastLen > 0.01
+      ? (rt.lastDirX / lastLen) * inputDirX + (rt.lastDirZ / lastLen) * inputDirZ
+      : 1
   const flickReverse =
-    lastLen > 0.35 &&
-    rawIntentLen > 0.4 &&
-    speed > STOP_FEINT_MIN_SPEED &&
-    rt.lastDirX * inputDirX + rt.lastDirZ * inputDirZ < -0.25
+    (sprint || inReleaseWindow) &&
+    lastLen > (aiCarrier ? 0.4 : 0.55) &&
+    rawIntentLen > (aiCarrier ? 0.5 : 0.65) &&
+    flickDot < reverseDot
 
-  if (!stopAndPlay && !sprintReverse && !hardReverse && !flickReverse) return false
+  if (!stopAndPlay && !sprintReverse && !hardReverse && !flickReverse) {
+    return false
+  }
 
   const intensity = THREE.MathUtils.clamp(
     (speed - STOP_FEINT_MIN_SPEED) / (STOP_FEINT_FAST_REF - STOP_FEINT_MIN_SPEED),
@@ -464,6 +492,7 @@ function buildRunningCutOutput(rt: Runtime): DribbleControlOutput {
 
 function tryStartRunningCut(
   rt: Runtime,
+  sprint: boolean,
   dirX: number,
   dirZ: number,
   intentLen: number,
@@ -471,12 +500,19 @@ function tryStartRunningCut(
   rotation: number,
   moveVelX: number,
   moveVelZ: number,
+  aiCarrier = false,
+  _offBallLoco = false,
 ): boolean {
+  // Corte com finta: só em sprint
+  if (!sprint) return false
+  const commit = aiCarrier ? FEINT_STICK_COMMIT * 0.72 : FEINT_STICK_COMMIT
+  const cutDotMax = aiCarrier ? RUN_CUT_DOT_MAX + 0.12 : RUN_CUT_DOT_MAX
   if (
     speed < RUN_CUT_MIN_SPEED ||
-    intentLen < 0.22 ||
+    intentLen < commit ||
     rt.cutCooldown > 0 ||
-    rt.stopFeintTimer > 0
+    rt.stopFeintTimer > 0 ||
+    rt.feintCooldown > 0
   ) {
     return false
   }
@@ -485,7 +521,8 @@ function tryStartRunningCut(
   const moveDirZ = speed > 0.12 ? moveVelZ / speed : Math.cos(rotation)
 
   const dot = dirX * moveDirX + dirZ * moveDirZ
-  if (dot > RUN_CUT_DOT_MAX || dot < RUN_CUT_DOT_MIN) return false
+  // Ângulo fechado de verdade — curva leve não entra
+  if (dot > cutDotMax || dot < RUN_CUT_DOT_MIN) return false
 
   const severity = computeCutSeverity(dot)
   const cross = moveDirX * dirZ - moveDirZ * dirX
@@ -497,7 +534,7 @@ function tryStartRunningCut(
   rt.runCutTimer = rt.runCutDuration
   rt.runCutStartSpeed = speed
   rt.runCutTouchFired = false
-  rt.cutCooldown = RUN_CUT_COOLDOWN * THREE.MathUtils.lerp(0.85, 1.2, severity)
+  rt.cutCooldown = RUN_CUT_COOLDOWN * THREE.MathUtils.lerp(0.9, 1.25, severity)
   return true
 }
 
@@ -641,7 +678,13 @@ export function updatePlayerDribbleControl(
     rotation,
     moveVelX,
     moveVelZ,
+    aiCarrier = false,
+    offBallLoco = false,
   } = input
+
+  const cutDirX = dirX
+  const cutDirZ = dirZ
+  const cutIntentLen = intentLen
 
   rt.feintCooldown = Math.max(0, rt.feintCooldown - delta)
   rt.touchCooldown = Math.max(0, rt.touchCooldown - delta)
@@ -674,7 +717,7 @@ export function updatePlayerDribbleControl(
     return feintOut
   }
 
-  // 2) Tenta iniciar finta de parada (reversão após soltar sprint)
+  // 2) Tenta iniciar finta de parada (reversão / 180)
   if (
     tryStartStopFeint(
       rt,
@@ -686,6 +729,8 @@ export function updatePlayerDribbleControl(
       rotation,
       moveVelX,
       moveVelZ,
+      aiCarrier,
+      offBallLoco,
     )
   ) {
     rt.wasSprinting = sprint
@@ -708,22 +753,37 @@ export function updatePlayerDribbleControl(
   }
 
   // 4) Tenta iniciar um corte em corrida (virada de ângulo médio, mantendo velocidade)
-  if (tryStartRunningCut(rt, dirX, dirZ, intentLen, speed, rotation, moveVelX, moveVelZ)) {
+  if (
+    tryStartRunningCut(
+      rt,
+      sprint,
+      cutDirX,
+      cutDirZ,
+      cutIntentLen,
+      speed,
+      rotation,
+      moveVelX,
+      moveVelZ,
+      aiCarrier,
+      offBallLoco,
+    )
+  ) {
     rt.wasSprinting = sprint
     const cutOut = buildRunningCutOutput(rt)
     cutOut.runCutActive = true
-    cutOut.finta180Started = true
+    // 180 só em corte quase reverso — curva média não anima finta
+    cutOut.finta180Started = rt.runCutSeverity >= RUN_CUT_FINTA180_SEVERITY
     return cutOut
   }
 
-  // 5) Caso normal: toques de drible + leve resposta de giro proporcional ao
-  // quanto a direção pedida difere da direção atual — dá uma sensação mais
-  // viva pra correções pequenas, sem precisar de nenhum estado especial.
+  // 5) Caso normal — sem bola: só giro; com bola: toques de drible
   const out = makeDefaultOutput()
-  if (sprint) {
-    trySprintSubtleTouch(rt, out, dirX, dirZ, intentLen, speed, rotation, delta)
-  } else {
-    tryDribbleTouch(rt, out, sprint, dirX, dirZ, intentLen, speed, rotation, delta)
+  if (!offBallLoco) {
+    if (sprint) {
+      trySprintSubtleTouch(rt, out, dirX, dirZ, intentLen, speed, rotation, delta)
+    } else {
+      tryDribbleTouch(rt, out, sprint, dirX, dirZ, intentLen, speed, rotation, delta)
+    }
   }
 
   if (intentLen > 0.1 && speed > 0.12) {
@@ -731,7 +791,6 @@ export function updatePlayerDribbleControl(
     const moveDirZ = moveVelZ / speed
     const dot = dirX * moveDirX + dirZ * moveDirZ
     const mismatch = THREE.MathUtils.clamp(1 - dot, 0, 1)
-    // Close control: correções no trote viram mais rápido que no sprint
     const closeMul = sprint ? 0.42 : 0.72
     out.turnRateMul = 1 + mismatch * closeMul
   }
@@ -742,6 +801,9 @@ export function updatePlayerDribbleControl(
   }
 
   rt.wasSprinting = sprint
+  const attr = getPlayerAttrMultipliers(id)
+  out.speedMul *= THREE.MathUtils.clamp(0.92 + (attr.dribbling - 1) * 0.35, 0.88, 1.1)
+  out.turnRateMul *= attr.agility * THREE.MathUtils.clamp(0.94 + (attr.dribbling - 1) * 0.25, 0.9, 1.12)
   return out
 }
 

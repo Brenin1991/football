@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { AAA_CLASSIC } from '../../graphics/aaaSettings'
 import { AaaPostProcessing } from './AaaPostProcessing'
-import { FIELD_SCALE, SHADOW_CAMERA, fitDirectionalLightShadowToField } from '../../systems/fieldData'
+import { FIELD_SCALE, fitDirectionalLightShadowToField } from '../../systems/fieldData'
 // @ts-ignore: three example loader types not present
 import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader'
 import { useGameStore } from '../../store/gameStore'
@@ -26,7 +26,7 @@ function SetReflection({ texture }: { texture: THREE.Texture | null }) {
 export function AaaPipeline() {
   const { shadow, background, lighting, environment, reflectionProbe } = AAA_CLASSIC
   const sunRef = useRef<THREE.DirectionalLight>(null)
-  const exr = useLoader(EXRLoader, '/ambient/sky4.exr')
+  const exr = useLoader(EXRLoader, '/ambient/sky5.exr')
   const { gl, scene } = useThree()
   const [probeCenter, setProbeCenter] = useState<[number, number, number]>([0, reflectionProbe.height, 0])
   const fieldBounds = useGameStore((s) => s.fieldBounds)
@@ -60,7 +60,7 @@ export function AaaPipeline() {
     } else {
       setProbeCenter([0, reflectionProbe.height, 0])
     }
-  }, [scene, reflectionProbe.height])
+  }, [scene, reflectionProbe.height, fieldBounds])
 
   useEffect(() => {
     const light = sunRef.current
@@ -78,16 +78,29 @@ export function AaaPipeline() {
     light.target.updateMatrixWorld()
   }, [scene, fieldBounds])
 
+  /**
+   * Shadow camera SÓ via fit imperativo.
+   * Não usar shadow-camera-* no JSX — o R3F reaplica a cada render e
+   * corta o frustum de volta pro tamanho do gramado (arquibancadas ficam de fora).
+   */
   useLayoutEffect(() => {
     const light = sunRef.current
     if (!light?.shadow) return
 
-    light.shadow.mapSize.setScalar(shadow.mapSize)
+    const maxTex = gl.capabilities.maxTextureSize || 4096
+    const mapSize = Math.min(shadow.mapSize, maxTex)
+    if (light.shadow.mapSize.x !== mapSize) {
+      light.shadow.mapSize.set(mapSize, mapSize)
+      // força recriar o render target no tamanho novo
+      if (light.shadow.map) {
+        light.shadow.map.dispose()
+        ;(light.shadow as { map: THREE.WebGLRenderTarget | null }).map = null
+      }
+    }
     light.shadow.bias = shadow.bias
     light.shadow.normalBias = shadow.normalBias
 
-    // Cobre o campo inteiro (não só um quadrado no centro)
-    fitDirectionalLightShadowToField(light, scene, 1.55)
+    fitDirectionalLightShadowToField(light, scene, 1.12)
 
     const map = light.shadow.map?.texture
     if (map) {
@@ -97,7 +110,7 @@ export function AaaPipeline() {
     }
 
     light.shadow.needsUpdate = true
-  }, [shadow.bias, shadow.mapSize, shadow.normalBias, scene, fieldBounds])
+  }, [gl, shadow.bias, shadow.mapSize, shadow.normalBias, scene, fieldBounds])
 
   return (
     <>
@@ -109,22 +122,19 @@ export function AaaPipeline() {
       />
       <directionalLight
         ref={sunRef}
-        position={[18 * FIELD_SCALE, 28 * FIELD_SCALE, 12 * FIELD_SCALE]}
+        position={[64 * FIELD_SCALE, 32 * FIELD_SCALE, 64 * FIELD_SCALE]}
         intensity={lighting.sunIntensity}
         color={lighting.sunColor}
         castShadow={shadow.enabled}
-        shadow-mapSize={[shadow.mapSize, shadow.mapSize]}
-        shadow-camera-near={SHADOW_CAMERA.near}
-        shadow-camera-far={SHADOW_CAMERA.far}
-        shadow-camera-left={-SHADOW_CAMERA.halfX}
-        shadow-camera-right={SHADOW_CAMERA.halfX}
-        shadow-camera-top={SHADOW_CAMERA.halfZ}
-        shadow-camera-bottom={-SHADOW_CAMERA.halfZ}
+        shadow-mapSize={[
+          Math.min(shadow.mapSize, gl.capabilities.maxTextureSize || 4096),
+          Math.min(shadow.mapSize, gl.capabilities.maxTextureSize || 4096),
+        ]}
         shadow-bias={shadow.bias}
         shadow-normalBias={shadow.normalBias}
       />
       <directionalLight
-        position={[-14 * FIELD_SCALE, 16 * FIELD_SCALE, -8 * FIELD_SCALE]}
+        position={[14 * FIELD_SCALE, 12 * FIELD_SCALE, 8 * FIELD_SCALE]}
         intensity={lighting.fillIntensity}
         color={lighting.fillColor}
       />

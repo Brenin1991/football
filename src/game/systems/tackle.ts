@@ -23,6 +23,7 @@ import {
 } from '../constants'
 import { useGameStore } from '../store/gameStore'
 import type { FieldBounds } from '../types'
+import { getPlayerAttrMultipliers } from './playerAttributes'
 import type { PlayerRole, TeamId } from '../types'
 import { playerRegistry, type PlayerRef } from './entityRegistry'
 import { getHeldBallPoint, STEAL_COOLDOWN_MS } from './possession'
@@ -31,6 +32,8 @@ import { reportSlideFoul, canPlayerPlay } from './referee'
 import { distance2D, normalize2D } from './rules'
 import { minPlayerFootDist2D } from './playerSkeleton'
 import { clearPlayerDuelState, applySlideContactBrake, releaseBallFromSlideTackle } from './playerPhysicalDuel'
+import { clearPlayerBodyCollision } from './playerBodyCollision'
+import { paySlideStamina } from './playerStamina'
 import { getAttackSign, getDefensiveGoalZ, isInPenaltyArea } from './teamField'
 
 export type DefenderGoalThreat = 'box' | 'danger'
@@ -120,6 +123,7 @@ export function clearPlayerPhysicalState(playerId: string) {
   knockdowns.delete(playerId)
   slideCooldownUntil.delete(playerId)
   clearPlayerDuelState(playerId)
+  clearPlayerBodyCollision(playerId)
 }
 
 export function isPlayerKnockedDown(playerId: string): boolean {
@@ -256,6 +260,7 @@ export function canSlideOnPassIntercept(
 export function getAISlideChanceOnHolder(
   role: PlayerRole,
   isPrimaryMarker: boolean,
+  playerId?: string,
 ): number {
   const base =
     role === 'def'
@@ -263,13 +268,20 @@ export function getAISlideChanceOnHolder(
       : role === 'mid'
         ? SLIDE_AI_ROLL_CHANCE_MID
         : SLIDE_AI_ROLL_CHANCE_FWD
-  return isPrimaryMarker ? base : base * SLIDE_AI_SECOND_CHANCE_MUL
+  const chance = isPrimaryMarker ? base : base * SLIDE_AI_SECOND_CHANCE_MUL
+  if (!playerId) return chance
+  return Math.min(0.95, chance * getPlayerAttrMultipliers(playerId).tackling)
 }
 
-export function getAISlideChanceOnIntercept(role: PlayerRole): number {
-  if (role === 'def') return SLIDE_AI_INTERCEPT_CHANCE_DEF
-  if (role === 'mid') return SLIDE_AI_INTERCEPT_CHANCE_MID
-  return SLIDE_AI_INTERCEPT_CHANCE_FWD
+export function getAISlideChanceOnIntercept(role: PlayerRole, playerId?: string): number {
+  const base =
+    role === 'def'
+      ? SLIDE_AI_INTERCEPT_CHANCE_DEF
+      : role === 'mid'
+        ? SLIDE_AI_INTERCEPT_CHANCE_MID
+        : SLIDE_AI_INTERCEPT_CHANCE_FWD
+  if (!playerId) return base
+  return Math.min(0.95, base * getPlayerAttrMultipliers(playerId).tackling)
 }
 
 /** Carrinho após disputa de corpo prolongada com o portador. */
@@ -338,6 +350,7 @@ export function startSlide(
     resolvedHolder: false,
   })
   slideCooldownUntil.set(playerId, now + durationMs + SLIDE_COOLDOWN_MS)
+  paySlideStamina(playerId)
   return true
 }
 

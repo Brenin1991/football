@@ -19,12 +19,12 @@ export type PsxToneMapping = 'none' | 'linear' | 'reinhard' | 'cineon' | 'aces' 
 export const PSX_CLASSIC = {
   /** Efeitos retro na tela */
   post: {
-    pixelSize: 0,
-    resolutionScale: 1,
-    colorDepth: 3,
-    ditherIntensity: 0,
-    bands: 0,
-    bandIntensity: 0,
+    pixelSize: 0.9,
+    resolutionScale: 0.6,
+    colorDepth: 16,
+    ditherIntensity: 0.6,
+    bands: 16,
+    bandIntensity: 0.2,
     scanOpacity: 0,
     scanCount: 0,
     uvJitter: 0.0001,
@@ -44,7 +44,7 @@ export const PSX_CLASSIC = {
    */
   color: {
     /** Exposição HDR. 1 = neutro, 1.5–2.5 = mais claro */
-    exposure: 3,
+    exposure: 1,
     /** Brilho aditivo na tela final (-0.4 a 0.4) */
     brightness: 0.01,
     /** Contraste. 1 = neutro, 1.2 = mais punch, 0.8 = lavado */
@@ -68,15 +68,15 @@ export const PSX_CLASSIC = {
 
   /** Materiais 3D */
   material: {
-    vertexSnap: 0,
-    playerVertexSnap: 0,
-    flatShading: false,
+    vertexSnap: 32,
+    playerVertexSnap: 32,
+    flatShading: true,
     /** Texturas estilo PS1 */
     texture: {
       /** Resolução máxima (64 ou 128 px no maior lado) */
-      maxSize: 4048,
+      maxSize: 2048,
       /** Mapeamento afim — só recomendado em meshes pequenos (jogadores) */
-      affine: false,
+      affine: true,
       /** Wobble animado nas UVs (0 = desligado) */
       wobbleIntensity: 0.5,
       wobbleSpeed: 3.5,
@@ -91,7 +91,7 @@ export const PSX_CLASSIC = {
   /** Canvas */
   renderer: {
     dprMin: 0.5,
-    dprMax: 1,
+    dprMax: 0.8,
     antialias: false,
   },
 
@@ -103,7 +103,7 @@ export const PSX_CLASSIC = {
   shadow: {
     enabled: true,
     /** basic = dura/pixelada | pcf | pcfsoft = suave */
-    mapType: 'pcfsoft',
+    mapType: 'soft',
     /** Menor = sombras mais blocadas (256–512 recomendado) */
     mapSize: 4048,
     bias: -0.0002,

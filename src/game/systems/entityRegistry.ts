@@ -1,3 +1,4 @@
+import type { RapierRigidBody } from '@react-three/rapier'
 import type { PlayerAnim, PlayerRole, TeamId, Vec3 } from '../types'
 
 export interface PlayerRef {
@@ -14,6 +15,8 @@ export interface PlayerRef {
   dribbleBallOffset?: { x: number; z: number }
   /** 0..1 — perda de cola da bola (finta/corte) */
   dribbleTouchSeverity?: number
+  /** Roulette 360 — bola arrastada à frente a cada frame */
+  dribbleSpinning?: boolean
 }
 
 export const playerRegistry: Map<string, PlayerRef> = new Map()
@@ -51,35 +54,53 @@ export const ballRef: { current: Vec3; velocity: Vec3 } = {
   velocity: { x: 0, y: 0, z: 0 },
 }
 
-export const ballBodyRef: { current: unknown } = { current: null }
+export const ballBodyRef: { current: RapierRigidBody | null } = { current: null }
+
+/**
+ * Body vivo do Rapier — limpa ref morta (HMR / remount do Canvas).
+ * Sem isso: "null pointer passed to rust".
+ */
+export function getBallBody(): RapierRigidBody | null {
+  const body = ballBodyRef.current
+  if (!body) return null
+  try {
+    // Acesso barato; body freed após unmount/HMR explode no WASM
+    body.numColliders()
+    return body
+  } catch {
+    if (ballBodyRef.current === body) ballBodyRef.current = null
+    return null
+  }
+}
 
 export function setBallVelocity(vx: number, vy: number, vz: number) {
-  const body = ballBodyRef.current as {
-    setLinvel: (v: { x: number; y: number; z: number }, wake: boolean) => void
-    setBodyType: (type: number, wake: boolean) => void
-    wakeUp: () => void
-  } | null
+  const body = getBallBody()
   if (body) {
-    body.wakeUp()
-    body.setBodyType(0, true)
-    body.setLinvel({ x: vx, y: vy, z: vz }, true)
+    try {
+      body.wakeUp()
+      body.setBodyType(0, true)
+      body.setLinvel({ x: vx, y: vy, z: vz }, true)
+    } catch {
+      ballBodyRef.current = null
+    }
   }
   ballRef.velocity = { x: vx, y: vy, z: vz }
 }
 
 export function setBallPosition(pos: Vec3, resetVelocity = true) {
   ballRef.current = { ...pos }
-  ballRef.velocity = { x: 0, y: 0, z: 0 }
-  const body = ballBodyRef.current as {
-    setTranslation: (t: Vec3, wake: boolean) => void
-    setLinvel: (v: Vec3, wake: boolean) => void
-    setAngvel: (v: Vec3, wake: boolean) => void
-  } | null
-  if (body) {
+  if (resetVelocity) {
+    ballRef.velocity = { x: 0, y: 0, z: 0 }
+  }
+  const body = getBallBody()
+  if (!body) return
+  try {
     body.setTranslation(pos, true)
     if (resetVelocity) {
       body.setLinvel({ x: 0, y: 0, z: 0 }, true)
       body.setAngvel({ x: 0, y: 0, z: 0 }, true)
     }
+  } catch {
+    ballBodyRef.current = null
   }
 }

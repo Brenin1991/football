@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type AppView = 'menu' | 'match-setup' | 'editor' | 'game'
+export type AppView = 'menu' | 'match-setup' | 'team-management' | 'editor' | 'game'
 
 interface AppStore {
   view: AppView

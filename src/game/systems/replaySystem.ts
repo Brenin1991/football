@@ -5,11 +5,14 @@ import { refereeState } from './referee'
 import { getAttackingGoalZ, getAttackSign } from './teamField'
 import { isBallInGoal } from './rules'
 import { useGameStore, formatMatchTime } from '../store/gameStore'
-import { getGoalkeeperId } from '../constants'
-import { FIELD_SCALE } from './fieldData'
+import { getGoalkeeperId, PLAYER_HEIGHT } from '../constants'
 import { runFadeIn, runFadeOut } from './screenTransition'
 import { getEditionPlayerId } from '../matchRuntime'
 import { getPlayerDisplayName, parsePlayerIndex } from '../data/playerRoster'
+import {
+  CELEBRATION_DURATION_SEC,
+  getCelebrationCameraState as sampleCelebrationCam,
+} from './celebrationCamera'
 
 export type ReplayEventType = 'goal' | 'shot' | 'foul' | 'save' | 'offside'
 
@@ -40,8 +43,6 @@ export interface ReplayFrame {
   refereeZ: number
 }
 
-export type ReplayCameraMode = 'broadcast' | 'goalSide' | 'dramatic'
-
 type SeqState = 'idle' | 'celebrating' | 'transitioning' | 'replaying'
 
 const BUFFER_SECONDS = 8.4
@@ -49,12 +50,14 @@ const RECORD_HZ = 30
 const RECORD_INTERVAL = 1 / RECORD_HZ
 const MAX_FRAMES = Math.ceil(BUFFER_SECONDS * RECORD_HZ) + 4
 
-const GOAL_CELEBRATION_SEC = 2.35
 const FADE_OUT_MS = 480
 const FADE_IN_MS = 620
 
 /** Velocidade do replay (< 1 = câmera lenta) */
 const REPLAY_SLOW_MO = 0.42
+
+/** Comemoração no gramado antes do replay (estilo PES 6) */
+const GOAL_CELEBRATION_SEC = CELEBRATION_DURATION_SEC
 
 const PLAYBACK_SPEED: Record<ReplayEventType, number> = {
   goal: REPLAY_SLOW_MO,
@@ -95,12 +98,6 @@ interface PendingShot {
   shooterId: string | null
 }
 
-interface ReplaySegment {
-  mode: ReplayCameraMode
-  start: number
-  end: number
-}
-
 interface ReplayMeta {
   team?: TeamId
   goalZ?: number
@@ -128,7 +125,6 @@ class ReplaySystem {
   private playbackTime = 0
   private playbackDuration = 0
   private playbackSpeed = REPLAY_SLOW_MO
-  private segments: ReplaySegment[] = []
   private onComplete: (() => void) | null = null
 
   private focusGoalZ = 0
@@ -138,6 +134,13 @@ class ReplaySystem {
   private offsideLineZ: number | null = null
   private celebrationTeam: TeamId | null = null
   private celebrationTimer = 0
+  private celebrationScorerId: string | null = null
+  private celebrationGather = { x: 0, z: 0 }
+  private celebrationFaceX = 0
+  private celebrationFaceZ = 1
+  /** Invalida fades em andamento ao pular */
+  private skipToken = 0
+  private lastSkipAt = 0
 
   private lastReplayAt = 0
   private pendingShot: PendingShot | null = null
@@ -148,6 +151,13 @@ class ReplaySystem {
   private playerSnapMap = new Map<string, ReplayPlayerSnap>()
   private liveSnapshot: ReplayFrame | null = null
   private frozenClip: ReplayFrame[] = []
+
+  /** Direção estável da câmera (não segue rotação frame-a-frame) */
+  private camFaceX = 0
+  private camFaceZ = 1
+  private camSmoothPos = new THREE.Vector3()
+  private camSmoothLook = new THREE.Vector3()
+  private camInitialized = false
 
   isActive() {
     return this.playbackActive
@@ -163,6 +173,98 @@ class ReplaySystem {
 
   getCelebrationTeam() {
     return this.celebrationTeam
+  }
+
+  getCelebrationScorerId() {
+    return this.celebrationScorerId
+  }
+
+  getCelebrationGather() {
+    return this.celebrationGather
+  }
+
+  getCelebrationElapsed() {
+    return this.celebrationTimer
+  }
+
+  /**
+   * Pula o trecho atual: comemoração → replay; replay → fim da sequência.
+   * Também cancela replay de falta/impedimento ainda na fila.
+   */
+  skip(): boolean {
+    const now = performance.now()
+    if (now - this.lastSkipAt < 280) return false
+    this.lastSkipAt = now
+
+    if (this.pendingEventReplay && this.seqState === 'idle') {
+      const pending = this.pendingEventReplay
+      this.pendingEventReplay = null
+      pending.onComplete()
+      return true
+    }
+
+    if (this.seqState === 'idle') return false
+
+    const gen = ++this.skipToken
+
+    if (this.seqState === 'celebrating') {
+      this.seqState = 'transitioning'
+      const clip = this.frozenClip
+      const team = this.celebrationTeam ?? 'home'
+      void runFadeOut(FADE_OUT_MS)
+        .then(() => {
+          if (gen !== this.skipToken) return
+          this.armPlayback('goal', clip, {
+            team,
+            goalZ: this.focusGoalZ,
+            focusPlayerId: this.celebrationScorerId,
+          })
+          this.seqState = 'replaying'
+          return runFadeIn(FADE_IN_MS)
+        })
+        .catch(() => {
+          if (gen === this.skipToken) this.forceEndSequence()
+        })
+      return true
+    }
+
+    // Replay (ou fade no meio): encerra a sequência
+    this.seqState = 'transitioning'
+    void runFadeOut(FADE_OUT_MS)
+      .then(() => {
+        if (gen !== this.skipToken) return
+        this.finishPlayback()
+        return runFadeIn(FADE_IN_MS)
+      })
+      .then(() => {
+        if (gen !== this.skipToken) return
+        this.endSequence()
+      })
+      .catch(() => {
+        if (gen === this.skipToken) this.forceEndSequence()
+      })
+    return true
+  }
+
+  /** Câmeras de cinegrafista durante a comemoração */
+  getCelebrationCameraState(
+    outPos: THREE.Vector3,
+    outLook: THREE.Vector3,
+  ): { fov: number; hardCut: boolean } {
+    return sampleCelebrationCam(
+      {
+        elapsed: this.celebrationTimer,
+        scorerId: this.celebrationScorerId,
+        team: this.celebrationTeam,
+        gatherX: this.celebrationGather.x,
+        gatherZ: this.celebrationGather.z,
+        faceX: this.celebrationFaceX,
+        faceZ: this.celebrationFaceZ,
+        bounds: useGameStore.getState().fieldBounds,
+      },
+      outPos,
+      outLook,
+    )
   }
 
   getPlaybackSpeed() {
@@ -209,12 +311,15 @@ class ReplaySystem {
   private nearestPlayerToBall(frames: ReplayFrame[], team: TeamId): string | null {
     const last = frames[frames.length - 1]
     if (!last) return null
+    return this.nearestOnFrame(last, team)
+  }
 
-    const { x, z } = last.ball
+  private nearestOnFrame(frame: ReplayFrame, team: TeamId): string | null {
+    const { x, z } = frame.ball
     let bestId: string | null = null
     let bestDist = Infinity
 
-    for (const p of last.players) {
+    for (const p of frame.players) {
       const ref = playerRegistry.get(p.id)
       if (!ref || ref.team !== team) continue
       const dist = (p.x - x) ** 2 + (p.z - z) ** 2
@@ -225,6 +330,36 @@ class ReplaySystem {
     }
 
     return bestId
+  }
+
+  /**
+   * Autor do gol: quem estava perto da bola ANTES dela entrar na rede.
+   * Último frame (bola no fundo) costuma pegar o “último selecionado” correndo atrás.
+   */
+  private findLikelyScorer(frames: ReplayFrame[], team: TeamId): string | null {
+    const bounds = useGameStore.getState().fieldBounds
+    if (!bounds || frames.length === 0) return this.nearestPlayerToBall(frames, team)
+
+    const goalZ = getAttackingGoalZ(team, bounds)
+    const sign = getAttackSign(team, bounds)
+
+    for (let i = frames.length - 1; i >= 0; i--) {
+      const frame = frames[i]!
+      const toGoal = (goalZ - frame.ball.z) * sign
+      // Ainda fora / na linha — quem chutou
+      if (toGoal < 1.1) continue
+      const near = this.nearestOnFrame(frame, team)
+      if (near) return near
+    }
+
+    // Meio do clip (momento do chute) em vez do fim
+    const mid = frames[Math.floor(frames.length * 0.4)]
+    if (mid) {
+      const near = this.nearestOnFrame(mid, team)
+      if (near) return near
+    }
+
+    return this.nearestPlayerToBall(frames, team)
   }
 
   getEventType() {
@@ -364,23 +499,6 @@ class ReplaySystem {
     return performance.now() - this.lastReplayAt >= MIN_REPLAY_GAP_MS
   }
 
-  private buildSegments(type: ReplayEventType): ReplaySegment[] {
-    if (type === 'goal') {
-      return [
-        { mode: 'broadcast', start: 0, end: 0.52 },
-        { mode: 'goalSide', start: 0.4, end: 0.78 },
-        { mode: 'dramatic', start: 0.68, end: 1 },
-      ]
-    }
-    if (type === 'foul' || type === 'offside') {
-      return [
-        { mode: 'broadcast', start: 0, end: 0.62 },
-        { mode: 'dramatic', start: 0.52, end: 1 },
-      ]
-    }
-    return [{ mode: 'goalSide', start: 0, end: 1 }]
-  }
-
   private armPlayback(type: ReplayEventType, frames: ReplayFrame[], meta: ReplayMeta) {
     this.playbackActive = true
     this.eventType = type
@@ -388,7 +506,6 @@ class ReplaySystem {
     this.playbackDuration = frames.length / RECORD_HZ
     this.playbackTime = 0
     this.playbackSpeed = PLAYBACK_SPEED[type]
-    this.segments = this.buildSegments(type)
     this.focusTeam = meta.team ?? 'home'
     this.focusGoalZ = meta.goalZ ?? 0
     this.focusPlayerId = this.resolveFocusPlayerId(type, frames, meta)
@@ -397,6 +514,8 @@ class ReplaySystem {
     this.lastReplayAt = performance.now()
     this.pendingShot = null
     this.liveSnapshot = this.captureFrame()
+    this.initReplayCameraBasis(frames)
+    this.camInitialized = false
 
     useGameStore.setState({
       phase: 'replay',
@@ -410,11 +529,64 @@ class ReplaySystem {
     this.applyFrame(frame)
   }
 
+  /** Ângulo fixo do replay — baseado no ataque / jogador, não muda a cada frame */
+  private initReplayCameraBasis(frames: ReplayFrame[]) {
+    const bounds = useGameStore.getState().fieldBounds
+    const sign = bounds ? getAttackSign(this.focusTeam, bounds) : 1
+    let fx = 0
+    let fz = sign
+
+    const mid = frames[Math.floor(frames.length * 0.55)] ?? frames[frames.length - 1]
+    if (mid) {
+      const focus = this.focusPlayerId
+        ? mid.players.find((p) => p.id === this.focusPlayerId)
+        : null
+      if (focus) {
+        fx = Math.sin(focus.rotation)
+        fz = Math.cos(focus.rotation)
+      } else {
+        const vx = mid.ballVel.x
+        const vz = mid.ballVel.z
+        const len = Math.hypot(vx, vz)
+        if (len > 0.4) {
+          fx = vx / len
+          fz = vz / len
+        }
+      }
+    }
+
+    const len = Math.hypot(fx, fz) || 1
+    this.camFaceX = fx / len
+    this.camFaceZ = fz / len
+  }
+
   private startCelebration(scoringTeam: TeamId) {
     this.seqState = 'celebrating'
     this.celebrationTeam = scoringTeam
     this.celebrationTimer = 0
     this.frozenClip = this.sliceLookback(LOOKBACK.goal)
+
+    const pending = this.pendingShot
+    let scorerId: string | null = null
+    if (
+      pending &&
+      !pending.resolved &&
+      pending.team === scoringTeam &&
+      pending.shooterId
+    ) {
+      scorerId = pending.shooterId
+      pending.resolved = true
+    }
+    if (!scorerId) {
+      scorerId = this.findLikelyScorer(this.frozenClip, scoringTeam)
+    }
+    this.celebrationScorerId = scorerId
+
+    this.celebrationGather = this.resolveCelebrationGather(
+      scoringTeam,
+      this.celebrationScorerId,
+    )
+    this.initCelebrationCamFace()
 
     useGameStore.setState({
       phase: 'goal-celebration',
@@ -423,6 +595,69 @@ class ReplaySystem {
       passIntent: null,
       message: `GOL do ${scoringTeam === 'home' ? 'Time Casa' : 'Time Visitante'}!`,
     })
+  }
+
+  /** Direção fixa da comemoração: do autor rumo ao canto (câmera à frente) */
+  private initCelebrationCamFace() {
+    const scorer = this.celebrationScorerId
+      ? playerRegistry.get(this.celebrationScorerId)
+      : null
+    const ox = scorer?.position.x ?? ballRef.current.x
+    const oz = scorer?.position.z ?? ballRef.current.z
+    let fx = this.celebrationGather.x - ox
+    let fz = this.celebrationGather.z - oz
+    const len = Math.hypot(fx, fz)
+    if (len < 0.35) {
+      const bounds = useGameStore.getState().fieldBounds
+      const sign = bounds
+        ? getAttackSign(this.celebrationTeam ?? 'home', bounds)
+        : 1
+      fx = 0
+      fz = sign
+    }
+    const n = Math.hypot(fx, fz) || 1
+    this.celebrationFaceX = fx / n
+    this.celebrationFaceZ = fz / n
+  }
+
+  /** Canto mais próximo da bola — corrida clássica PES */
+  private resolveCelebrationGather(
+    team: TeamId,
+    scorerId: string | null,
+  ): { x: number; z: number } {
+    const bounds = useGameStore.getState().fieldBounds
+    const ball = ballRef.current
+    const scorer = scorerId ? playerRegistry.get(scorerId) : null
+    const ox = scorer?.position.x ?? ball.x
+    const oz = scorer?.position.z ?? ball.z
+
+    if (bounds?.corners?.length) {
+      let best = bounds.corners[0]
+      let bestD = Infinity
+      for (const c of bounds.corners) {
+        // Preferir canto do lado do gol marcado (próximo ao goalZ)
+        const goalBias = Math.abs(c.z - this.focusGoalZ) * 0.35
+        const d = (c.x - ox) ** 2 + (c.z - oz) ** 2 + goalBias
+        if (d < bestD) {
+          bestD = d
+          best = c
+        }
+      }
+      // Um pouco pra dentro do campo (não colado na bandeirinha)
+      const inwardX = bounds.center.x - best.x
+      const inwardZ = bounds.center.z - best.z
+      const ilen = Math.hypot(inwardX, inwardZ) || 1
+      return {
+        x: best.x + (inwardX / ilen) * 2.4,
+        z: best.z + (inwardZ / ilen) * 2.4,
+      }
+    }
+
+    const sign = bounds ? getAttackSign(team, bounds) : 1
+    return {
+      x: ox + (ox >= 0 ? 4.5 : -4.5),
+      z: oz + sign * 3.2,
+    }
   }
 
   private runReplayWithFades(
@@ -481,6 +716,7 @@ class ReplaySystem {
     this.playerSnapMap.clear()
     this.offsideLineZ = null
     this.focusPlayerId = null
+    this.camInitialized = false
 
     if (this.eventType !== 'goal' && this.liveSnapshot) {
       this.applyFrame(this.liveSnapshot)
@@ -492,16 +728,25 @@ class ReplaySystem {
     this.seqState = 'idle'
     this.celebrationTeam = null
     this.celebrationTimer = 0
+    this.celebrationScorerId = null
     this.frozenClip = []
     const done = this.onComplete
     this.onComplete = null
     done?.()
   }
 
+  /** Encerra chamando o callback (gol / bola em jogo) mesmo após erro de fade */
+  private forceEndSequence() {
+    this.finishPlayback()
+    this.pendingEventReplay = null
+    this.endSequence()
+  }
+
   private abortSequence() {
     this.finishPlayback()
     this.seqState = 'idle'
     this.celebrationTeam = null
+    this.celebrationScorerId = null
     this.pendingEventReplay = null
     this.onComplete = null
   }
@@ -586,18 +831,20 @@ class ReplaySystem {
     }
   }
 
-  notifyShot(team: TeamId) {
+  notifyShot(team: TeamId, shooterId?: string | null) {
     const bounds = useGameStore.getState().fieldBounds
     if (!bounds) return
     const poss = useGameStore.getState().ballPossession
-    const shooterId = poss?.team === team ? poss.playerId : null
+    const id =
+      shooterId ??
+      (poss?.team === team ? poss.playerId : null)
     this.pendingShot = {
       team,
       at: performance.now(),
       goalZ: getAttackingGoalZ(team, bounds),
       interesting: false,
       resolved: false,
-      shooterId,
+      shooterId: id,
     }
   }
 
@@ -667,19 +914,28 @@ class ReplaySystem {
     if (this.seqState === 'celebrating') {
       this.celebrationTimer += delta
       if (this.celebrationTimer >= GOAL_CELEBRATION_SEC) {
-        this.seqState = 'transitioning'
-        const clip = this.frozenClip
-        const team = this.celebrationTeam ?? 'home'
-        void runFadeOut(FADE_OUT_MS)
-          .then(() => {
-            this.armPlayback('goal', clip, {
-              team,
-              goalZ: this.focusGoalZ,
+        // Mesmo caminho do skip — evita duplicar lógica
+        this.celebrationTimer = GOAL_CELEBRATION_SEC
+        if (this.seqState === 'celebrating') {
+          const gen = ++this.skipToken
+          this.seqState = 'transitioning'
+          const clip = this.frozenClip
+          const team = this.celebrationTeam ?? 'home'
+          void runFadeOut(FADE_OUT_MS)
+            .then(() => {
+              if (gen !== this.skipToken) return
+              this.armPlayback('goal', clip, {
+                team,
+                goalZ: this.focusGoalZ,
+                focusPlayerId: this.celebrationScorerId,
+              })
+              this.seqState = 'replaying'
+              return runFadeIn(FADE_IN_MS)
             })
-            this.seqState = 'replaying'
-            return runFadeIn(FADE_IN_MS)
-          })
-          .catch(() => this.abortSequence())
+            .catch(() => {
+              if (gen === this.skipToken) this.forceEndSequence()
+            })
+        }
       }
       return
     }
@@ -687,14 +943,21 @@ class ReplaySystem {
     if (this.seqState === 'replaying' && this.playbackActive) {
       const stillPlaying = this.tick(delta)
       if (!stillPlaying) {
+        const gen = ++this.skipToken
         this.seqState = 'transitioning'
         void runFadeOut(FADE_OUT_MS)
           .then(() => {
+            if (gen !== this.skipToken) return
             this.finishPlayback()
             return runFadeIn(FADE_IN_MS)
           })
-          .then(() => this.endSequence())
-          .catch(() => this.abortSequence())
+          .then(() => {
+            if (gen !== this.skipToken) return
+            this.endSequence()
+          })
+          .catch(() => {
+            if (gen === this.skipToken) this.forceEndSequence()
+          })
       }
     }
   }
@@ -802,13 +1065,6 @@ class ReplaySystem {
     return this.lerpFrame(frames[i0], frames[i1], t)
   }
 
-  private activeSegment(progress: number): ReplaySegment {
-    for (const seg of this.segments) {
-      if (progress >= seg.start && progress <= seg.end) return seg
-    }
-    return this.segments[this.segments.length - 1]
-  }
-
   private tick(delta: number): boolean {
     if (!this.playbackActive) return false
 
@@ -840,63 +1096,53 @@ class ReplaySystem {
     const frame = this.interpFrame ?? this.playbackFrames[0]
     if (!frame) return
 
-    const progress =
-      this.playbackDuration > 0
-        ? Math.min(1, this.playbackTime / this.playbackDuration)
-        : 0
-    const seg = this.activeSegment(progress)
     const ball = frame.ball
-    const bounds = useGameStore.getState().fieldBounds
-    const centerX = bounds?.center.x ?? 0
-    const sign = bounds ? getAttackSign(this.focusTeam, bounds) : 1
     const foul = this.foulSpot
 
-    switch (seg.mode) {
-      case 'goalSide': {
-        const behind = this.focusGoalZ - sign * 5.5 * FIELD_SCALE
-        outPos.set(
-          centerX + sign * 2.2 * FIELD_SCALE,
-          2.1 * Math.sqrt(FIELD_SCALE),
-          behind,
-        )
-        outLook.set(ball.x, 0.55, ball.z)
-        break
-      }
-      case 'dramatic': {
-        const fx = ball.x - centerX
-        const fz = (ball.z - this.focusGoalZ) * sign
-        const len = Math.hypot(fx, fz) || 1
-        outPos.set(
-          ball.x - (fx / len) * 4.2,
-          1.35 * Math.sqrt(FIELD_SCALE),
-          ball.z - (fz / len) * 4.2 * sign,
-        )
-        outLook.set(
-          foul ? foul.x : ball.x + velBias(frame.ballVel).x * 2,
-          0.45,
-          foul ? foul.z : ball.z + velBias(frame.ballVel).z * 2,
-        )
-        break
-      }
-      default: {
-        const sideX = centerX - 11.5 * FIELD_SCALE
-        outPos.set(sideX, 4.2 * Math.sqrt(FIELD_SCALE), ball.z)
-        outLook.set(
-          foul ? foul.x : ball.x,
-          0.5,
-          foul ? foul.z : ball.z,
-        )
-        break
-      }
+    // Sempre olha a bola no lance (falta: spot do lance)
+    const lookX = foul?.x ?? ball.x
+    const lookZ = foul?.z ?? ball.z
+    const lookY = foul
+      ? PLAYER_HEIGHT * 0.78
+      : Math.max(0.38, Math.min(3.2, ball.y))
+
+    // Ângulo travado no início do replay — não segue rotação a cada frame
+    const faceX = this.camFaceX
+    const faceZ = this.camFaceZ
+    const sideX = -faceZ
+    const sideZ = faceX
+
+    // ¾ de frente, baixo, distância fixa (sem sway / orbit)
+    const dist = 5.1
+    const side = 1.55
+    const height = 1.45
+    const targetPosX = lookX + faceX * dist + sideX * side
+    const targetPosY = height
+    const targetPosZ = lookZ + faceZ * dist + sideZ * side
+
+    if (!this.camInitialized) {
+      this.camSmoothLook.set(lookX, lookY, lookZ)
+      this.camSmoothPos.set(targetPosX, targetPosY, targetPosZ)
+      this.camInitialized = true
+    } else {
+      // Look na bola bem responsivo; posição um pouco mais suave
+      const lookA = 1 - Math.exp(-6.5 * delta)
+      const posA = 1 - Math.exp(-3.2 * delta)
+      this.camSmoothLook.x = THREE.MathUtils.lerp(this.camSmoothLook.x, lookX, lookA)
+      this.camSmoothLook.y = THREE.MathUtils.lerp(this.camSmoothLook.y, lookY, lookA)
+      this.camSmoothLook.z = THREE.MathUtils.lerp(this.camSmoothLook.z, lookZ, lookA)
+      this.camSmoothPos.x = THREE.MathUtils.lerp(this.camSmoothPos.x, targetPosX, posA)
+      this.camSmoothPos.y = THREE.MathUtils.lerp(this.camSmoothPos.y, targetPosY, posA)
+      this.camSmoothPos.z = THREE.MathUtils.lerp(this.camSmoothPos.z, targetPosZ, posA)
     }
 
-    return 1 - Math.exp(-5.5 * delta)
-  }
-}
+    outPos.copy(this.camSmoothPos)
+    outPos.y = THREE.MathUtils.clamp(outPos.y, 1.15, 1.85)
+    outLook.copy(this.camSmoothLook)
 
-function velBias(v: Vec3) {
-  const len = Math.hypot(v.x, v.z) || 1
-  return { x: v.x / len, z: v.z / len }
+    // GameCamera ainda aplica um pouco de lerp — devolve alpha baixo
+    return 1 - Math.exp(-4.0 * delta)
+  }
 }
 
 export const replaySystem = new ReplaySystem()

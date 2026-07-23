@@ -1,5 +1,4 @@
 import {
-  FORMATION_442,
   HALF_TIME_ENTER_HOLD,
   HALF_TIME_EXIT_HOLD,
   FULL_TIME_EXIT_HOLD,
@@ -9,9 +8,15 @@ import {
 import type { FieldBounds, TeamId } from '../types'
 import { playerRegistry } from './entityRegistry'
 import { FIELD_SCALE } from './fieldData'
-import { getIntroSequenceDuration } from './introCamera'
+import { getIntroAnthemShotEnd, getIntroSequenceDuration } from './introCamera'
 import { refereeState } from './referee'
 import { getFormationSpawn } from './teamField'
+import { getTeamFormationSlots } from './teamTactics'
+import {
+  ANTHEM_FORMATION_MARCH,
+  ANTHEM_PLAYER_SPACING,
+  getAnthemLineLayout,
+} from './anthemLine'
 
 const TUNNEL_OFFSET = 4.2 * FIELD_SCALE
 const LINE_SEPARATION = 1.7 * FIELD_SCALE
@@ -21,11 +26,9 @@ const INTRO_WALK_SPEED = 1.12 * FIELD_SCALE
 const STAGGER_SEC = 0.26
 const AWAY_ROW_DELAY = 1.1
 const REFEREE_DELAY = 2.8
-const POST_ARRIVAL_HOLD = 8
-const ANTHEM_HOLD_SEC = 8.5
-const ANTHEM_LINE_X_OFFSET = 1.6 * FIELD_SCALE
-const ANTHEM_PLAYER_SPACING = 0.52 * FIELD_SCALE
-const ANTHEM_FORMATION_MARCH = 3.4 * FIELD_SCALE
+const POST_ARRIVAL_HOLD = 6
+/** Hold mínimo na linha se chegarem depois da câmera (fallback) */
+const ANTHEM_HOLD_MIN_SEC = 4
 
 export type ParadeMode = 'intro-enter' | 'half-enter' | 'exit'
 
@@ -113,7 +116,9 @@ class TeamEntranceSystem {
 
     for (const team of ['home', 'away'] as const) {
       const baseDelay = team === 'away' ? AWAY_ROW_DELAY : 0
-      FORMATION_442.slice(0, PLAYERS_PER_TEAM).forEach((slot, i) => {
+      getTeamFormationSlots(team)
+        .slice(0, PLAYERS_PER_TEAM)
+        .forEach((slot, i) => {
         const id = playerId(team, i)
         const formation = getFormationSpawn(team, slot, bounds)
         const delay = baseDelay + i * STAGGER_SEC
@@ -135,7 +140,11 @@ class TeamEntranceSystem {
     }
 
     if (intro) {
-      this.anthemReleaseAt = maxAnthemArrival + ANTHEM_HOLD_SEC
+      // Só liberam a linha depois que a câmera do hino terminar de passar nos rostos
+      this.anthemReleaseAt = Math.max(
+        maxAnthemArrival + ANTHEM_HOLD_MIN_SEC,
+        getIntroAnthemShotEnd() + 0.35,
+      )
       this.addRefereeIntro(bounds)
     } else {
       this.addRefereeHalfEnter(bounds)
@@ -159,7 +168,9 @@ class TeamEntranceSystem {
 
     for (const team of ['home', 'away'] as const) {
       const baseDelay = team === 'away' ? AWAY_ROW_DELAY * 0.5 : 0
-      FORMATION_442.slice(0, PLAYERS_PER_TEAM).forEach((slot, i) => {
+      getTeamFormationSlots(team)
+        .slice(0, PLAYERS_PER_TEAM)
+        .forEach((slot, i) => {
         const id = playerId(team, i)
         const live = playerRegistry.get(id)
         const start = live
@@ -258,9 +269,8 @@ class TeamEntranceSystem {
     }
   }
 
-  /** Lado do túnel (minX): uma única linha reta ao longo de Z */
   private anthemLineX(bounds: FieldBounds) {
-    return bounds.center.x - ANTHEM_LINE_X_OFFSET
+    return getAnthemLineLayout(bounds).lineX
   }
 
   private anthemLineIndex(team: TeamId, index: number) {
@@ -377,7 +387,11 @@ class TeamEntranceSystem {
 
     if (this.anthemReleaseAt !== null && actor.distToAnthem > 0) {
       const arrival = REFEREE_DELAY + actor.distToAnthem / this.walkSpeed
-      this.anthemReleaseAt = Math.max(this.anthemReleaseAt, arrival + ANTHEM_HOLD_SEC)
+      this.anthemReleaseAt = Math.max(
+        this.anthemReleaseAt,
+        arrival + ANTHEM_HOLD_MIN_SEC,
+        getIntroAnthemShotEnd() + 0.35,
+      )
     }
   }
 

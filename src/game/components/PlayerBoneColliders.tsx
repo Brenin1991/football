@@ -31,7 +31,8 @@ import {
 } from '../systems/playerSkeleton'
 
 const _pos = new THREE.Vector3()
-const OFF_FIELD = { x: 0, y: -80, z: 0 }
+/** Longe do campo — NÃO usar (0,y,0): o spawn da bola é a origem */
+const OFF_FIELD = { x: 200, y: -80, z: 200 }
 
 type BoneEntry = {
   bone: THREE.Object3D
@@ -76,7 +77,8 @@ type PlayerBoneCollidersProps = {
 export function PlayerBoneColliders({ playerId, modelRootRef }: PlayerBoneCollidersProps) {
   const [boneDefs, setBoneDefs] = useState<ReturnType<typeof getPlayerContactBones>>([])
   const entriesRef = useRef<BoneEntry[]>([])
-  const parkedRef = useRef(true)
+  // false: no 1º frame inativo força park (bodies nascem em 0,0,0 = ball_spawn)
+  const parkedRef = useRef(false)
 
   useEffect(() => {
     const root = modelRootRef.current
@@ -136,18 +138,26 @@ export function PlayerBoneColliders({ playerId, modelRootRef }: PlayerBoneCollid
                 entries[index].bone = bone
                 entries[index].part = part
               }
+              // Acaba de montar — ainda não está no osso; joga pra fora do campo
+              try {
+                body.setTranslation(OFF_FIELD, true)
+              } catch {
+                /* body ainda não pronto */
+              }
+              parkedRef.current = false
             }}
             type="kinematicPosition"
             colliders={false}
             canSleep={false}
+            position={[OFF_FIELD.x, OFF_FIELD.y, OFF_FIELD.z]}
             userData={{ isPlayerBoneCollider: true, playerId, part }}
           >
             <BallCollider
               args={[radius]}
               friction={PLAYER_BONE_FRICTION}
               restitution={PLAYER_BONE_RESTITUTION}
-              restitutionCombineRule={CoefficientCombineRule.Max}
-              frictionCombineRule={CoefficientCombineRule.Max}
+              restitutionCombineRule={CoefficientCombineRule.Min}
+              frictionCombineRule={CoefficientCombineRule.Average}
               onCollisionEnter={(e) => {
                 const other = e.other.rigidBodyObject
                 if (!other?.userData?.isBall) return

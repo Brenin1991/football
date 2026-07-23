@@ -2,10 +2,11 @@ import { getGoalkeeperId, SHOT_SPEED, WORLD_SCALE } from '../constants'
 import { useGameStore } from '../store/gameStore'
 import type { FieldBounds, FormationSlot, MatchPhase, TeamId, Vec3 } from '../types'
 import { playerRegistry } from './entityRegistry'
-import { applyBallVelocity, ensureBallDynamic, markSetPieceLaunch } from './ballPhysics'
+import { applyBallVelocity, ensureBallDynamic, markSetPieceLaunch, applyFreeKickCurl, clearBallCurl } from './ballPhysics'
 import { resetTeamMarkers } from './dynamicFormation'
 import { distance2D, normalize2D } from './rules'
 import { setPieceSpeedMul, shotLoftFromPower, shotSpeedFromPower } from './shotPower'
+import { pickShotStrikeAnim } from './playerClipRegistry'
 import { sfx } from './sfx'
 import { clampZForSetPiece, clampForwardFromGoalMouth } from './offside'
 import {
@@ -17,6 +18,7 @@ import {
   getFormationSpawn,
   PENALTY_BOX_DEPTH,
 } from './teamField'
+import { getWallSlotIndices } from './teamTactics'
 
 const GK_FORMATION_SLOT: FormationSlot = { x: 0, z: 0.93, role: 'gk' }
 
@@ -200,11 +202,10 @@ const SET_PIECE_PASS = {
 } as const
 
 const SET_PIECE_CROSS = {
-  corner: { speed: 7.8 * WORLD_SCALE, vy: 9.6 * WORLD_SCALE },
-  'free-kick': { speed: 7.6 * WORLD_SCALE, vy: 8.4 * WORLD_SCALE },
+  corner: { speed: 8.4 * WORLD_SCALE, vy: 9.8 * WORLD_SCALE },
+  'free-kick': { speed: 8.2 * WORLD_SCALE, vy: 8.6 * WORLD_SCALE },
 } as const
 
-const DEF_SLOT_X = [-0.78, -0.28, 0.28, 0.78] as const
 const WALL_LATERAL = [-0.58, -0.2, 0.2, 0.58] as const
 
 function zFromBallTowardGoal(ballZ: number, fz: number, dist: number): number {
@@ -218,6 +219,51 @@ function zFromBallTowardCenter(ballZ: number, centerZ: number, dist: number): nu
 
 function distToAttackingGoal(ballSpot: Vec3, kickingTeam: TeamId, bounds: FieldBounds): number {
   return Math.abs(getAttackingGoalZ(kickingTeam, bounds) - ballSpot.z)
+}
+
+/** Falta ofensiva (pós-meio-campo) — câmera/mira estilo FIFA/PES */
+export function isAttackingFreeKickPresentation(
+  phase: MatchPhase | string,
+  team: TeamId | null,
+  position: Vec3 | null,
+  bounds: FieldBounds | null,
+): boolean {
+  if (phase !== 'free-kick' || !team || !position || !bounds) return false
+  const pitchLen = bounds.maxZ - bounds.minZ
+  // Meio-campo ≈ metade do comprimento; margem leve para “após o meio”
+  return distToAttackingGoal(position, team, bounds) < pitchLen * 0.52
+}
+
+/** Altura da mira (-1 rasteiro … +1 elevação) → impulso vertical do chute */
+export function freeKickVyFromAimHeight(
+  aimHeight: number,
+  power: number,
+  goalDist?: number,
+): number {
+  const h = Math.max(-1, Math.min(1, aimHeight))
+  const t = Math.max(0, Math.min(1, power))
+  // 0 = rasteiro, 1 = por cima da barreira (escala alinhada a SET_PIECE_CROSS)
+  const loft01 = (h + 1) * 0.5
+  // h=-1 → ~2.1 · h=0 → ~6.5 · h=+1 → ~11.0  (× WORLD_SCALE)
+  const baseVy = (2.1 + loft01 * 8.9) * WORLD_SCALE
+  const powerMul = 0.78 + t * 0.42
+  const distMul =
+    goalDist != null && goalDist > 9
+      ? 1 + Math.min(0.4, (goalDist - 9) * 0.028)
+      : 1
+  return baseVy * powerMul * distMul
+}
+
+/** Velocidade horizontal — mira alta sacrifica um pouco de força pra fazer o arco */
+export function freeKickSpeedFromAimHeight(
+  power: number,
+  aimHeight: number,
+  goalDist?: number,
+): number {
+  const h = Math.max(-1, Math.min(1, aimHeight))
+  const loft01 = (h + 1) * 0.5
+  // Alta: −28% horiz; rasteira: cheia
+  return shotSpeedFromPower(power, goalDist) * (1.04 - loft01 * 0.28)
 }
 
 function getWallSpot(
@@ -235,10 +281,13 @@ function getWallSpot(
   }
 }
 
-function getDefWallIndex(slot: FormationSlot): number {
-  if (slot.role !== 'def') return -1
-  const idx = DEF_SLOT_X.findIndex((x) => Math.abs(x - slot.x) < 0.12)
-  return idx
+function getDefWallIndex(team: TeamId, playerId: string, _slot: FormationSlot): number {
+  const slotIndex = Number.parseInt(playerId.split('-')[1] ?? '', 10)
+  if (!Number.isFinite(slotIndex)) return -1
+  const wall = getWallSlotIndices(team)
+  const wallIdx = wall.indexOf(slotIndex)
+  if (wallIdx >= 0) return Math.min(wallIdx, WALL_LATERAL.length - 1)
+  return -1
 }
 
 function getFreeKickSetupTarget(
@@ -269,6 +318,7 @@ function getFreeKickSetupTarget(
     bounds,
     kickingTeam,
     ballSpot,
+    playerId,
   )
   freeKickFrozenSpots.set(playerId, spot)
   return spot
@@ -281,13 +331,14 @@ function computeFreeKickNonKickerSpot(
   bounds: FieldBounds,
   kickingTeam: TeamId,
   ballSpot: Vec3,
+  playerId: string,
 ): { x: number; z: number } {
   const { fx: wfx, fz: wfz } = getFreeKickWallDir(ballSpot, kickingTeam, bounds)
   const nearGoal = distToAttackingGoal(ballSpot, kickingTeam, bounds) < DANGEROUS_FK_GOAL_DIST
   const wallBackZ = zFromBallTowardGoal(ballSpot.z, wfz, WALL_DISTANCE + 1.3)
 
   if (team !== kickingTeam) {
-    const wallIdx = getDefWallIndex(slot)
+    const wallIdx = getDefWallIndex(team, playerId, slot)
 
     if (slot.role === 'def' && wallIdx >= 0) {
       if (nearGoal) {
@@ -744,6 +795,10 @@ export function beginSetPiece(
     setPieceAimAngle: aim,
     // Congela na linha bola→gol; rotateSetPieceAim nunca altera isto
     setPieceWallAimAngle: wallAim,
+    // Contato levemente ABAIXO do centro — bica leve (PES)
+    setPieceContactX: 0,
+    setPieceContactY: -0.15,
+    setPieceAimHeight: 0.15,
   })
   store.clearPossession()
 }
@@ -820,21 +875,39 @@ function finishSetPieceKickLaunch(
   const dirZ = Math.cos(setPieceAimAngle)
   const speedMul = setPieceSpeedMul(power)
   const kickerId = setPieceKickerId
+  const bounds = store.fieldBounds
+  const goalDist =
+    bounds && setPieceTeam
+      ? distToAttackingGoal(setPiecePosition, setPieceTeam, bounds)
+      : undefined
+  const attackingFk =
+    phase === 'free-kick' &&
+    delivery === 'shot' &&
+    isAttackingFreeKickPresentation(phase, setPieceTeam, setPiecePosition, bounds)
 
   let speed: number
   let vy: number
   let passType: 'pass' | 'cross' | undefined
-  let clip: 'player_shoot' | 'player_pass' | 'player_kick' = 'player_shoot'
+  let clip:
+    | 'player_shoot'
+    | 'player_pass'
+    | 'player_pass_short'
+    | 'player_pass_long'
+    | 'player_kick'
+    | 'player_kick_high'
+    | 'player_kick_medium'
+    | 'player_kick_low' = 'player_kick_medium'
 
   if (phase === 'penalty') {
-    const bounds = useGameStore.getState().fieldBounds
-    const goalDist =
-      bounds && setPieceTeam
-        ? distToAttackingGoal(setPiecePosition, setPieceTeam, bounds)
-        : undefined
     speed = shotSpeedFromPower(power, goalDist) * 1.02
     vy = shotLoftFromPower(power, goalDist) * SHOT_SPEED * 0.38
-    clip = 'player_shoot'
+    clip = pickShotStrikeAnim(power)
+  } else if (phase === 'free-kick' && delivery === 'shot') {
+    // Contato PES: baixo na bola = eleva (bica); cima = rasteiro
+    const height = -store.setPieceContactY
+    speed = freeKickSpeedFromAimHeight(power, height, goalDist)
+    vy = freeKickVyFromAimHeight(height, power, goalDist)
+    clip = attackingFk ? pickShotStrikeAnim(power) : 'player_kick'
   } else if (
     (delivery === 'pass' || delivery === 'cross') &&
     (phase === 'corner' || phase === 'free-kick')
@@ -843,13 +916,17 @@ function finishSetPieceKickLaunch(
     speed = cfg.speed * speedMul
     vy = cfg.vy * (0.55 + power * 0.55)
     passType = delivery === 'pass' ? 'pass' : 'cross'
-    clip = 'player_pass'
+    clip = delivery === 'cross' ? 'player_pass_long' : 'player_pass_short'
   } else {
     const kick = getSetPieceKickFromAim(phase, setPieceAimAngle)
     speed = kick.speed * speedMul
     vy = kick.vy * (0.55 + power * 0.55)
     clip =
-      phase === 'free-kick' ? 'player_kick' : phase === 'corner' ? 'player_shoot' : 'player_shoot'
+      phase === 'free-kick'
+        ? 'player_kick'
+        : phase === 'corner'
+          ? pickShotStrikeAnim(power)
+          : pickShotStrikeAnim(power)
   }
 
   const useStrikeAnim =
@@ -861,7 +938,18 @@ function finishSetPieceKickLaunch(
   store.setBallFrozen(false)
   store.setPhase('playing')
 
+  clearBallCurl()
   launchSetPieceBall(dirX, dirZ, speed, vy)
+  if (phase === 'free-kick' && delivery === 'shot') {
+    applyFreeKickCurl(
+      dirX,
+      dirZ,
+      // X espelhado igual à bolinha (esquerda visual = bate esquerda)
+      -store.setPieceContactX,
+      -store.setPieceContactY,
+      power,
+    )
+  }
 
   store.blockPasserClaim(kickerId, SET_PIECE_KICKER_CLAIM_BLOCK_MS)
   store.setLastTouch(setPieceTeam)
@@ -902,6 +990,9 @@ function finishSetPieceKickLaunch(
     setPieceTeam: null,
     setPiecePosition: null,
     setPieceAimAngle: 0,
+    setPieceAimHeight: 0.15,
+    setPieceContactX: 0,
+    setPieceContactY: -0.15,
     setPieceWallAimAngle: 0,
     setPieceKickPending: false,
     setPieceThrowAnim: null,

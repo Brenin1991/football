@@ -6,13 +6,10 @@ import {
   LOOSE_BALL_MAX_SPEED,
   PASS_RECEIVE_MAX_SPEED,
   POSSESSION_HEIGHT,
-  STEAL_COOLDOWN_MS,
-  STEAL_DISTANCE,
   WORLD_SCALE,
 } from '../constants'
 import { ballRef, ballBodyRef, playerRegistry, type PlayerRef } from './entityRegistry'
-import { ensureBallDynamic, syncBallFromBody } from './ballPhysics'
-import { isBallShielding } from './ballShield'
+import { ensureBallDynamic, softenBallBodyHit, syncBallFromBody } from './ballPhysics'
 import { minPlayerFootDist2D, type PlayerBonePart } from './playerSkeleton'
 import { distance2D, normalize2D } from './rules'
 import { getOpponent, getUserTeam, useGameStore } from '../store/gameStore'
@@ -23,7 +20,7 @@ import {
   isCrossVolleyShooterShielded,
   tryCrossBallContact,
 } from './crossAssist'
-import { tryStandingSteal } from './standingSteal'
+import { hasBodyDuelClaimPriority } from './dynamicFormation'
 import { isPlayerSliding, isPlayerKnockedDown } from './tackle'
 import { tryCallOffsideOnReceive } from './referee'
 import { crowdSfx } from './crowdSfx'
@@ -66,11 +63,32 @@ function computeColliderActive(
     return false
   }
 
+  // Passe do próprio time: só quem pode dominar colide —
+  // senão a IA “apoio” chuta a bola sem poder dominar.
+  if (passIntent && passIntent.passType !== 'cross') {
+    const passerTeam = passIntent.passingTeam ?? store.lastTouchTeam
+    if (passerTeam === player.team) {
+      const isActiveUser =
+        player.team === getUserTeam() && playerId === store.activePlayerId
+      const designated = passIntent.soloReceive
+        ? playerId === passIntent.receiverId
+        : [
+            passIntent.receiverId,
+            ...(passIntent.runnerIds ?? []),
+          ].includes(playerId)
+      if (!designated && !isActiveUser) return false
+    }
+  }
+
   if (hasCrossVolleyIntent(playerId)) return true
   if (isPlayerSliding(playerId)) return true
 
   const poss = store.ballPossession
-  if (poss?.playerId === playerId) return true
+  // Dono da bola: NÃO colide fisicamente (drible é cinemático) — senão o osso chuta a bola sozinho
+  if (poss?.playerId === playerId) return false
+
+  // Acabou de tocar / bloqueado de claim — não dar segundo chute físico
+  if (!store.canPlayerClaimBall(playerId)) return false
 
   const ball = ballRef.current
   const bodyDist = distance2D(player.position, ball)
@@ -140,15 +158,15 @@ function deflectLooseBallOffFoot(player: PlayerRef, ballSpeed: number) {
     faceX * 0.35 + perp.x * side * 0.75,
     faceZ * 0.35 + perp.z * side * 0.75,
   )
-  const bump = (0.9 + Math.random() * 0.8) * WORLD_SCALE + ballSpeed * 0.08
+  const bump = (0.45 + Math.random() * 0.35) * WORLD_SCALE + ballSpeed * 0.04
 
   body.wakeUp()
   const v = body.linvel()
   body.setLinvel(
     {
-      x: dir.x * bump + v.x * 0.35,
-      y: Math.max(v.y, 0.08 + Math.random() * 0.12),
-      z: dir.z * bump + v.z * 0.35,
+      x: dir.x * bump + v.x * 0.28,
+      y: Math.max(Math.min(v.y * 0.4, 0.55), 0.04),
+      z: dir.z * bump + v.z * 0.28,
     },
     true,
   )
@@ -200,16 +218,46 @@ function tryClaimLooseBall(
       : POSSESSION_HEIGHT + 0.28
   if (ball.y > maxH) return false
 
-  const maxSp = receiveMaxSpeed(passIntent)
-  if (ballSpeed > maxSp * 1.08) return false
-
   const userTeam = getUserTeam()
   const isActiveUser =
     player.team === userTeam && playerId === store.activePlayerId
   const isAi = !isActiveUser
 
-  const footReach = isAi ? CONTACT_CLAIM_FOOT_AI : CONTACT_CLAIM_FOOT
-  const bodyReach = isAi ? CONTACT_CLAIM_BODY_AI : CONTACT_CLAIM_BODY
+  // Passe do próprio time: ANTES do deflect — quem não é receptor não toca na bola
+  // (era o bug: IA ia no passe pedido, não podia dominar e só chutava/desviava)
+  let ownPassDesignated = false
+  if (passIntent) {
+    const passerTeam = passIntent.passingTeam ?? store.lastTouchTeam
+    const isOpponentPass = passerTeam != null && passerTeam !== player.team
+    if (!isOpponentPass && passIntent.passType !== 'cross') {
+      const receiverIds = passIntent.soloReceive
+        ? [passIntent.receiverId]
+        : [passIntent.receiverId, ...(passIntent.runnerIds ?? [])]
+      ownPassDesignated = receiverIds.includes(playerId)
+      const nearBallUser =
+        isActiveUser &&
+        (distance2D(player.position, ball) < CONTACT_CLAIM_BODY * 1.35 ||
+          (minPlayerFootDist2D(playerId, ball) ?? 99) < CONTACT_CLAIM_FOOT * 1.25)
+      if (!ownPassDesignated && !nearBallUser) return false
+    }
+  }
+
+  const maxSp =
+    receiveMaxSpeed(passIntent) *
+    (ownPassDesignated || isActiveUser ? 1.12 : 1)
+  if (ballSpeed > maxSp * 1.08) return false
+
+  const duelPriority =
+    hasBodyDuelClaimPriority(playerId) || ownPassDesignated || isActiveUser
+
+  const footReach =
+    (isAi ? CONTACT_CLAIM_FOOT_AI : CONTACT_CLAIM_FOOT) *
+    (duelPriority ? 1.4 : 1) *
+    (ownPassDesignated ? 1.12 : 1)
+  const bodyReach =
+    (isAi ? CONTACT_CLAIM_BODY_AI : CONTACT_CLAIM_BODY) *
+    (duelPriority ? 1.32 : 1) *
+    (ownPassDesignated ? 1.1 : 1)
 
   const bodyDist = distance2D(player.position, ball)
   const footDist = minPlayerFootDist2D(playerId, ball)
@@ -220,9 +268,19 @@ function tryClaimLooseBall(
     if (!footOk && !bodyOk) return false
   }
 
-  // IA domina bola um pouco mais rápida; jogador precisa reduzir mais
-  const deflectAt = isAi ? maxSp * 0.98 : maxSp * 0.85
+  // Domínio: receptor do passe tolera bola um pouco mais rápida
+  const deflectAt =
+    ownPassDesignated || isActiveUser
+      ? maxSp * 1.06
+      : isAi
+        ? maxSp * 0.99
+        : maxSp * 0.96
   if (ballSpeed > deflectAt) {
+    // No passe próprio, não deflecta — espera a bola cair no domínio
+    if (passIntent) {
+      const passerTeam = passIntent.passingTeam ?? store.lastTouchTeam
+      if (passerTeam === player.team) return false
+    }
     if (part === 'foot' || part === 'leg' || part === 'contact') {
       if (!markClaimAttempt(playerId)) return false
       deflectLooseBallOffFoot(player, ballSpeed)
@@ -235,12 +293,6 @@ function tryClaimLooseBall(
     const isOpponentPass = passerTeam != null && passerTeam !== player.team
     if (passIntent.passType === 'cross' && !isOpponentPass) return false
     if (!isOpponentPass) {
-      const receiverIds = [
-        passIntent.receiverId,
-        ...(passIntent.runnerIds ?? []),
-      ]
-      if (!receiverIds.includes(playerId)) return false
-      // Delay de animação só no jogador controlado
       if (
         isActiveUser &&
         shouldDelayPassClaim(player.anim, footDist ?? bodyDist, ballSpeed)
@@ -289,33 +341,68 @@ export function tickContactBallClaims(): void {
 
   const userTeam = getUserTeam()
   const activeId = store.activePlayerId
+  const passIntent = store.passIntent
+  const passerTeam = passIntent?.passingTeam ?? store.lastTouchTeam
+  const ownPassIds =
+    passIntent &&
+    passIntent.passType !== 'cross' &&
+    passerTeam
+      ? new Set(
+          (passIntent.soloReceive
+            ? [passIntent.receiverId]
+            : [passIntent.receiverId, ...(passIntent.runnerIds ?? [])]
+          ).filter(Boolean) as string[],
+        )
+      : null
 
   let bestId: string | null = null
-  let bestDist = Infinity
+  let bestScore = Infinity
 
   for (const player of playerRegistry.values()) {
     if (player.role === 'gk') continue
     if (store.sentOffPlayers.includes(player.id)) continue
     if (isPlayerKnockedDown(player.id)) continue
 
-    const isAi = !(player.team === userTeam && player.id === activeId)
-    const footReach = isAi ? CONTACT_CLAIM_FOOT_AI : CONTACT_CLAIM_FOOT
-    const bodyReach = isAi ? CONTACT_CLAIM_BODY_AI : CONTACT_CLAIM_BODY
+    const isActiveUser =
+      player.team === userTeam && player.id === activeId
+    // No passe próprio, só receptor/runners/user — evita IA apoio “ganhar” o tick e falhar o domínio
+    if (ownPassIds && player.team === passerTeam) {
+      if (!ownPassIds.has(player.id) && !isActiveUser) continue
+    }
+
+    const isAi = !isActiveUser
+    const designated =
+      !!ownPassIds &&
+      player.team === passerTeam &&
+      ownPassIds.has(player.id)
+    const duelPriority =
+      hasBodyDuelClaimPriority(player.id) || designated || isActiveUser
+    const footReach =
+      (isAi ? CONTACT_CLAIM_FOOT_AI : CONTACT_CLAIM_FOOT) *
+      (duelPriority ? 1.35 : 1) *
+      (designated ? 1.12 : 1)
+    const bodyReach =
+      (isAi ? CONTACT_CLAIM_BODY_AI : CONTACT_CLAIM_BODY) *
+      (duelPriority ? 1.28 : 1) *
+      (designated ? 1.1 : 1)
 
     const bodyDist = distance2D(player.position, ball)
     if (bodyDist > bodyReach + 0.4) continue
 
     const footDist = minPlayerFootDist2D(player.id, ball)
-    const d =
+    let d =
       footDist != null
         ? Math.min(footDist, bodyDist)
         : bodyDist
+    if (duelPriority) d *= 0.7
+    // Preferência forte ao receptor do passe
+    if (designated || isActiveUser) d *= 0.55
     const inContact =
       (footDist != null && footDist < footReach) || bodyDist < bodyReach
     if (!inContact) continue
 
-    if (d < bestDist) {
-      bestDist = d
+    if (d < bestScore) {
+      bestScore = d
       bestId = player.id
     }
   }
@@ -355,24 +442,19 @@ export function handlePlayerBallCollision(playerId: string, part: PlayerBonePart
   }
 
   if (!poss) {
-    tryClaimLooseBall(playerId, part, true)
+    const claimed = tryClaimLooseBall(playerId, part, true)
+    // Corpo/perna: Rapier explode com osso cinemático — amortece se não dominou
+    if (!claimed && (part === 'body' || part === 'leg')) {
+      softenBallBodyHit()
+    }
     return
   }
 
   if (poss.playerId === playerId) return
   if (poss.team === player.team) return
 
-  if (part !== 'foot' && part !== 'leg') return
-  if (isPlayerSliding(playerId)) return
-  if (performance.now() - store.possessionSince < STEAL_COOLDOWN_MS) return
-  if (store.isStealImmune(poss.playerId)) return
-  if (isBallShielding(poss.playerId)) return
-
-  const footDist = minPlayerFootDist2D(playerId, ball)
-  if (footDist == null || footDist > STEAL_DISTANCE + 0.18) return
-
-  if (!markClaimAttempt(playerId)) return
-  tryStandingSteal(playerId)
+  // Adversário com posse: pé/perna não rouba — só jogo de corpo (A / ombro).
+  return
 }
 
 /** Legado — preferir arePlayerPhysicsCollidersActiveCached após refreshPhysicsColliderCache */

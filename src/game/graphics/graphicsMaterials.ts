@@ -19,13 +19,19 @@ export function applyFieldGraphics(scene: THREE.Object3D) {
   else applyFieldGraphicsPsx(scene)
 }
 
+export type PlayerMaterialOptions = {
+  /** GLB personalizado: pele/corpo já vêm do Blender — não sobrescrever */
+  preserveSkin?: boolean
+}
+
 export function applyPlayerMaterials(
   model: THREE.Group,
   appearance: PlayerAppearance,
   highlighted = false,
+  opts?: PlayerMaterialOptions,
 ) {
-  if (getGraphicsMode() === 'aaa') applyPlayerMaterialsAaa(model, appearance, highlighted)
-  else applyPlayerMaterialsPsx(model, appearance, highlighted)
+  if (getGraphicsMode() === 'aaa') applyPlayerMaterialsAaa(model, appearance, highlighted, opts)
+  else applyPlayerMaterialsPsx(model, appearance, highlighted, opts)
 }
 
 export function applyRefereeMaterials(model: THREE.Group) {

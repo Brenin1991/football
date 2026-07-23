@@ -56,6 +56,7 @@ export function HudPlayerCards() {
   const phase = useGameStore((s) => s.phase)
   const activePlayerId = useGameStore((s) => s.activePlayerId)
   const ballPossession = useGameStore((s) => s.ballPossession)
+  const controlMode = useGameStore((s) => s.controlMode)
 
   if (
     phase === 'replay' ||
@@ -66,6 +67,7 @@ export function HudPlayerCards() {
   }
 
   const userTeam = getUserTeam()
+  const isPro = controlMode === 'pro'
   const homeId =
     userTeam === 'home'
       ? resolveUserPlayerId(activePlayerId)
@@ -76,7 +78,7 @@ export function HudPlayerCards() {
       : resolveOpponentPlayerId('away', ballPossession)
 
   return (
-    <div className="psx-bottom-bar">
+    <div className={`psx-bottom-bar${isPro ? ' psx-bottom-bar--pro' : ''}`}>
       <HudPlayerCard playerId={homeId} team="home" controlled={userTeam === 'home'} />
       <HudRadar />
       <HudPlayerCard playerId={awayId} team="away" controlled={userTeam === 'away'} />

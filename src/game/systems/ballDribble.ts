@@ -74,6 +74,25 @@ export function clearDribbleState() {
   feintRollVz = 0
 }
 
+/** Cancela rolagem livre (ex.: ao iniciar 360 — bola cola de novo). */
+export function clearDribbleFeintRoll() {
+  feintRollVx = 0
+  feintRollVz = 0
+}
+
+/** Recoloca a âncora sob o pé — evita lag no início do 360. */
+export function snapDribbleAnchorToHolder(holder: PlayerRef) {
+  const target = getDribbleTarget(holder)
+  dribbleAnchorX = target.x
+  dribbleAnchorZ = target.z
+}
+
+/** Força a âncora/bola pra um ponto (arraste do 360). */
+export function snapDribbleAnchorTo(x: number, z: number) {
+  dribbleAnchorX = x
+  dribbleAnchorZ = z
+}
+
 /** Impulso da finta — desloca pouco (previsível, sem soltar a bola) */
 export function impulseDribbleFeint(offsetX: number, offsetZ: number) {
   dribbleAnchorX = ballRef.current.x + offsetX
@@ -113,7 +132,9 @@ export function pushDribbleBallRoll(dirX: number, dirZ: number, speed: number) {
 export function getDribbleTarget(holder: PlayerRef): { x: number; z: number } {
   const feintOff = holder.dribbleBallOffset
   const feintMag = feintOff ? Math.hypot(feintOff.x, feintOff.z) : 0
-  const feintActive = feintMag > 0.06
+  const spinning = holder.dribbleSpinning === true || holder.anim === 'player_spin'
+  // Offset do 360 não é finta — é arraste pra frente durante o giro
+  const feintActive = !spinning && feintMag > 0.06
 
   const speed = Math.hypot(holder.velocity.x, holder.velocity.z)
   const sprinting = holder.isSprinting === true && speed > 0.35
@@ -122,7 +143,16 @@ export function getDribbleTarget(holder: PlayerRef): { x: number; z: number } {
 
   let dirX = fx
   let dirZ = fz
-  if (!feintActive && speed > 0.12) {
+  if (spinning) {
+    // Mantém a direção do arraste (frente do giro), não o peito girando
+    if (feintMag > 0.04 && feintOff) {
+      dirX = feintOff.x / feintMag
+      dirZ = feintOff.z / feintMag
+    } else if (speed > 0.08) {
+      dirX = holder.velocity.x / speed
+      dirZ = holder.velocity.z / speed
+    }
+  } else if (!feintActive && speed > 0.12) {
     const vx = holder.velocity.x / speed
     const vz = holder.velocity.z / speed
     // Pouca mistura com vel — âncora fica sob o corpo, não “à frente flutuando”
@@ -134,21 +164,28 @@ export function getDribbleTarget(holder: PlayerRef): { x: number; z: number } {
     dirZ /= len
   }
 
-  const leadBase = feintActive
-    ? BALL_FOOT_OFFSET * 0.45
-    : sprinting
-      ? Math.max(BALL_FOOT_OFFSET * 1.05, DRIBBLE_SPRINT_LEAD)
-      : Math.min(BALL_FOOT_OFFSET, DRIBBLE_IDLE_LEAD)
+  // No spin o offset já carrega a distância — lead mínimo
+  const leadBase = spinning
+    ? 0
+    : feintActive
+      ? BALL_FOOT_OFFSET * 0.45
+      : sprinting
+        ? Math.max(BALL_FOOT_OFFSET * 1.05, DRIBBLE_SPRINT_LEAD)
+        : Math.min(BALL_FOOT_OFFSET, DRIBBLE_IDLE_LEAD)
   const lead =
     leadBase +
-    (feintActive ? 0 : Math.min(speed * (sprinting ? 0.055 : 0.012), DRIBBLE_MAX_LEAD))
+    (spinning || feintActive
+      ? 0
+      : Math.min(speed * (sprinting ? 0.055 : 0.012), DRIBBLE_MAX_LEAD))
 
   const strafe = holder.velocity.x * fz - holder.velocity.z * fx
-  const latOff = feintActive
-    ? 0
-    : THREE.MathUtils.clamp(strafe * 0.022, -DRIBBLE_LATERAL_MAX, DRIBBLE_LATERAL_MAX)
+  const latOff =
+    spinning || feintActive
+      ? 0
+      : THREE.MathUtils.clamp(strafe * 0.022, -DRIBBLE_LATERAL_MAX, DRIBBLE_LATERAL_MAX)
 
-  const footBias = feintActive || sprinting ? 0 : DRIBBLE_FOOT_BIAS * (speed < 0.45 ? 1 : 0.35)
+  const footBias =
+    spinning || feintActive || sprinting ? 0 : DRIBBLE_FOOT_BIAS * (speed < 0.45 ? 1 : 0.35)
   const sideX = fz
   const sideZ = -fx
 
@@ -180,12 +217,16 @@ export function stepPossessedBall(
   const feintMag = holder.dribbleBallOffset
     ? Math.hypot(holder.dribbleBallOffset.x, holder.dribbleBallOffset.z)
     : 0
-  const feintActive = feintMag > 0.06
-  const severity = clamp01(holder.dribbleTouchSeverity ?? (feintActive ? 0.55 : 0))
+  const spinning = holder.dribbleSpinning === true || holder.anim === 'player_spin'
+  const feintActive = !spinning && feintMag > 0.06
+  const severity = clamp01(
+    spinning ? 0 : (holder.dribbleTouchSeverity ?? (feintActive ? 0.55 : 0)),
+  )
   // Rolagem do 180: basta ter velocidade de toque — não depende do offset
   // (Player pode empurrar a bola antes do registry atualizar no mesmo frame).
   const rollSpeed = Math.hypot(feintRollVx, feintRollVz)
-  const freeRoll = rollSpeed > 0.12
+  // Durante o 360 nunca usa free-roll — arraste cinemático
+  const freeRoll = !spinning && rollSpeed > 0.12
 
   const settle = clamp01((performance.now() - possessionBlendStart) / DRIBBLE_SETTLE_MS)
   const settleEase = settle * settle * (3 - 2 * settle)
@@ -199,7 +240,36 @@ export function stepPossessedBall(
   let vx: number
   let vz: number
 
-  if (freeRoll) {
+  if (spinning) {
+    // 360: acompanha o corpo + lerp linear até o lead à frente (durante o giro)
+    feintRollVx = 0
+    feintRollVz = 0
+    const anchorLerp = THREE.MathUtils.clamp(14 * delta, 0, 1)
+    dribbleAnchorX += (target.x - dribbleAnchorX) * anchorLerp
+    dribbleAnchorZ += (target.z - dribbleAnchorZ) * anchorLerp
+
+    // Já anda com o jogador
+    newX = cur.x + holder.velocity.x * delta
+    newZ = cur.z + holder.velocity.z * delta
+
+    const dx = dribbleAnchorX - newX
+    const dz = dribbleAnchorZ - newZ
+    const dist = Math.hypot(dx, dz)
+    // Rápido o bastante pra chegar no lead no 1º terço do spin
+    const approachSpeed = Math.max(holderSpeed + 3.6 * WORLD_SCALE, 5.2 * WORLD_SCALE)
+    const maxStep = approachSpeed * delta
+    if (dist <= maxStep || dist < 1e-6) {
+      newX = dribbleAnchorX
+      newZ = dribbleAnchorZ
+    } else {
+      const s = maxStep / dist
+      newX += dx * s
+      newZ += dz * s
+    }
+    const invDt = delta > 1e-5 ? 1 / delta : 0
+    vx = (newX - cur.x) * invDt
+    vz = (newZ - cur.z) * invDt
+  } else if (freeRoll) {
     // 180: bola rola sozinha no toque; só recolhe no final do giro
     const drag = Math.exp(-0.35 * delta)
     feintRollVx *= drag

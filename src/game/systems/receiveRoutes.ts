@@ -1,6 +1,6 @@
 import type { PassIntent } from '../store/gameStore'
 import type { TeamId, Vec3 } from '../types'
-import { PLAYER_SPEED, PLAYER_SPRINT_SPEED, BALL_RADIUS } from '../constants'
+import { PLAYER_SPRINT_SPEED, BALL_RADIUS } from '../constants'
 import { ballRef, playerRegistry } from './entityRegistry'
 import { ballRestY } from './fieldData'
 import { distance2D } from './rules'
@@ -10,7 +10,6 @@ const GRAVITY = -9.81
 const REST_Y = ballRestY(BALL_RADIUS)
 
 const V_RUN = PLAYER_SPRINT_SPEED
-const V_JOG = PLAYER_SPEED * 0.92
 
 export type ReceiveRunPlan = {
   targetX: number
@@ -48,7 +47,6 @@ type ReceiveRoute = {
 
 const flights = new Map<number, PassFlight>()
 const routesByIntent = new Map<number, Map<string, ReceiveRoute>>()
-const runTargetSmooth = new Map<string, { x: number; z: number; intentKey: number }>()
 const lockedInterceptorByIntent = new Map<number, string>()
 
 function clamp(v: number, lo: number, hi: number) {
@@ -63,76 +61,44 @@ function ballAt(flight: PassFlight, t: number): Vec3 {
   }
 }
 
-function predictFromNow(ball: Vec3, velocity: Vec3, t: number): Vec3 {
-  const y0 = ball.y ?? REST_Y
-  return {
-    x: ball.x + velocity.x * t,
-    y: y0 + velocity.y * t + 0.5 * GRAVITY * t * t,
-    z: ball.z + velocity.z * t,
-  }
-}
-
-function sprintPlan(
+/** Vá NA BOLA. Sem lead, sem ponto, sem mix — só a bola. */
+function chaseBallHard(
   receiverPos: { x: number; z: number },
-  targetX: number,
-  targetZ: number,
-  phase: ReceiveRunPlan['phase'] = 'approach',
+  ball: Vec3,
 ): ReceiveRunPlan {
-  const dx = targetX - receiverPos.x
-  const dz = targetZ - receiverPos.z
-  const dist = Math.hypot(dx, dz)
+  const bx = ball.x - receiverPos.x
+  const bz = ball.z - receiverPos.z
+  const bd = Math.hypot(bx, bz)
 
-  if (dist < 0.22) {
-    const bx = ballRef.current.x - receiverPos.x
-    const bz = ballRef.current.z - receiverPos.z
-    const bd = Math.hypot(bx, bz)
-    if (bd > 0.18) {
-      const inv = 1 / bd
-      return {
-        targetX: ballRef.current.x + bx * inv * 0.16,
-        targetZ: ballRef.current.z + bz * inv * 0.16,
-        dirX: bx * inv,
-        dirZ: bz * inv,
-        targetSpeed: V_RUN * 0.95,
-        sprint: true,
-        moveScale: 1.05,
-        hardStop: false,
-        arriveDist: 0.12,
-        approachDist: bd,
-        phase: 'settle',
-      }
-    }
-    const fallbackX = dist > 0.02 ? dx / dist : 0
-    const fallbackZ = dist > 0.02 ? dz / dist : 1
+  if (bd < 0.12) {
     return {
-      targetX,
-      targetZ,
-      dirX: fallbackX,
-      dirZ: fallbackZ,
-      targetSpeed: V_RUN * 0.7,
+      targetX: ball.x,
+      targetZ: ball.z,
+      dirX: bd > 1e-4 ? bx / bd : 0,
+      dirZ: bd > 1e-4 ? bz / bd : 1,
+      targetSpeed: V_RUN,
       sprint: true,
-      moveScale: 0.95,
+      moveScale: 1.08,
       hardStop: false,
-      arriveDist: 0.14,
-      approachDist: dist,
+      arriveDist: 0.08,
+      approachDist: bd,
       phase: 'contact',
     }
   }
 
-  const dirX = dx / dist
-  const dirZ = dz / dist
+  const inv = 1 / bd
   return {
-    targetX,
-    targetZ,
-    dirX,
-    dirZ,
+    targetX: ball.x,
+    targetZ: ball.z,
+    dirX: bx * inv,
+    dirZ: bz * inv,
     targetSpeed: V_RUN,
     sprint: true,
-    moveScale: 1.05,
+    moveScale: 1.08,
     hardStop: false,
-    arriveDist: 0.2,
-    approachDist: dist,
-    phase,
+    arriveDist: 0.08,
+    approachDist: bd,
+    phase: bd < 1.5 ? 'contact' : 'approach',
   }
 }
 
@@ -290,172 +256,15 @@ export function isReceiveInterceptor(
   return getReceiveInterceptorId(team, intent) === playerId
 }
 
-function smoothRunTarget(
-  playerId: string,
-  intentKey: number,
-  rawX: number,
-  rawZ: number,
-): { x: number; z: number } {
-  const key = playerId
-  let sm = runTargetSmooth.get(key)
-  if (!sm || sm.intentKey !== intentKey) {
-    sm = { x: rawX, z: rawZ, intentKey }
-  } else {
-    const blend = 0.22
-    sm.x += (rawX - sm.x) * blend
-    sm.z += (rawZ - sm.z) * blend
-  }
-  runTargetSmooth.set(key, sm)
-  return sm
-}
-
-function planCrossMovement(
-  playerId: string,
-  receiverPos: { x: number; z: number },
-  ball: Vec3,
-  velocity: Vec3,
-  intent: PassIntent,
-  _route: ReceiveRoute | undefined,
-): ReceiveRunPlan {
-  const ballInAir = (ball.y ?? REST_Y) > REST_Y + 0.12
-  const ballSpeed = Math.hypot(velocity.x, velocity.z)
-  const lookT = ballInAir ? clamp(0.28 + ballSpeed * 0.012, 0.28, 0.42) : 0.2
-  const live = predictFromNow(ball, velocity, lookT)
-  const target = smoothRunTarget(playerId, intent.startedAt, live.x, live.z)
-  return sprintPlan(receiverPos, target.x, target.z, ballInAir ? 'settle' : 'approach')
-}
-
-function planPassMovement(
+export function planReceiveMovement(
   _playerId: string,
   receiverPos: { x: number; z: number },
   ball: Vec3,
-  velocity: Vec3,
-  intent: PassIntent,
-  route: ReceiveRoute | undefined,
+  _velocity: Vec3,
+  _intent: PassIntent,
+  _options?: { crossInterceptor?: boolean },
 ): ReceiveRunPlan {
-  const distToBall = distance2D({ x: receiverPos.x, y: 0, z: receiverPos.z }, ball)
-  const ballSpeed = Math.hypot(velocity.x, velocity.z)
-
-  // Ponto base: rota / alvo do passe
-  let spotX = intent.targetX
-  let spotZ = intent.targetZ
-  if (route) {
-    spotX = route.interceptX
-    spotZ = route.interceptZ
-  }
-
-  // Antecipação viva: ponto onde a bola vai estar
-  const lookT = clamp(distToBall / Math.max(ballSpeed, 1.4), 0.05, 0.42)
-  const live = predictFromNow(ball, velocity, lookT)
-  const liveBlend =
-    ballSpeed >= 5.2
-      ? clamp(0.55 + (ballSpeed - 5.2) * 0.08, 0.55, 0.92)
-      : distToBall < 3.4
-        ? clamp(0.4 + (3.4 - distToBall) * 0.12, 0.4, 0.85)
-        : 0.28
-  spotX = live.x * liveBlend + spotX * (1 - liveBlend)
-  spotZ = live.z * liveBlend + spotZ * (1 - liveBlend)
-
-  const dx = spotX - receiverPos.x
-  const dz = spotZ - receiverPos.z
-  const distSpot = Math.hypot(dx, dz)
-
-  const toSpotX = spotX - ball.x
-  const toSpotZ = spotZ - ball.z
-  const distBallToSpot = Math.hypot(toSpotX, toSpotZ)
-  const closing =
-    ballSpeed > 0.25 && distBallToSpot > 0.05
-      ? (toSpotX * velocity.x + toSpotZ * velocity.z) / (distBallToSpot * ballSpeed)
-      : 0
-
-  const ballEta =
-    ballSpeed > 0.4 && closing > 0.4
-      ? distBallToSpot / Math.max(ballSpeed * closing, 0.5)
-      : distToBall / Math.max(ballSpeed, 0.85)
-
-  const timeToArrive = distSpot / Math.max(V_RUN * 0.92, 0.5)
-  const late = timeToArrive + 0.12 >= ballEta || closing < 0.25
-
-  // Contato / bola já perto: sempre vai na bola (sem plantado esperando)
-  if (distSpot < 0.85 || distToBall < 1.15) {
-    const bx = ball.x - receiverPos.x
-    const bz = ball.z - receiverPos.z
-    const bd = Math.hypot(bx, bz)
-    if (bd < 0.18) {
-      return {
-        targetX: ball.x,
-        targetZ: ball.z,
-        dirX: 0,
-        dirZ: 0,
-        targetSpeed: 0,
-        sprint: false,
-        moveScale: 0,
-        hardStop: false,
-        arriveDist: 0.2,
-        approachDist: distToBall,
-        phase: 'contact',
-      }
-    }
-    const inv = bd > 1e-4 ? 1 / bd : 1
-    const lead = clamp(ballSpeed * 0.05, 0.1, 0.32)
-    const speed = clamp(bd / Math.max(0.12, ballEta * 0.35), V_JOG * 0.85, V_RUN)
-    return {
-      targetX: ball.x + velocity.x * 0.08 + bx * inv * lead,
-      targetZ: ball.z + velocity.z * 0.08 + bz * inv * lead,
-      dirX: bx * inv,
-      dirZ: bz * inv,
-      targetSpeed: speed,
-      sprint: speed > V_JOG * 0.98 || ballSpeed > 4.5,
-      moveScale: clamp(speed / PLAYER_SPEED, 0.85, 1.08),
-      hardStop: false,
-      arriveDist: 0.12,
-      approachDist: distToBall,
-      phase: 'contact',
-    }
-  }
-
-  // Sprint / corrida pro ponto vivo
-  const inv = distSpot > 1e-4 ? 1 / distSpot : 1
-  const haste = late || ballSpeed >= 4.85 ? 0.72 : 0.88
-  const speed = clamp(distSpot / Math.max(ballEta * haste, 0.14), V_JOG, V_RUN)
-  const mustSprint = late || ballSpeed >= 4.5 || speed > V_JOG * 1.02
-  return {
-    targetX: spotX,
-    targetZ: spotZ,
-    dirX: dx * inv,
-    dirZ: dz * inv,
-    targetSpeed: mustSprint ? Math.max(speed, V_RUN * 0.92) : speed,
-    sprint: mustSprint,
-    moveScale: clamp((mustSprint ? V_RUN : speed) / PLAYER_SPEED, 0.8, 1.08),
-    hardStop: false,
-    arriveDist: 0.22,
-    approachDist: distSpot,
-    phase: distSpot < 1.4 ? 'settle' : 'approach',
-  }
-}
-
-export function planReceiveMovement(
-  playerId: string,
-  receiverPos: { x: number; z: number },
-  ball: Vec3,
-  velocity: Vec3,
-  intent: PassIntent,
-  options?: { crossInterceptor?: boolean },
-): ReceiveRunPlan {
-  const isCross = intent.passType === 'cross'
-  const chase = options?.crossInterceptor !== false
-  const routes = routesByIntent.get(intent.startedAt)
-  const route = routes?.get(playerId)
-
-  if (isCross && chase) {
-    return planCrossMovement(playerId, receiverPos, ball, velocity, intent, route)
-  }
-
-  if (!chase) {
-    return sprintPlan(receiverPos, intent.targetX, intent.targetZ)
-  }
-
-  return planPassMovement(playerId, receiverPos, ball, velocity, intent, route)
+  return chaseBallHard(receiverPos, ball)
 }
 
 export function refreshCrossReceiveRoutes(intent: PassIntent) {
@@ -533,7 +342,6 @@ export function clearReceiveRoutes(intentKey?: number) {
     flights.clear()
     routesByIntent.clear()
     lockedInterceptorByIntent.clear()
-    runTargetSmooth.clear()
   }
 }
 

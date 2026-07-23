@@ -1,0 +1,415 @@
+/*
+ * Match HUD — same design tokens as fifaDesignSystem (FIFA glass).
+ * Layout positions stay in index.css; this file owns the look.
+ */
+
+.fifa-hud,
+.psx-hud.fifa-hud,
+.psx-replay-overlay,
+.psx-intro-broadcast {
+  --fds-bg: rgba(6, 8, 12, 0.78);
+  --fds-panel: linear-gradient(180deg, rgba(42, 46, 52, 0.88), rgba(10, 12, 16, 0.92));
+  --fds-row: linear-gradient(180deg, rgba(38, 42, 48, 0.9), rgba(14, 16, 20, 0.94));
+  --fds-selected: linear-gradient(180deg, #f4f5f6, #d5d8dc);
+  --fds-border: rgba(220, 224, 230, 0.14);
+  --fds-accent: #e8a020;
+  --fds-text-dark: #11151a;
+  --fds-blue: rgba(63, 160, 255, 0.85);
+  --fds-red: #d84848;
+  --fds-radius: 4px;
+  --fds-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --psx-ui: 1.12;
+  --psx-ui-top: 1.05;
+  --psx-edge: calc(14px * var(--psx-ui));
+  --psx-radar-w: 250;
+  --psx-radar-h: 166;
+  --psx-scoreboard-h: calc(34px * var(--psx-ui-top));
+  --psx-top-gap: calc(7px * var(--psx-ui-top));
+  --psx-below-scoreboard: calc(var(--psx-edge) + var(--psx-scoreboard-h) + var(--psx-top-gap));
+  font-family: var(--fifa-font, 'Barlow Condensed', 'Arial Narrow', sans-serif);
+  color: #f4f5f7;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.fifa-hud,
+.fifa-hud *,
+.psx-replay-overlay,
+.psx-replay-overlay *,
+.psx-intro-broadcast,
+.psx-intro-broadcast * {
+  text-shadow: none !important;
+}
+
+.fifa-hud--hidden,
+.psx-hud-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Kill legacy PES chrome on HUD surfaces */
+.fifa-hud .pes-hud-surface,
+.fifa-hud .pes-hud-highlight,
+.psx-replay-overlay .pes-hud-surface,
+.psx-intro-broadcast .pes-hud-surface {
+  border: 1px solid var(--fds-border) !important;
+  border-radius: var(--fds-radius) !important;
+  background: var(--fds-panel) !important;
+  box-shadow: var(--fds-shadow) !important;
+}
+
+.fifa-hud .pes-hud-surface::before,
+.fifa-hud .pes-hud-surface::after,
+.fifa-hud .pes-hud-highlight::before,
+.fifa-hud .pes-hud-highlight::after,
+.psx-replay-overlay .pes-hud-surface::before,
+.psx-replay-overlay .pes-hud-surface::after,
+.psx-intro-broadcast .pes-hud-surface::before,
+.psx-intro-broadcast .pes-hud-surface::after {
+  display: none !important;
+}
+
+/* —— Scoreboard —— */
+.fifa-hud .we-scoreboard {
+  min-height: calc(36px * var(--psx-ui-top));
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--fds-border);
+  border-top: 2px solid var(--fds-accent);
+  border-radius: var(--fds-radius);
+  background: var(--fds-panel);
+  box-shadow: var(--fds-shadow);
+}
+
+.fifa-hud .we-scoreboard-side {
+  min-width: calc(64px * var(--psx-ui-top));
+  padding: 0 calc(8px * var(--psx-ui-top));
+  gap: calc(6px * var(--psx-ui-top));
+  border: 0;
+}
+
+.fifa-hud .we-scoreboard-side--home {
+  border-left: 3px solid var(--fds-blue);
+}
+
+.fifa-hud .we-scoreboard-side--away {
+  border-right: 3px solid var(--fds-red);
+}
+
+.fifa-hud .we-scoreboard-crest {
+  width: calc(18px * var(--psx-ui));
+  height: calc(18px * var(--psx-ui));
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
+}
+
+.fifa-hud .we-scoreboard-center {
+  min-width: calc(70px * var(--psx-ui-top));
+  margin: 0;
+  padding: calc(3px * var(--psx-ui-top)) calc(10px * var(--psx-ui-top));
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: var(--fds-selected) !important;
+  box-shadow: inset 0 1px 0 #fff !important;
+}
+
+.fifa-hud .we-scoreboard-digit {
+  color: var(--fds-text-dark);
+  font-family: var(--fifa-font, 'Barlow Condensed', 'Arial Narrow', sans-serif);
+  font-style: normal !important;
+  font-weight: 800;
+  font-size: calc(20px * var(--psx-ui-top));
+  text-shadow: none !important;
+}
+
+.fifa-hud .we-scoreboard-sep {
+  color: #7d838b;
+}
+
+.fifa-hud .we-scoreboard-team {
+  font-family: var(--fifa-font, 'Barlow Condensed', 'Arial Narrow', sans-serif);
+  font-style: normal !important;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  font-size: calc(14px * var(--psx-ui-top));
+  color: #f4f5f7;
+}
+
+/* —— Clock —— */
+.fifa-hud .we-clock {
+  min-height: calc(36px * var(--psx-ui-top));
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--fds-border);
+  border-top: 2px solid var(--fds-accent);
+  border-radius: var(--fds-radius);
+  background: var(--fds-panel);
+  box-shadow: var(--fds-shadow);
+}
+
+.fifa-hud .we-clock-half {
+  padding: 0 calc(8px * var(--psx-ui-top));
+  border-right: 1px solid var(--fds-border);
+  background: transparent;
+  font-size: calc(10px * var(--psx-ui-top));
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.fifa-hud .we-clock-time {
+  color: var(--fds-accent);
+  font-family: var(--fifa-font, 'Barlow Condensed', 'Arial Narrow', sans-serif);
+  font-style: normal !important;
+  font-weight: 800;
+  font-size: calc(16px * var(--psx-ui-top));
+  letter-spacing: 0.08em;
+  padding: 0 calc(10px * var(--psx-ui-top)) 0 calc(8px * var(--psx-ui-top));
+  text-shadow: none !important;
+}
+
+/* —— Speed / assist / toast —— */
+.fifa-hud .psx-speed,
+.fifa-hud .psx-pro-assist,
+.fifa-hud .psx-toast {
+  overflow: hidden;
+  border: 1px solid var(--fds-border) !important;
+  border-top: 2px solid var(--fds-accent) !important;
+  border-radius: var(--fds-radius) !important;
+  background: var(--fds-row) !important;
+  box-shadow: var(--fds-shadow) !important;
+}
+
+.fifa-hud .psx-toast {
+  padding: calc(8px * var(--psx-ui-top)) calc(16px * var(--psx-ui-top));
+  border-left: 3px solid var(--fds-blue) !important;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.fifa-hud .psx-pro-assist__mode,
+.fifa-hud .psx-speed {
+  color: var(--fds-accent);
+  font-weight: 800;
+}
+
+.fifa-hud .psx-pro-assist__hint {
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+/* —— Player cards —— */
+.fifa-hud .psx-player-card {
+  width: calc(220px * var(--psx-ui));
+  gap: calc(4px * var(--psx-ui));
+}
+
+.fifa-hud .psx-player-card-frame {
+  min-height: calc(32px * var(--psx-ui));
+  padding: calc(3px * var(--psx-ui));
+  overflow: hidden;
+  border: 1px solid var(--fds-border) !important;
+  border-radius: var(--fds-radius) !important;
+  background: var(--fds-panel) !important;
+  box-shadow: var(--fds-shadow) !important;
+}
+
+.fifa-hud .psx-player-card-frame::before,
+.fifa-hud .psx-player-card-frame::after {
+  display: none !important;
+}
+
+.fifa-hud .psx-player-card--home .psx-player-card-frame {
+  border-left: 3px solid var(--fds-blue) !important;
+}
+
+.fifa-hud .psx-player-card--away .psx-player-card-frame {
+  border-right: 3px solid var(--fds-red) !important;
+}
+
+.fifa-hud .psx-player-card--controlled .psx-player-card-frame {
+  box-shadow:
+    inset 0 2px 0 var(--fds-accent),
+    var(--fds-shadow) !important;
+}
+
+.fifa-hud .psx-player-card-role {
+  width: calc(28px * var(--psx-ui));
+  border: 0;
+  border-radius: 2px;
+  box-shadow: none;
+  font-size: calc(11px * var(--psx-ui));
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.fifa-hud .psx-player-card-nameplate {
+  min-height: calc(24px * var(--psx-ui));
+  padding: 0 calc(8px * var(--psx-ui));
+  border: 0;
+  border-radius: 2px;
+  background: rgba(8, 11, 15, 0.55);
+  box-shadow: none;
+}
+
+.fifa-hud .psx-player-card-name {
+  font-size: calc(14px * var(--psx-ui));
+  font-weight: 800;
+  font-style: normal;
+  letter-spacing: 0.06em;
+  color: #f7f8f9;
+}
+
+.fifa-hud .psx-player-card-num {
+  font-style: normal;
+  color: var(--fds-accent);
+}
+
+.fifa-hud .psx-player-card-shot-track,
+.fifa-hud .psx-player-card-stamina-track {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.fifa-hud .psx-player-card-stamina-track {
+  height: calc(5px * var(--psx-ui));
+}
+
+.fifa-hud .psx-player-card-stamina-fill {
+  background: linear-gradient(90deg, #b66c12, var(--fds-accent), #ffd678);
+  box-shadow: none;
+  border-radius: inherit;
+}
+
+.fifa-hud .psx-player-card-shot-fill {
+  border-radius: inherit;
+  box-shadow: none;
+}
+
+/* —— Radar —— */
+.fifa-hud .psx-radar-wrap {
+  padding: calc(4px * var(--psx-ui));
+  border: 1px solid var(--fds-border);
+  border-top: 2px solid var(--fds-accent);
+  border-radius: var(--fds-radius);
+  background: var(--fds-bg ) 0.7;
+  box-shadow: var(--fds-shadow);
+}
+
+.fifa-hud .psx-radar-wrap::before,
+.fifa-hud .psx-radar-wrap::after {
+  display: none !important;
+}
+
+.fifa-hud .psx-radar {
+  width: calc(var(--psx-radar-w) * 1px * var(--psx-ui));
+  height: calc(var(--psx-radar-h) * 1px * var(--psx-ui));
+  border-radius: 2px;
+}
+
+/* —— Free-kick contact —— */
+.fifa-hud .fk-contact {
+  border: 1px solid var(--fds-border) !important;
+  border-top: 2px solid var(--fds-accent) !important;
+  border-radius: var(--fds-radius) !important;
+  background: var(--fds-panel) !important;
+  box-shadow: var(--fds-shadow) !important;
+}
+
+.fifa-hud .fk-contact::before,
+.fifa-hud .fk-contact::after {
+  display: none !important;
+}
+
+.fifa-hud .fk-contact-label {
+  color: var(--fds-accent);
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+/* —— Replay / intro broadcast —— */
+.psx-replay-tag,
+.psx-intro-live-tag,
+.psx-intro-network {
+  border: 1px solid var(--fds-border, rgba(220, 224, 230, 0.14)) !important;
+  border-top: 2px solid var(--fds-accent, #e8a020) !important;
+  border-radius: var(--fds-radius, 4px) !important;
+  background: var(--fds-row, linear-gradient(180deg, rgba(38, 42, 48, 0.9), rgba(14, 16, 20, 0.94))) !important;
+  box-shadow: var(--fds-shadow) !important;
+}
+
+.psx-replay-lower,
+.psx-intro-panel {
+  overflow: hidden;
+  border: 1px solid var(--fds-border, rgba(220, 224, 230, 0.14)) !important;
+  border-top: 2px solid var(--fds-accent, #e8a020) !important;
+  border-radius: 15px !important;
+  background: var(--fds-panel, linear-gradient(180deg, rgba(42, 46, 52, 0.88), rgba(10, 12, 16, 0.92))) !important;
+  box-shadow: var(--fds-shadow) !important;
+}
+
+.psx-replay-photo-wrap {
+  padding: calc(4px * var(--psx-ui, 1.12));
+  border: 1px solid var(--fds-border, rgba(220, 224, 230, 0.14));
+  border-top: 2px solid var(--fds-accent, #e8a020);
+  border-radius: var(--fds-radius, 4px);
+  background: rgba(8, 11, 15, 0.72);
+  box-shadow: none;
+}
+
+.psx-replay-photo {
+  border-radius: 2px;
+}
+
+.psx-replay-progress {
+  height: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.psx-replay-progress-fill {
+  border-radius: inherit;
+  background: linear-gradient(90deg, #b66c12, #e8a020, #ffd678);
+}
+
+.psx-intro-panel-kicker,
+.psx-intro-panel-title {
+  font-style: normal !important;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.psx-intro-panel-kicker {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 11px;
+}
+
+.psx-intro-panel-title {
+  color: #f4f5f7;
+}
+
+.psx-intro-lineup-crest-wrap {
+  border: 1px solid var(--fds-border, rgba(220, 224, 230, 0.14));
+  border-radius: var(--fds-radius, 4px);
+  background: rgba(8, 11, 15, 0.55);
+  box-shadow: none;
+}
+
+.psx-intro-stadium {
+  border: 0;
+  border-radius: var(--fds-radius, 4px);
+  background: var(--fds-selected, linear-gradient(180deg, #f4f5f6, #d5d8dc));
+  box-shadow: inset 0 1px 0 #fff;
+  color: var(--fds-text-dark, #11151a);
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}

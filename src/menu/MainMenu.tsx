@@ -1,10 +1,12 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store/appStore'
 import { useMatchSetupStore } from '../store/matchSetupStore'
 import { GraphicsToggle } from '../components/GraphicsToggle'
 import { withMenuNavigate, withMenuSelect } from './menuActions'
 import { MenuPadHints } from './components/MenuPadHints'
 import { useMenuPad } from './hooks/useMenuPad'
+import { tweenElement } from './menuTween'
+import { isViewTransitionActive } from './viewTransition'
 
 const MENU_ITEMS = [
   {
@@ -22,6 +24,7 @@ const MENU_ITEMS = [
 ]
 
 export function MainMenu() {
+  const rootRef = useRef<HTMLDivElement>(null)
   const setView = useAppStore((s) => s.setView)
   const startSetup = useMatchSetupStore((s) => s.startSetup)
   const [focusIndex, setFocusIndex] = useState(0)
@@ -46,57 +49,83 @@ export function MainMenu() {
     onConfirm: confirm,
   })
 
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    // Let the view transition own the motion when arriving from another screen.
+    if (isViewTransitionActive()) return
+
+    const animations = [
+      { selector: '.fifa-main__graphics', from: { opacity: 0, y: -14 }, delay: 40 },
+      { selector: '.fifa-main__brand', from: { opacity: 0, x: -34 }, delay: 40 },
+      { selector: '.fifa-main__nav', from: { opacity: 0, x: -42 }, delay: 100 },
+      { selector: '.fifa-main__hint', from: { opacity: 0, y: 14 }, delay: 170 },
+      { selector: '.fifa-main__bar', from: { opacity: 0, y: 20 }, delay: 210 },
+    ]
+
+    const cancelTweens = animations.flatMap(({ selector, from, delay }) => {
+      const element = root.querySelector<HTMLElement>(selector)
+      return element ? [tweenElement(element, from, { duration: 470, delay })] : []
+    })
+
+    return () => cancelTweens.forEach((cancel) => cancel())
+  }, [])
+
   return (
-    <div className="menu-screen menu-screen--pes menu-screen--enter">
-      <div className="menu-screen__stadium" aria-hidden />
-      <div className="menu-screen__vignette" aria-hidden />
+    <div ref={rootRef} className="fifa-screen">
+      <div className="fifa-screen__stadium" aria-hidden />
+      <div className="fifa-screen__vignette" aria-hidden />
 
-      <div className="pes-main">
-        <header className="pes-main__brand menu-anim menu-anim--logo">
-          <div className="pes-main__logo">
-            <span className="pes-main__logo-mark">FUT</span>
-            <span className="pes-main__logo-edition">EBOL</span>
-          </div>
-        </header>
-
-        <nav className="pes-main__nav" aria-label="Menu principal">
-          {MENU_ITEMS.map((item, index) => {
-            const active = index === focusIndex
-            return (
-              <button
-                key={item.id}
-                type="button"
-                className={`pes-main__item menu-anim menu-anim--nav${active ? ' pes-main__item--active' : ''}`}
-                style={{ animationDelay: `${120 + index * 70}ms` }}
-                onMouseEnter={withMenuNavigate(() => {
-                  if (index !== focusIndex) setFocusIndex(index)
-                })}
-                onFocus={withMenuNavigate(() => {
-                  if (index !== focusIndex) setFocusIndex(index)
-                })}
-                onClick={withMenuSelect(() => {
-                  if (item.view === 'match-setup') {
-                    openMatchSetup()
-                    return
-                  }
-                  setView(item.view)
-                })}
-              >
-                {active ? <span className="pes-main__bullet" aria-hidden /> : null}
-                <span className="pes-main__item-label">{item.label}</span>
-              </button>
-            )
-          })}
-        </nav>
-
-        <footer className="pes-main__footer menu-anim menu-anim--footer">
-          <p>{focused.hint}</p>
-          <MenuPadHints />
-        </footer>
+      <div className="fifa-main__graphics">
+        <GraphicsToggle />
       </div>
 
-      <div className="pes-main__graphics">
-        <GraphicsToggle />
+      <div className="fifa-main">
+        <div className="fifa-main__left">
+          {/* <header className="fifa-main__brand">
+            <span className="fifa-main__logo-mark">FUTEBOL</span>
+            <span className="fifa-main__logo-sub">KICK OFF</span>
+          </header> */}
+
+          <nav className="fifa-main__nav" aria-label="Menu principal">
+            {MENU_ITEMS.map((item, index) => {
+              const active = index === focusIndex
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`fifa-trap${active ? ' fifa-trap--active' : ''}`}
+                  onMouseEnter={withMenuNavigate(() => {
+                    if (index !== focusIndex) setFocusIndex(index)
+                  })}
+                  onFocus={withMenuNavigate(() => {
+                    if (index !== focusIndex) setFocusIndex(index)
+                  })}
+                  onClick={withMenuSelect(() => {
+                    if (item.view === 'match-setup') {
+                      openMatchSetup()
+                      return
+                    }
+                    setView(item.view)
+                  })}
+                >
+                  {item.label}
+                </button>
+              )
+            })}
+          </nav>
+
+          <p className="fifa-main__hint">{focused.hint}</p>
+        </div>
+
+        
+
+        <footer className="fifa-main__bar">
+          <MenuPadHints confirm="Selecionar" back="Sair" />
+          <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.12em', color: 'var(--fifa-muted)' }}>
+            V1.0.0
+          </span>
+        </footer>
       </div>
     </div>
   )

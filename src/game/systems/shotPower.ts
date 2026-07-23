@@ -1,11 +1,36 @@
 import { SHOT_SPEED } from '../constants'
 
-/** Janela fixa de dosagem do chute (s) — só mira, jogador automático */
-export const SHOT_POWER_CHARGE_DURATION_SEC = 0.5
+/**
+ * Wind-up cinemático do chute a gol: ao apertar X, timer fixo até o chute.
+ * Janela curta pra mirar, depois trava; força só sobe com X (estilo FIFA/PES).
+ */
+export const SHOT_CINEMATIC_WINDUP_SEC = 0.85
+/** Ms livres pra ajustar a mira antes de congelar */
+export const SHOT_AIM_LOCK_DELAY_MS = 320
+
+/**
+ * Atraso mínimo entre início da anim de chute e a bola sair do pé.
+ * Evita “bola voando” antes da perna chegar — sincroniza com o contato.
+ */
+export const SHOT_CONTACT_MIN_DELAY_SEC = 0.14
+/** Fração do clip de chute até o contato (se o clip for longo, usa isso). */
+export const SHOT_CONTACT_RATIO = 0.28
+
+/**
+ * Chute antecipado / first-time: contato bem mais cedo e animação mais rápida
+ * que o chute normal com a bola no pé.
+ */
+export const SHOT_FIRST_TIME_CONTACT_MIN_DELAY_SEC = 0.05
+export const SHOT_FIRST_TIME_CONTACT_RATIO = 0.14
+/** Multiplica o timeScale do clip de chute no first-time. */
+export const SHOT_FIRST_TIME_TIME_SCALE_MUL = 1.45
+
+/** Tempo pra encher a barra com X segurado (~janela do wind-up) */
+export const SHOT_POWER_CHARGE_DURATION_SEC = 0.75
 export const PASS_POWER_CHARGE_DURATION_SEC = 0.42
 
 /** Velocidade de preenchimento da barra (0→1 por segundo) */
-export const POWER_FILL_SPEED = 1 / SHOT_POWER_CHARGE_DURATION_SEC
+export const POWER_FILL_SPEED = 0.3 / SHOT_POWER_CHARGE_DURATION_SEC
 
 /** Força mínima ao soltar rápido (toque curto) */
 export const POWER_MIN_ON_RELEASE = 0.22
@@ -24,9 +49,9 @@ export const QUICK_PASS_POWER = 0.55
 /** Leve compensação de drag — a curva de distância faz o resto */
 export const QUICK_PASS_SPEED_MUL = 1.06
 
-/** Chute rápido: toque curto no botão de chute */
+/** @deprecated chute a gol agora é wind-up cinemático (não toque rápido) */
 export const QUICK_SHOT_TAP_MS = 200
-/** Toque = finalização controlada (não carga cheia) */
+/** @deprecated */
 export const QUICK_SHOT_POWER = 0.48
 
 /**
@@ -42,14 +67,27 @@ export const PASS_BUFFER_WINDOW_MS = ACTION_BUFFER_WINDOW_MS
 
 /** Dosar a barra — cheia sobe um pouco; meia força é firme */
 export const SHOT_SPEED_MIN_MUL = 0.5
-export const SHOT_SPEED_MAX_MUL = 1.18
+export const SHOT_SPEED_MAX_MUL = 1.22
+
+/**
+ * Força de chute da IA — faixa firme (não fraco, não barra no talo).
+ * Escala com distância até o gol.
+ */
+export function getAIShotPower(goalDist?: number): number {
+  const jitter = () => (Math.random() - 0.5) * 0.06
+  if (goalDist == null) return clamp(0.68 + jitter(), 0.58, 0.78)
+  if (goalDist < 6.5) return clamp(0.58 + jitter(), 0.52, 0.66)
+  if (goalDist < 11) return clamp(0.66 + jitter(), 0.58, 0.74)
+  if (goalDist < 16) return clamp(0.72 + jitter(), 0.64, 0.8)
+  return clamp(0.76 + jitter(), 0.68, 0.84)
+}
 
 export const PASS_SPEED_MIN_MUL = 0.48
 export const PASS_SPEED_MAX_MUL = 1.05
 export const THROUGH_SPEED_MIN_MUL = 0.62
 export const THROUGH_SPEED_MAX_MUL = 1.18
-export const CROSS_SPEED_MIN_MUL = 0.58
-export const CROSS_SPEED_MAX_MUL = 1.04
+export const CROSS_SPEED_MIN_MUL = 0.62
+export const CROSS_SPEED_MAX_MUL = 1.0
 
 export type ShotChargeState = {
   active: boolean
@@ -63,22 +101,28 @@ export function createShotChargeState(): ShotChargeState {
 }
 
 export function getPowerChargeDuration(mode: PowerBarMode | null): number {
-  if (mode === 'shot') return SHOT_POWER_CHARGE_DURATION_SEC
+  if (mode === 'shot') return SHOT_CINEMATIC_WINDUP_SEC
   if (mode === 'pass' || mode === 'through' || mode === 'cross') {
     return PASS_POWER_CHARGE_DURATION_SEC
   }
-  return SHOT_POWER_CHARGE_DURATION_SEC
+  return SHOT_CINEMATIC_WINDUP_SEC
 }
 
 export function getShotChargeElapsedMs(startedAt: number): number {
   return Math.max(0, performance.now() - startedAt)
 }
 
+export function isShotCinematicWindupComplete(startedAt: number): boolean {
+  return getShotChargeElapsedMs(startedAt) >= SHOT_CINEMATIC_WINDUP_SEC * 1000
+}
+
+/** @deprecated use isShotCinematicWindupComplete */
 export function isShotChargeWindowComplete(startedAt: number): boolean {
-  return getShotChargeElapsedMs(startedAt) >= SHOT_POWER_CHARGE_DURATION_SEC * 1000
+  return isShotCinematicWindupComplete(startedAt)
 }
 
 export function getPowerFillSpeed(mode: PowerBarMode | null): number {
+  if (mode === 'shot') return 1 / SHOT_POWER_CHARGE_DURATION_SEC
   const duration = getPowerChargeDuration(mode)
   return duration > 0 ? 1 / duration : POWER_FILL_SPEED
 }
@@ -108,13 +152,14 @@ export function shotSpeedFromPower(power: number, goalDist?: number): number {
   let mul = SHOT_SPEED_MIN_MUL + t * (SHOT_SPEED_MAX_MUL - SHOT_SPEED_MIN_MUL)
 
   // Carga alta perde um pouco de horizontal (vira loft), sem matar o chute
-  if (t > 0.78) {
-    mul *= 1 - (t - 0.78) * 0.12
+  if (t > 0.82) {
+    mul *= 1 - (t - 0.82) * 0.1
   }
 
   if (goalDist != null) {
-    if (goalDist < 8 && t > 0.82) mul *= 0.94
-    else if (goalDist > 20 && t > 0.35 && t < 0.75) mul *= 1.05
+    if (goalDist < 8 && t > 0.85) mul *= 0.96
+    else if (goalDist > 14 && t > 0.45) mul *= 1.08
+    else if (goalDist > 20 && t > 0.4) mul *= 1.12
   }
 
   return SHOT_SPEED * mul
@@ -198,7 +243,7 @@ export function passLoftFromPower(power: number, through = false): number {
 
 export function crossLoftFromPower(power: number, baseLoft: number): number {
   const t = clamp(finalizePower(power), 0, 1)
-  return baseLoft * (0.78 + t * 0.28)
+  return baseLoft * (0.78 + t * 0.22)
 }
 
 export function setPieceSpeedMul(power: number): number {

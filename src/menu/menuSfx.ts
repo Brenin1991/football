@@ -36,7 +36,7 @@ class MenuSfxManager {
   }
 
   playOpen() {
-    this.play(MENU_SFX.open, 0.68)
+    this.play(MENU_SFX.open, 0)
   }
 
   playSelect() {

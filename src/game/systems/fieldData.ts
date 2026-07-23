@@ -124,42 +124,60 @@ function buildGoalZone(team: 'home' | 'away', mouth: GoalMouth, groundY: number)
 }
 
 
-const HIDDEN_NODES = new Set(['gol_01', 'gol_02', 'ball_spawn'])
+const HIDDEN_NODES = new Set(['gol_01', 'gol_02', 'ball_spawn', 'NurbsCircle'])
+
+/** Remove helpers de mapa que não devem existir em runtime (spawn/círculo). */
+export function stripFieldHelperNodes(scene: THREE.Object3D) {
+  const toRemove: THREE.Object3D[] = []
+  scene.traverse((child) => {
+    if (child.name === 'ball_spawn' || child.name === 'NurbsCircle') {
+      toRemove.push(child)
+    }
+  })
+  for (const node of toRemove) {
+    node.removeFromParent()
+  }
+}
 
 const BASE_HALF_X = 6.5
 const BASE_HALF_Z = 9.5
 
-/** Volume ortográfico fallback — cobre campo + margem (luz em ângulo precisa de folga) */
+/** Volume ortográfico fallback — cobre estádio + margem (luz em ângulo precisa de folga) */
 export const SHADOW_CAMERA = {
-  halfX: BASE_HALF_X * FIELD_SCALE * 2.4,
-  halfZ: BASE_HALF_Z * FIELD_SCALE * 2.4,
+  halfX: BASE_HALF_X * FIELD_SCALE * 4.8,
+  halfZ: BASE_HALF_Z * FIELD_SCALE * 4.8,
   near: 1,
-  far: 220,
+  far: 420,
+}
+
+/** Raiz do GLB do estádio — preferência pelo nó nomeado; fallback = field_area. */
+function getStadiumRoot(scene: THREE.Object3D): THREE.Object3D | null {
+  return scene.getObjectByName('field_stadium') ?? scene.getObjectByName('field_area') ?? null
 }
 
 /**
- * Ajusta a shadow camera do sol para cobrir o campo inteiro (e um pouco do entorno).
- * Usa o AABB do field_area no espaço da câmera de sombra — evita o “quadrado só no meio”.
+ * Ajusta a shadow camera do sol para cobrir o estádio inteiro (arquibancadas + cobertura).
+ * Usa o AABB do GLB do campo no espaço da câmera de sombra.
  */
 export function fitDirectionalLightShadowToField(
   light: THREE.DirectionalLight,
   scene: THREE.Object3D,
-  pad = 1.45,
+  pad = 1.2,
 ): void {
   if (!light.shadow) return
 
   const cam = light.shadow.camera as THREE.OrthographicCamera
-  const fieldArea = scene.getObjectByName('field_area')
-  const box = fieldArea
-    ? new THREE.Box3().setFromObject(fieldArea)
+  const stadiumRoot = getStadiumRoot(scene)
+  const box = stadiumRoot
+    ? new THREE.Box3().setFromObject(stadiumRoot)
     : new THREE.Box3(
-        new THREE.Vector3(PITCH_LIMITS.minX, PITCH_LIMITS.groundY, PITCH_LIMITS.minZ),
-        new THREE.Vector3(PITCH_LIMITS.maxX, PITCH_LIMITS.groundY + 4, PITCH_LIMITS.maxZ),
+        new THREE.Vector3(PITCH_LIMITS.minX * 2.2, PITCH_LIMITS.groundY, PITCH_LIMITS.minZ * 2.2),
+        new THREE.Vector3(PITCH_LIMITS.maxX * 2.2, PITCH_LIMITS.groundY + 28, PITCH_LIMITS.maxZ * 2.2),
       )
 
-  // Inclui altura de jogadores / postes pra sombra não cortar em pé
+  // Garante volume mínimo pro gramado / jogadores mesmo se o AABB vier raso
   box.min.y = Math.min(box.min.y, PITCH_LIMITS.groundY - 0.5)
-  box.max.y = Math.max(box.max.y, PITCH_LIMITS.groundY + 6)
+  box.max.y = Math.max(box.max.y, PITCH_LIMITS.groundY + 28)
 
   const center = box.getCenter(new THREE.Vector3())
   light.target.position.copy(center)
@@ -213,8 +231,8 @@ export function fitDirectionalLightShadowToField(
   cam.top = cy + halfH
   cam.bottom = cy - halfH
   // near/far: pontos no espaço da câmera (Three olha -Z)
-  cam.near = Math.max(0.5, -maxZ - 8)
-  cam.far = Math.max(cam.near + 40, -minZ + 24)
+  cam.near = Math.max(0.5, -maxZ - 24)
+  cam.far = Math.max(cam.near + 80, -minZ + 48)
   cam.updateProjectionMatrix()
   light.shadow.needsUpdate = true
 }

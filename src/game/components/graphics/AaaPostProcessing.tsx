@@ -2,13 +2,22 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useLayoutEffect, useMemo, useRef, type MutableRefObject } from 'react'
 import {
   ACESFilmicToneMapping,
+  AgXToneMapping,
+  CineonToneMapping,
+  HalfFloatType,
+  LinearToneMapping,
   MathUtils,
-  PCFShadowMap,
+  NoToneMapping,
+  PCFSoftShadowMap,
   Quaternion,
+  ReinhardToneMapping,
+  SRGBColorSpace,
   Vector2,
   Vector3,
+  WebGLRenderTarget,
   type Material,
   type Mesh,
+  type PerspectiveCamera,
   type ShadowMapType,
   type ToneMapping,
 } from 'three'
@@ -24,8 +33,16 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { TAARenderPass } from 'three/examples/jsm/postprocessing/TAARenderPass.js'
 // @ts-ignore three examples
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
+// @ts-ignore three examples
+import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js'
+// @ts-ignore three examples
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { AAA_CLASSIC } from '../../graphics/aaaSettings'
 import { createAaaPostShaders, hexToRgb01 } from '../../graphics/aaaPostShaders'
+import {
+  estimateCinematicFocusDistance,
+  getCinematicDofStrength,
+} from '../../systems/cinematicDof'
 
 const _mbDq = new Quaternion()
 const _mbAxis = new Vector3()
@@ -78,6 +95,23 @@ function mapAoOutput(mode: string) {
   }
 }
 
+function resolveToneMapping(mode: typeof AAA_CLASSIC.color.toneMapping): ToneMapping {
+  switch (mode) {
+    case 'linear':
+      return LinearToneMapping
+    case 'reinhard':
+      return ReinhardToneMapping
+    case 'cineon':
+      return CineonToneMapping
+    case 'agx':
+      return AgXToneMapping
+    case 'aces':
+      return ACESFilmicToneMapping
+    default:
+      return NoToneMapping
+  }
+}
+
 /** Pós-processo AAA completo (portado de PsxPostProcessing, sem pixel/dither/res scale) */
 export function AaaPostProcessing() {
   const { gl, scene, camera, size, viewport } = useThree()
@@ -98,6 +132,7 @@ export function AaaPostProcessing() {
   const vignettePassRef = useRef<ShaderPassLike | null>(null)
   const motionBlurPassRef = useRef<ShaderPassLike | null>(null)
   const filmGrainPassRef = useRef<ShaderPassLike | null>(null)
+  const bokehPassRef = useRef<InstanceType<typeof BokehPass> | null>(null)
 
   const prevMbQuatRef = useRef<Quaternion | null>(null)
   const prevMbPosRef = useRef<Vector3 | null>(null)
@@ -109,6 +144,7 @@ export function AaaPostProcessing() {
   const previousToneMappingRef = useRef<ToneMapping | null>(null)
   const previousExposureRef = useRef<number | null>(null)
   const previousShadowMapTypeRef = useRef<ShadowMapType | null>(null)
+  const previousOutputColorSpaceRef = useRef<string | null>(null)
 
   const passes = useMemo(() => createAaaPostShaders(post.colorGrade), [post.colorGrade])
 
@@ -116,10 +152,19 @@ export function AaaPostProcessing() {
     previousToneMappingRef.current = gl.toneMapping
     previousExposureRef.current = gl.toneMappingExposure
     previousShadowMapTypeRef.current = gl.shadowMap.type
-    gl.toneMapping = ACESFilmicToneMapping
-    gl.shadowMap.type = PCFShadowMap
+    previousOutputColorSpaceRef.current = gl.outputColorSpace
+    gl.toneMapping = resolveToneMapping(AAA_CLASSIC.color.toneMapping)
+    gl.toneMappingExposure = AAA_CLASSIC.color.exposure
+    gl.outputColorSpace = SRGBColorSpace
+    gl.shadowMap.type = PCFSoftShadowMap
 
-    const composer = new EffectComposer(gl)
+    const renderTarget = new WebGLRenderTarget(size.width, size.height, {
+      type: AAA_CLASSIC.renderer.hdr ? HalfFloatType : undefined,
+      depthBuffer: true,
+      stencilBuffer: false,
+    })
+    renderTarget.samples = AAA_CLASSIC.renderer.multisampling
+    const composer = new EffectComposer(gl, renderTarget)
     const renderPass = new RenderPass(scene, camera)
     const taaPass = new TAARenderPass(scene, camera)
     taaPass.sampleLevel = post.temporalAA.sampleLevel
@@ -157,6 +202,15 @@ export function AaaPostProcessing() {
     }
     composer.addPass(aoPass)
 
+    const dofCfg = post.depthOfField
+    const bokehPass = new BokehPass(scene, camera, {
+      focus: dofCfg.focusFallback,
+      aperture: dofCfg.aperture,
+      maxblur: dofCfg.maxblur,
+    })
+    bokehPass.enabled = false
+    composer.addPass(bokehPass)
+
     const rgbSplitPass = new ShaderPass(passes.rgbSplitShader)
     rgbSplitPass.enabled = post.rgbShift.enabled
     const contactShadowPass = new ShaderPass(passes.contactShadowShader)
@@ -193,6 +247,8 @@ export function AaaPostProcessing() {
     composer.addPass(vignettePass)
     composer.addPass(motionBlurPass)
     composer.addPass(filmGrainPass)
+    // Tone mapping and linear → sRGB conversion must be the final operation.
+    composer.addPass(new OutputPass())
 
     composerRef.current = composer
     renderPassRef.current = renderPass
@@ -209,14 +265,13 @@ export function AaaPostProcessing() {
     vignettePassRef.current = vignettePass
     motionBlurPassRef.current = motionBlurPass
     filmGrainPassRef.current = filmGrainPass
-
-    gl.toneMappingExposure = post.colorGrade.hdrExposure
+    bokehPassRef.current = bokehPass
 
     const dpr = viewport.dpr ?? gl.getPixelRatio() ?? 1
     const effW = size.width * dpr
     const effH = size.height * dpr
+    composer.setPixelRatio(dpr)
     composer.setSize(size.width, size.height)
-    aoPass.setSize(size.width, size.height)
     bloomFogPass.uniforms.resolution.value.set(effW, effH)
     contactShadowPass.uniforms.resolution.value.set(effW, effH)
     sharpenPass.uniforms.resolution.value.set(effW, effH)
@@ -233,6 +288,9 @@ export function AaaPostProcessing() {
       if (previousShadowMapTypeRef.current !== null) {
         gl.shadowMap.type = previousShadowMapTypeRef.current
       }
+      if (previousOutputColorSpaceRef.current !== null) {
+        gl.outputColorSpace = previousOutputColorSpaceRef.current
+      }
       composer.dispose()
       composerRef.current = null
     }
@@ -244,8 +302,8 @@ export function AaaPostProcessing() {
     const dpr = viewport.dpr ?? gl.getPixelRatio() ?? 1
     const effW = size.width * dpr
     const effH = size.height * dpr
+    composer.setPixelRatio(dpr)
     composer.setSize(size.width, size.height)
-    aoPassRef.current?.setSize(size.width, size.height)
     bloomFogPassRef.current?.uniforms.resolution.value.set(effW, effH)
     contactShadowPassRef.current?.uniforms.resolution.value.set(effW, effH)
     sharpenPassRef.current?.uniforms.resolution.value.set(effW, effH)
@@ -321,7 +379,24 @@ export function AaaPostProcessing() {
 
     updateMotionBlur(post.motionBlur, motionBlurPassRef.current, camera, prevMbQuatRef, prevMbPosRef)
 
-    gl.toneMappingExposure = post.colorGrade.hdrExposure
+    const bokehPass = bokehPassRef.current
+    if (bokehPass) {
+      const strength = getCinematicDofStrength()
+      bokehPass.enabled = strength > 0.02
+      if (bokehPass.enabled) {
+        const dofCfg = post.depthOfField
+        const u = bokehPass.uniforms as Record<string, { value: number }>
+        u.focus.value = estimateCinematicFocusDistance(camera, dofCfg.focusFallback)
+        const aspect = (camera as PerspectiveCamera).aspect
+        if (typeof aspect === 'number') u.aspect.value = aspect
+        u.aperture.value = dofCfg.aperture * strength
+        u.maxblur.value = dofCfg.maxblur * strength
+        u.nearClip.value = camera.near
+        u.farClip.value = camera.far
+      }
+    }
+
+    gl.toneMappingExposure = AAA_CLASSIC.color.exposure
     composer.render(delta)
   }, 1)
 

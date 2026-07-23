@@ -1,5 +1,6 @@
 import type { TeamId } from '../types'
 import { getTeamName, getMatchStadium, getMatchTypeLabel } from '../matchRuntime'
+import { getShirtNumberFromSession } from '../systems/playerAttributes'
 import {
   getPlayerDisplayName,
   getPlayerPositionLabel,
@@ -29,7 +30,7 @@ export type LineupEntry = {
 
 export function getTeamLineup(team: TeamId): LineupEntry[] {
   return Array.from({ length: 11 }, (_, index) => ({
-    number: index + 1,
+    number: getShirtNumberFromSession(team, index),
     name: getPlayerDisplayName(team, index),
     position: getPlayerPositionLabel(team, index),
   }))

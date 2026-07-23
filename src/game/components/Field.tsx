@@ -9,9 +9,12 @@ import {
   getPitchCollider,
   hideDebugNodes,
   showDebugNodes,
+  stripFieldHelperNodes,
 } from '../systems/fieldData'
 import { PHYSICS_DEBUG } from '../constants'
 import { beginMatchIntro } from '../systems/matchIntro'
+import { ballRef } from '../systems/entityRegistry'
+import { sfx } from '../systems/sfx'
 import { FieldLightPointFlares } from './FieldLightPointFlares'
 import { FieldStadiumCrowd } from './FieldStadiumCrowd'
 
@@ -20,7 +23,11 @@ useGLTF.preload('/models/field.glb')
 export function Field() {
   const { scene } = useGLTF('/models/field.glb')
   const setFieldData = useGameStore((s) => s.setFieldData)
-  const cloned = useMemo(() => scene.clone(true), [scene])
+  const cloned = useMemo(() => {
+    const root = scene.clone(true)
+    root.name = 'field_stadium'
+    return root
+  }, [scene])
   const [collider, setCollider] = useState(getPitchCollider)
   const [goalColliders, setGoalColliders] = useState<
     import('../systems/fieldData').GoalFrameCollider[]
@@ -35,12 +42,15 @@ export function Field() {
     applyFieldGraphics(cloned)
     const { bounds, goals, goalColliders: frames, spawn, collider: pitchCollider } =
       extractFieldData(cloned)
+    // Fora do debug: remove helpers (ball_spawn / círculo) do grafo da cena
+    if (!PHYSICS_DEBUG) stripFieldHelperNodes(cloned)
     setFieldData(bounds, goals, { pitch: pitchCollider, frames })
     setCollider(pitchCollider)
     setGoalColliders(frames)
     if (!introStartedRef.current) {
       introStartedRef.current = true
-      beginMatchIntro(bounds, spawn)
+      // Espera o RigidBody da bola existir (evita race no 1º mount / HMR)
+      queueMicrotask(() => beginMatchIntro(bounds, spawn))
     }
   }, [cloned, setFieldData])
 
@@ -56,7 +66,12 @@ export function Field() {
         />
       </RigidBody>
       {goalColliders.map((frame, i) => (
-        <RigidBody key={`${frame.part}-${i}`} type="fixed" colliders={false}>
+        <RigidBody
+          key={`${frame.part}-${i}`}
+          type="fixed"
+          colliders={false}
+          userData={{ isGoalFrame: true, part: frame.part }}
+        >
           <CuboidCollider
             args={frame.halfExtents}
             position={frame.position}
@@ -64,6 +79,14 @@ export function Field() {
             restitution={frame.restitution}
             restitutionCombineRule={CoefficientCombineRule.Max}
             frictionCombineRule={CoefficientCombineRule.Min}
+            onCollisionEnter={(e) => {
+              const other = e.other.rigidBodyObject
+              if (!other?.userData?.isBall) return
+              const vel = ballRef.velocity
+              const speed = Math.hypot(vel.x, vel.y, vel.z)
+              if (speed < 1.2) return
+              sfx.playPost(Math.min(1, speed / 14))
+            }}
           />
         </RigidBody>
       ))}

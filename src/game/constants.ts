@@ -1,5 +1,6 @@
 import type { TeamId } from './types'
 import type { FormationSlot } from './types'
+import { getKickoffSlotIndex } from './systems/teamTactics'
 
 export const PLAYERS_PER_TEAM = 11
 export const KICKOFF_PLAYER_INDEX = 9 // atacante na saída de bola
@@ -22,10 +23,25 @@ export const GAME_PACE = 0.96
 export const REAL_SECONDS_PER_GAME_MINUTE = 9 / GAME_PACE
 
 export const PLAYER_RADIUS = 0.11 * WORLD_SCALE
-export const PLAYER_SPEED = 2.18 * WORLD_SCALE * GAME_PACE
-export const PLAYER_SPRINT_SPEED = 3.1 * WORLD_SCALE * GAME_PACE
-export const GK_SPEED = 3.85 * WORLD_SCALE * GAME_PACE
-export const GK_RUSH_SPEED = 4.35 * WORLD_SCALE * GAME_PACE
+/**
+ * Raio duro do tronco (cápsula 2D) — jogadores não atravessam uns aos outros.
+ * Maior que PLAYER_RADIUS (só usado no clamp do campo).
+ */
+export const PLAYER_BODY_RADIUS = 0.22 * WORLD_SCALE
+/** @deprecated halo removido — colisão só resolve penetração dura */
+export const PLAYER_BODY_SOFT_RADIUS = 0.22 * WORLD_SCALE
+/** @deprecated */
+export const PLAYER_BODY_RESTITUTION = 0
+/** @deprecated */
+export const PLAYER_BODY_FRICTION = 0
+/** Separação completa no frame — evita residual que treme */
+export const PLAYER_BODY_SEPARATION_STIFFNESS = 0.55
+/** @deprecated */
+export const PLAYER_BODY_CONTACT_IMPULSE = 0.55 * WORLD_SCALE
+export const PLAYER_SPEED = 2.55 * WORLD_SCALE * GAME_PACE
+export const PLAYER_SPRINT_SPEED = 3.65 * WORLD_SCALE * GAME_PACE
+export const GK_SPEED = 4.15 * WORLD_SCALE * GAME_PACE
+export const GK_RUSH_SPEED = 4.7 * WORLD_SCALE * GAME_PACE
 export const GK_TURN_SPEED = 9.4
 
 /** Alcance do goleiro (m) */
@@ -71,15 +87,15 @@ export const PASS_CANDIDATE_ATTENTION_DIST = 11 * WORLD_SCALE
 export const PASS_CANDIDATE_BACKPEDAL_SPEED = 0.55
 export const PASS_CANDIDATE_SIDE_SPEED = 0.82
 /** No passe próprio: quem está perto disputa a bola (não a formação) */
-export const OWN_PASS_CONTEST_DIST = 9.5 * WORLD_SCALE
-export const OWN_PASS_TARGET_CONTEST_DIST = 7.5 * WORLD_SCALE
+export const OWN_PASS_CONTEST_DIST = 13.5 * WORLD_SCALE
+export const OWN_PASS_TARGET_CONTEST_DIST = 11 * WORLD_SCALE
 
 /** ~11 cm na escala do personagem */
 export const BALL_RADIUS = 0.055 * WORLD_SCALE
 /** Massa com corpo — leve demais parece pedrinha / gude */
 export const BALL_MASS = 0.048 * WORLD_SCALE * WORLD_SCALE
 /** Quique de couro no gramado — vivo sem estourar pra cima */
-export const BALL_RESTITUTION = 0.48
+export const BALL_RESTITUTION = 0.32
 /** Atrito de bola real — rola e segura no final */
 export const BALL_FRICTION = 0.52
 /** Amortecimento Rapier leve — o feel fino fica no ground/air drag */
@@ -87,13 +103,13 @@ export const BALL_LINEAR_DAMPING = 0.08
 /** Amortecimento angular */
 export const BALL_ANGULAR_DAMPING = 0.28
 /** Drag mínimo no gramado (1/s) */
-export const BALL_GROUND_ROLL_MIN = 0.24
+export const BALL_GROUND_ROLL_MIN = 0.55
 /** Drag máximo perto da parada (1/s) */
-export const BALL_GROUND_ROLL_MAX = 0.9
+export const BALL_GROUND_ROLL_MAX = 1.35
 /** Velocidade (m/s) em que o drag vai do mínimo ao máximo */
-export const BALL_GROUND_ROLL_BLEND = 4.6 * WORLD_SCALE * GAME_PACE
-/** Zera só quando praticamente parada */
-export const BALL_STOP_SPEED = 0.016 * WORLD_SCALE
+export const BALL_GROUND_ROLL_BLEND = 3.4 * WORLD_SCALE * GAME_PACE
+/** Zera quando quase parada */
+export const BALL_STOP_SPEED = 0.045 * WORLD_SCALE
 
 /** Trave/travessão metálica — ping realista no rebote */
 export const GOAL_FRAME_RESTITUTION = 0.84
@@ -113,7 +129,12 @@ export const PLAYER_FOOT_RADIUS = 0.13 * WORLD_SCALE
 export const PLAYER_SLIDE_FOOT_RADIUS = 0.05 * WORLD_SCALE
 export const PLAYER_BODY_BONE_RADIUS = 0.12 * WORLD_SCALE
 export const PLAYER_BONE_FRICTION = 0.55
-export const PLAYER_BONE_RESTITUTION = 0.42
+/** Quase sem rebote — ossos cinemáticos + Max faziam a bola “laser” */
+export const PLAYER_BONE_RESTITUTION = 0.04
+/** Teto de segurança da velocidade horizontal da bola (m/s) */
+export const BALL_MAX_SPEED = 16.5 * WORLD_SCALE * GAME_PACE
+/** Após contato com corpo (não domínio), amortece impulso Rapier */
+export const BALL_BODY_HIT_SPEED_CAP = 4.2 * WORLD_SCALE * GAME_PACE
 
 /**
  * Colisores de pé/corpo (Rapier) — domínio e roubo por contato real.
@@ -161,11 +182,42 @@ export const BALL_FOOT_OFFSET = 0.155 * WORLD_SCALE
 export const STEAL_DISTANCE = 0.68 * WORLD_SCALE
 export const STEAL_COOLDOWN_MS = 280
 /** Roubo automático do jogador — só ao sprintar, intervalo mais espaçado */
-export const USER_STEAL_PROXIMITY_INTERVAL_MS = 340
+export const USER_STEAL_PROXIMITY_INTERVAL_MS = 260
+/** Jogo de corpo em jogador sem bola — só no contato de corpo (+folga mínima) */
+export const BODY_CHARGE_MAX_DIST = PLAYER_BODY_RADIUS * 2.2
+export const BODY_CHARGE_COOLDOWN_MS = 2200
+/** IA vs IA: 6s entre ombros */
+export const BODY_CHARGE_AI_COOLDOWN_MS = 3000
+/** IA no player controlado: 1s entre ombros */
+export const BODY_CHARGE_AI_VS_PLAYER_MS = 1000
+/** Intervalo mínimo entre tentativas de ombro da IA (vs IA) */
+export const BODY_CHARGE_AI_INTERVAL_MS = 6000
+/** Intervalo mínimo entre tentativas de ombro da IA no player */
+export const BODY_CHARGE_AI_VS_PLAYER_INTERVAL_MS = 1000
+export const BODY_CHARGE_USER_INTERVAL_MS = 300
 /** IA tenta roubo em pé a cada X ms (marcador perto do portador) */
 export const STANDING_STEAL_AI_INTERVAL_MS = 560
 export const STANDING_STEAL_AI_CHANCE = 0.62
 export const STANDING_STEAL_AI_MAX_DIST = 1.45
+
+/** Stamina 0..1 — só gasta na partida (sem recover). Taxas / s de sim. */
+export const STAMINA_BASE_DRAIN = 0.00032
+export const STAMINA_JOG_DRAIN = 0.00075
+export const STAMINA_HAS_BALL_JOG_DRAIN = 0.00058
+export const STAMINA_SPRINT_DRAIN = 0.0028
+export const STAMINA_PRESS_DRAIN = 0.00135
+export const STAMINA_STEAL_ATTEMPT_COST = 0.022
+export const STAMINA_SHOULDER_DRAIN = 0.0014
+export const STAMINA_SLIDE_COST = 0.042
+export const STAMINA_DUEL_DRAIN = 0.0011
+/** Recuperação leve no intervalo (não zera fadiga). */
+export const STAMINA_HALF_TIME_RECOVER = 0.1
+/** Abaixo disso: sem sprint nem roubo AI */
+export const STAMINA_EXHAUSTED = 0.14
+/** Abaixo disso: sprint raro, roubo fraco */
+export const STAMINA_TIRED = 0.32
+export const STAMINA_WINDING = 0.5
+
 export const SLIDE_DURATION_MS = 1000
 /** Reservado — carrinho é in-place; alcance físico via SLIDE_REACH em tackle.ts */
 export const SLIDE_SPEED = 2.65 * WORLD_SCALE
@@ -273,7 +325,7 @@ export function getGoalkeeperId(team: TeamId): string {
 }
 
 export function getKickoffPlayerId(team: TeamId): string {
-  return playerId(team, KICKOFF_PLAYER_INDEX)
+  return playerId(team, getKickoffSlotIndex(team))
 }
 
 export function getOutfieldIds(team: TeamId): string[] {

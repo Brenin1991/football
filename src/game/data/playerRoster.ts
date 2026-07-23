@@ -1,5 +1,11 @@
 import type { TeamId } from '../types'
 import { getPlayerNameFromSession, getPlayerPositionFromSession, getEditionPlayerId } from '../matchRuntime'
+import { getPlayerStamina } from '../systems/playerStamina'
+import {
+  getPlayerNationalityLabel,
+  getPlayerOverallRuntime,
+  getPlayerShirtNumber,
+} from '../systems/playerAttributes'
 
 export const FORMATION_POSITION_LABELS = [
   'GK',
@@ -75,13 +81,9 @@ export function getPlayerRoleGroup(position: string): 'gk' | 'df' | 'mf' | 'fw' 
   return abbr.toLowerCase() as 'gk' | 'df' | 'mf' | 'fw'
 }
 
-/** Só visual — substituir por stamina real depois */
+/** @deprecated use getPlayerStamina — mantido por compat */
 export function mockStamina(playerId: string): number {
-  let h = 0
-  for (let i = 0; i < playerId.length; i++) {
-    h = (h * 31 + playerId.charCodeAt(i)) >>> 0
-  }
-  return 0.42 + (h % 53) / 100
+  return getPlayerStamina(playerId)
 }
 
 export function getPlayerCardInfo(playerId: string) {
@@ -92,7 +94,10 @@ export function getPlayerCardInfo(playerId: string) {
     index,
     name: getPlayerDisplayName(team, index),
     position: getPlayerPositionLabel(team, index),
-    stamina: mockStamina(playerId),
+    stamina: getPlayerStamina(playerId),
     editionPlayerId: getEditionPlayerId(team, index),
+    shirtNumber: getPlayerShirtNumber(playerId),
+    nationality: getPlayerNationalityLabel(playerId),
+    overall: getPlayerOverallRuntime(playerId),
   }
 }

@@ -7,9 +7,9 @@ import { FIELD_SCALE } from '../systems/fieldData'
  * Posição do sol deve bater com AaaPipeline / PsxPipeline.
  */
 export const KEY_LIGHT_LOCAL = {
-  x: 18,
-  y: 28,
-  z: 12,
+  x: -18,
+  y: 14,
+  z: -12,
 } as const
 
 export function getKeyLightWorldPosition(): { x: number; y: number; z: number } {
@@ -21,7 +21,7 @@ export function getKeyLightWorldPosition(): { x: number; y: number; z: number } 
 }
 
 export const FLOODLIGHT_X_SHADOWS = {
-  enabled: true,
+  enabled: false,
   /** Braços fake (o 4º fica com o shadow map do sol) */
   fakeArmCount: 4,
   /** Torres nos cantos — raio = half-extent do campo × este fator */

@@ -12,6 +12,7 @@ import {
 } from '../systems/matchBreak'
 import { isFieldParadePhase } from '../systems/matchPhases'
 import { entranceSystem } from '../systems/teamEntrance'
+import { applyHalfTimeStaminaRecovery } from '../systems/playerStamina'
 import { useGameStore } from '../store/gameStore'
 import { runScreenTransition } from '../systems/screenTransition'
 
@@ -68,6 +69,7 @@ export function TeamEntranceManager() {
         transitionBusyRef.current = true
         void runScreenTransition(() => {
           entranceSystem.finish()
+          applyHalfTimeStaminaRecovery()
           useGameStore.setState({ half: 2 })
           beginHalfTimeEnter(bounds)
         }).finally(() => {

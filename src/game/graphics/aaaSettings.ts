@@ -11,9 +11,9 @@ export const AAA_CANVAS_RESOLUTION_OPTIONS = {
   },
   high: {
     label: 'Alta',
-    description: 'Detalhe alto com custo moderado',
-    dprMin: 4.25,
-    dprMax: 5.75,
+    description: 'Supersampling de alta qualidade (até 2,25× DPR)',
+    dprMin: 1.5,
+    dprMax: 2.25,
   },
   medium: {
     label: 'Média',
@@ -56,6 +56,19 @@ export function getAaaCanvasDpr(
 export const AAA_CLASSIC = {
   renderer: {
     antialias: true,
+    precision: 'highp' as const,
+    powerPreference: 'high-performance' as const,
+    alpha: false,
+    premultipliedAlpha: false,
+    depth: true,
+    stencil: false,
+    preserveDrawingBuffer: false,
+    /** MSAA no render target HDR do EffectComposer (WebGL2). */
+    multisampling: 4,
+    /** RGBA16F preserva highlights para bloom e tone mapping. */
+    hdr: true,
+    /** Limite desejado; será limitado pela capacidade real da GPU. */
+    maxAnisotropy: 16,
     /** Preset ativo — altere aqui ou via menu (graphicsStore.aaaResolution) */
     resolution: AAA_CANVAS_RESOLUTION_DEFAULT satisfies AaaCanvasResolutionId,
   },
@@ -70,37 +83,39 @@ export const AAA_CLASSIC = {
 
   environment: {
     enabled: true,
-    intensity: 0.2,
+    intensity: 0.6,
   },
 
   reflectionProbe: {
     enabled: true,
-    resolution: 512,
+    resolution: 1024,
     frames: 1,
     /** Altura do probe acima do gramado */
-    height: 1.5,
+    height: 1,
   },
 
   shadow: {
     enabled: true,
-    mapSize: 4096,
+    type: 'pcfsoft' as const,
+    /** 8K — cobre estádio inteiro sem perder nitidez no gramado */
+    mapSize: 8192,
     bias: -0.00035,
     normalBias: 0.035,
   },
 
   lighting: {
-    ambient: 0.14,
+    ambient: 0.2,
     hemisphereSky: '#dcecff',
-    hemisphereGround: '#4a8f48',
-    hemisphereIntensity: 0.52,
-    sunColor: '#fff3d6',
-    sunIntensity: 2.5,
+    hemisphereGround: '#8e722b',
+    hemisphereIntensity: 0.3,
+    sunColor: '#edb737',
+    sunIntensity: 1.3,
     fillColor: '#c8e0ff',
-    fillIntensity: 0.38,
+    fillIntensity: 0.1,
   },
 
   material: {
-    envMapIntensity: 0.42,
+    envMapIntensity: 1.42,
     fabricRoughness: 1,
     skinRoughness: 1,
     /** Leve emissivo nas cores do uniforme — mantém vivacidade sem brilho plástico */
@@ -110,23 +125,52 @@ export const AAA_CLASSIC = {
     colorLightnessBoost: 1.06,
   },
 
+  /** Gramado procedural aplicado somente ao mesh `field_area`. */
+  grass: {
+    enabled: true,
+    /** Densidade do relevo de fibras por unidade do mundo. */
+    bladeScale: 40,
+    /** Alongamento visual dos fios no sentido do corte. */
+    bladeAspect: 1,
+    /** Variação maior que agrupa os fios em pequenos tufos. */
+    clumpScale: 0.8,
+    roughness: 0.9,
+    roughnessVariation: 0.08,
+    microNormalStrength: 0.08,
+    /** Faixas de corte afetam só a roughness, nunca a cor. */
+    mowingStripeWidth: 1.1,
+    mowingRoughnessVariation: 0.1,
+    /** Remove detalhe subpixel gradualmente para impedir moiré/cintilação. */
+    distanceFadeStart: 0.78,
+    distanceFadeEnd: 0.1,
+    /** Camadas geométricas que formam volume e silhueta de fios reais. */
+    physical: {
+      enabled: false,
+      shellCount: 10,
+      height: 0.0025,
+      bladeScale: 58,
+      bladeAspect: 1,
+      density: 0.44,
+      fadeStart: 18,
+      fadeEnd: 72,
+      alphaTest: 0.48,
+    },
+  },
+
   /**
-   * Cor / HDR (pós-processo — igual ao PSX, sem pixel/dither/scanlines)
+   * Estágio HDR de saída — aplicado pelo renderer/OutputPass no fim da cadeia.
+   * O color grade (contraste, saturação, vinheta, tint…) fica em `post.colorGrade`.
    */
   color: {
-    exposure: 2,
-    brightness: 0.01,
-    contrast: 1,
-    saturation: 1,
-    gamma: 1,
-    vignette: 0.4,
-    vignetteDarkness: 1.55,
-    tint: [1.0, 1.0, 1.0] as [number, number, number],
+    /** Exposição do tone mapping, aplicada junto ao ACES no OutputPass. */
+    exposure: 0.9,
+    /** none | linear | reinhard | cineon | aces | agx */
     toneMapping: 'aces' as PsxToneMapping,
   },
 
   post: {
     temporalAA: {
+      /** MSAA 4× é mais estável em jogo; TAA causa ghosting em atletas/bola. */
       enabled: false,
       sampleLevel: 1,
       unbiased: true,
@@ -136,16 +180,16 @@ export const AAA_CLASSIC = {
     ambientOcclusion: {
       enabled: false,
       kernelRadius: 8,
-      minDistance: 0.005,
-      maxDistance: 0.1,
+      minDistance: 0.025,
+      maxDistance: 0.85,
       output: 'default' as 'default' | 'ssao' | 'blur' | 'depth' | 'normal',
       ignoreAlpha: true,
     },
     ssr: {
       enabled: false,
-      opacity: 0.72,
+      opacity: 0.2,
       maxDistance: 36,
-      thickness: 0.9,
+      thickness: 0.1,
     },
     rgbShift: {
       enabled: true,
@@ -154,33 +198,33 @@ export const AAA_CLASSIC = {
     },
     contactShadows: {
       enabled: true,
-      strength: 0.24,
-      radius: 1.8,
-      threshold: 0.1,
-      lowerScreenBoost: 0.35,
+      strength: 0.3,
+      radius: 1.55,
+      threshold: 0.12,
+      lowerScreenBoost: 0.26,
     },
     screenSpaceLight: {
       enabled: false,
-      intensity: 0.22,
-      threshold: 0.62,
-      shadowStrength: 0.18,
-      radius: 0.28,
+      intensity: 1.9,
+      threshold: 0.72,
+      shadowStrength: 0.07,
+      radius: 0.24,
       centerX: 0.5,
       centerY: 0.42,
     },
     bloomFog: {
       enabled: true,
-      threshold: 0.62,
-      softKnee: 0.22,
-      glowStrength: 0.4,
-      fogTintMix: 0.7,
-      radiusPx: 3.5,
-      outerRadiusMul: 2.2,
-      veilStrength: 0.08,
-      fogColor: '#bfbfbf',
+      threshold: 0.78,
+      softKnee: 0.08,
+      glowStrength: 0.22,
+      fogTintMix: 0.42,
+      radiusPx: 5,
+      outerRadiusMul: 8,
+      veilStrength: 0.035,
+      fogColor: '#c8d8e6',
     },
     chromaticDirt: {
-      enabled: true,
+      enabled: false,
       amount: 0.00012,
       radialStrength: 0.6,
       dirtStrength: 0.16,
@@ -190,35 +234,42 @@ export const AAA_CLASSIC = {
       centerY: 0.5,
     },
     bloom: {
-      intensity: 0.44,
-      threshold: 0.88,
-      radius: 0.5,
+      intensity: 0.2,
+      threshold: 0.6,
+      radius: 0.6,
     },
     motionBlur: {
-      enabled: false,
-      strength: 0.5,
-      rotationScale: 3.2,
+      enabled: true,
+      strength: 0.1,
+      rotationScale: 1.2,
       translationScale: 0.0025,
       maxBlurUv: 0.04,
     },
     filmGrain: {
       enabled: true,
-      intensity: 0.022,
+      intensity: 0.008,
+    },
+    /** DoF leve em cutscenes (hino / comemoração / replay) — ativado em runtime */
+    depthOfField: {
+      aperture: 0.00022,
+      maxblur: 0.0055,
+      focusFallback: 4.4,
     },
     colorGrade: {
-      hdrExposure: 1.5,
+      /** Mantido neutro: a exposição HDR ocorre uma única vez no OutputPass. */
+      hdrExposure: 0.8,
       brightness: 0.01,
-      contrast: 1,
-      saturation: 1,
-      gamma: 1,
+      contrast: 1.1,
+      saturation: 1.1,
+      gamma: 1.2,
       hueShift: 0,
       colorCorrection: [1, 1, 1] as [number, number, number],
       colorMultiply: '#ffffff',
-      tintColor: '#c8d4ff',
-      tintStrength: 0,
-      vignette: 0.4,
-      sharpen: 0.35,
-      rgbShift: { amount: 0.0008, angle: 0 },
+      tintColor: '#dce9ff',
+      tintStrength: 0.025,
+      vignette: 0.18,
+      sharpen: 0.22,
+      rgbShift: { amount: 0, angle: 0 },
     },
   },
 }
@@ -227,14 +278,5 @@ export type AaaSettings = typeof AAA_CLASSIC
 
 /** Deixa cores de uniforme/gramado mais vivas sem estourar o HDR */
 export function boostAaaColor(color: THREE.Color): THREE.Color {
-  const { colorSaturationBoost, colorLightnessBoost } = AAA_CLASSIC.material
-  const hsl = { h: 0, s: 0, l: 0 }
-  color.getHSL(hsl)
-  const out = new THREE.Color()
-  out.setHSL(
-    hsl.h,
-    Math.min(1, hsl.s * colorSaturationBoost + 0.03),
-    Math.min(1, hsl.l * colorLightnessBoost),
-  )
-  return out
+  return color.multiplyScalar(1.1)
 }

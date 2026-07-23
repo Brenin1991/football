@@ -2,7 +2,7 @@ import { useGameStore } from '../store/gameStore'
 import type { FieldBounds, Vec3 } from '../types'
 import { getBallSpawnPosition } from './fieldData'
 import { setBallPosition } from './entityRegistry'
-import { setupKickoff } from './kickoff'
+import { lockKickoffInput, setupKickoff } from './kickoff'
 import { narrationSfx } from './narrationSfx'
 import { entranceSystem } from './teamEntrance'
 
@@ -39,5 +39,7 @@ export function finishMatchIntro() {
   }
 
   entranceSystem.finish()
+  setBallPosition(center)
+  lockKickoffInput(500)
   setupKickoff('home', center, 'Saída de bola — passe (Espaço / E)')
 }

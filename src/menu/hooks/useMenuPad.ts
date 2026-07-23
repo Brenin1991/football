@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
-import { XBOX, createGamepadEdgeState, getActiveGamepad } from '../../game/hooks/gamepad'
+import { XBOX, createGamepadEdgeState, getActiveGamepad, seedGamepadEdgeState } from '../../game/hooks/gamepad'
+import { useGameStore } from '../../game/store/gameStore'
 import { useAppStore } from '../../store/appStore'
 import { menuSfx } from '../menuSfx'
 
@@ -10,6 +11,10 @@ export type MenuPadHandlers = {
   onRight?: () => void
   onConfirm?: () => void
   onBack?: () => void
+  /** Xbox Y / tecla Y — ação secundária (ex.: táticas) */
+  onY?: () => void
+  /** Xbox X / tecla X — ação terciária (ex.: instruções) */
+  onX?: () => void
   enabled?: boolean
 }
 
@@ -22,6 +27,10 @@ const KEY_ACTIONS: Record<string, keyof MenuPadHandlers> = {
   ' ': 'onConfirm',
   Escape: 'onBack',
   Backspace: 'onBack',
+  y: 'onY',
+  Y: 'onY',
+  x: 'onX',
+  X: 'onX',
 }
 
 type PadRegistration = {
@@ -46,7 +55,9 @@ function getTopRegistration(): PadRegistration | null {
 }
 
 function menuInputAllowed() {
-  return useAppStore.getState().view !== 'game'
+  const view = useAppStore.getState().view
+  if (view !== 'game') return true
+  return useGameStore.getState().pauseMenuOpen === true
 }
 
 function fire(action: keyof MenuPadHandlers) {
@@ -56,7 +67,7 @@ function fire(action: keyof MenuPadHandlers) {
   const fn = top.handlersRef.current[action]
   if (typeof fn !== 'function') return
 
-  if (action === 'onConfirm') {
+  if (action === 'onConfirm' || action === 'onY' || action === 'onX') {
     menuSfx.playSelect()
   } else if (
     action === 'onUp' ||
@@ -75,6 +86,9 @@ function ensureListeners() {
   if (listenersBound) return
   listenersBound = true
   edge = createGamepadEdgeState()
+  // Se um botão já estiver segurado ao religar (troca de tela), conta como
+  // "já pressionado" para não redisparar a mesma ação na tela recém-montada.
+  seedGamepadEdgeState(edge)
 
   onKeyDown = (event: KeyboardEvent) => {
     if (event.repeat) return
@@ -106,6 +120,8 @@ function ensureListeners() {
         if (justPressed(XBOX.DPAD_RIGHT)) fire('onRight')
         if (justPressed(XBOX.A)) fire('onConfirm')
         if (justPressed(XBOX.B)) fire('onBack')
+        if (justPressed(XBOX.Y)) fire('onY')
+        if (justPressed(XBOX.X)) fire('onX')
 
         edge.prevButtons = pad.buttons.map((button) => button.pressed)
       }

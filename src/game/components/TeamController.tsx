@@ -11,6 +11,7 @@ import {
   anyCrossVolleyBuffered,
   isCrossVolleyArmed,
   tickBufferedCrossVolleys,
+  clearExpiredAnticipationBuffers,
 } from '../systems/crossAssist'
 import { bootstrapReceiveRoutes } from '../systems/receiveRoutes'
 import { getUserTeam, useGameStore } from '../store/gameStore'
@@ -26,6 +27,7 @@ import { isUserPauseActive } from '../systems/gameTime'
 import { sfx } from '../systems/sfx'
 import { syncActivePlayerOnLooseBall } from '../systems/playerSwitch'
 import { tickContactBallClaims } from '../systems/playerFootPhysics'
+import { tickTeammateBallCalls } from '../systems/aiBrain'
 
 /**
  * Posse ativa + timeout de passe.
@@ -52,6 +54,8 @@ export function TeamController() {
     if (store.phase !== 'playing') return
     if (isUserPauseActive()) return
 
+    tickTeammateBallCalls()
+
     const possession = store.ballPossession
 
     if (possession) {
@@ -62,6 +66,7 @@ export function TeamController() {
       }
 
       if (
+        store.controlMode !== 'pro' &&
         possession.team === getUserTeam() &&
         holder.role !== 'gk' &&
         holder.id !== store.activePlayerId
@@ -73,6 +78,8 @@ export function TeamController() {
     }
 
     syncActivePlayerOnLooseBall()
+
+    clearExpiredAnticipationBuffers()
 
     if (anyCrossVolleyBuffered()) {
       tickBufferedCrossVolleys()
@@ -114,7 +121,8 @@ export function releaseBallFromFeet(
   clearDribbleState()
 
   if (passerId) {
-    store.blockPasserClaim(passerId, 380)
+    // Janela curta pra jogo de corpo no marcador após o passe
+    store.blockPasserClaim(passerId, 1400)
     store.setLastTouch(
       playerRegistry.get(passerId)?.team ?? getUserTeam(),
     )
@@ -151,7 +159,8 @@ export function releaseBallFromFeet(
         crowdSfx.notifyHomeShot()
       }
       if (opts?.releaseKind === 'shot') {
-        replaySystem.notifyShot(passer.team)
+        // passerId explícito — possession já foi limpa acima
+        replaySystem.notifyShot(passer.team, passerId)
       }
       narrationSfx.notifyBallRelease(opts?.releaseKind)
     }

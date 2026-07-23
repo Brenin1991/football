@@ -28,6 +28,7 @@ import { distance2D } from './rules'
 import { useGameStore, type BallPossession } from '../store/gameStore'
 import { getAttackSign, getDefensiveGoalZ, getFieldFacingRotation, isInPenaltyArea } from './teamField'
 import { ballRestY } from './fieldData'
+import { getPlayerAttrMultipliers } from './playerAttributes'
 import type { FieldBounds, GoalkeeperAnim, GoalZone, TeamId, Vec3 } from '../types'
 import { minGkHandDist, getGkCatchAnchor } from './goalkeeperHands'
 import {
@@ -390,7 +391,12 @@ export function assessPreShotThreat(
   if (!isFacingGoal(shooter, gkTeam, bounds)) return null
 
   const store = useGameStore.getState()
-  const winding = shooter.anim === 'player_shoot'
+  const winding =
+    shooter.anim === 'player_shoot' ||
+    shooter.anim === 'player_kick' ||
+    shooter.anim === 'player_kick_high' ||
+    shooter.anim === 'player_kick_medium' ||
+    shooter.anim === 'player_kick_low'
   const aimForShooter =
     store.strikeAim && store.ballPossession?.playerId === shooter.id
       ? store.strikeAim
@@ -433,7 +439,7 @@ export function assessPreShotThreat(
       0.12 +
       (1 - power) * SHOT_POWER_CHARGE_DURATION_SEC * 0.45
   } else if (inBox && shotDistance > 8) {
-    timeToStrike = 0.85 + (shotDistance - 8) * 0.04
+    timeToStrike = 1.85 + (shotDistance - 8) * 0.04
   }
 
   const ball = ballRef.current
@@ -911,8 +917,9 @@ function isEasyCatchShot(threat: ShotThreat, gk: PlayerRef): boolean {
 
   if (threat.ballSpeed > GK_CLAIM_BOX_SPEED) return false
   if (threat.urgency > 0.72) return false
-  if (threat.interceptY >= 0.52 && lateral < GK_REACH_STANDING + 0.28) return true
-  return lateral < GK_REACH_STANDING + 0.22
+  if (threat.interceptY >= 0.52 && lateral < GK_REACH_STANDING * getPlayerAttrMultipliers(gk.id).goalkeeping + 0.28)
+    return true
+  return lateral < GK_REACH_STANDING * getPlayerAttrMultipliers(gk.id).goalkeeping + 0.22
 }
 
 export function clampGkFacing(

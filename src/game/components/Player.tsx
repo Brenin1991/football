@@ -20,13 +20,16 @@ import {
   PASS_CANDIDATE_SIDE_SPEED,
   GK_TURN_SPEED,
   WORLD_SCALE,
+  PASS_SPEED_MAX,
+  BALL_MAX_SPEED,
 } from '../constants'
 import { passSpeedForDistance, releaseBallFromFeet } from './TeamController'
 import { computeStrikeDirection } from '../systems/strikeAim'
-import { usePlayerAssets } from '../context/PlayerAssetsContext'
-import { useGameStore, getUserTeam } from '../store/gameStore'
+import { useGLTF } from '@react-three/drei'
+import { useGameStore, getUserTeam, isProFreeControl, shouldSoloReceivePass } from '../store/gameStore'
 import { applyPlayerMaterials } from '../graphics/graphicsMaterials'
-import { getTeamDbId, getPlayerAppearance, getTeamMatchKit } from '../matchRuntime'
+import { getTeamDbId, getPlayerAppearance, getTeamMatchKit, getEditionPlayerId } from '../matchRuntime'
+import { getCustomPlayerGlbUrl, getPlayerGlbUrl } from '../systems/customPlayerGlb'
 import { attachTeamShirtTexture, detachTeamShirtTexture } from '../psx/shirtTextureApply'
 import { parsePlayerIndex } from '../data/playerRoster'
 import type { FormationSlot, PlayerAnim, PlayerRole, TeamId, Vec3 } from '../types'
@@ -46,27 +49,40 @@ function shouldSkipPassStealForAnticipation(
   const poss = store.ballPossession
   if (poss?.team === userTeam && poss.playerId === playerId) return false
   if (poss && poss.team !== userTeam) return false
+
+  // Quem acabou de passar precisa de A/sprint pra jogo de corpo no marcador
+  // (não tratar bola no ar como "só first-time" pra ele).
+  if (
+    store.passBlockPlayerId === playerId &&
+    performance.now() < (store.passBlockUntil ?? 0)
+  ) {
+    return false
+  }
+
   const incoming =
     store.passIntent?.receiverId === playerId ||
     (store.passIntent?.passType === 'cross' &&
       getCrossAttackerId(store) === playerId)
-  const loose = !poss
-  return incoming || loose
+  // Só bloqueia roubo/ombro pro receptor (A = first-time).
+  // Bola solta em geral NÃO bloqueia — senão o passador não consegue ombro.
+  return !!incoming
 }
 
 import {
   ballRef,
   playerRegistry,
+  setBallPosition,
   unregisterPlayer,
   type PlayerRef,
 } from '../systems/entityRegistry'
-import { findAssistedPassTarget, findNearestTeammate, findPassTargetInFacingDirection, getHeldBallPoint, getPassInterceptTarget, canStealFromHolder } from '../systems/possession'
+import { findAssistedPassTarget, findNearestTeammate, findPassTargetInFacingDirection, getBallAtFeet, getDribbleStealProtect, getHeldBallPoint, getPassInterceptTarget } from '../systems/possession'
 import {
   applyPlayerFacing,
   facingFromMovement,
   getBallFocusFacing,
   plantVelocityForYawError,
   worldToLocalMovement,
+  shouldMirrorRightFootedStrike,
   PLAYER_DIR_SMOOTH_AI,
   PLAYER_DIR_SMOOTH_AI_DIRECT,
   PLAYER_DIR_SMOOTH_AI_PRESS,
@@ -87,17 +103,22 @@ import { getAICrossParams } from '../systems/aiCross'
 import { tickAICrossVolleyAnticipation } from '../systems/aiCrossVolley'
 import {
   decideCarrierAction,
+  evaluateBallCallDelivery,
   findBestPassTarget,
   getAIPassParams,
+  getBallCallPrepMoveDir,
   getCarrierContext,
   getCarrierMoveIntent,
   getNearestOpponent,
   getPassLaneBlockTarget,
   getPassLeadPosition,
+  getAiDribbleStickPhase,
   isCarrierSurrounded,
+  isPassLaneClearEnough,
+  steerAiMoveDir,
 } from '../systems/aiBrain'
 import { cameraState } from '../systems/cameraState'
-import { getKickoffPlayerId, getKickoffAimRotation, getKickoffFacingRotation, findKickoffPassTarget, startKickoff } from '../systems/kickoff'
+import { getKickoffPlayerId, getKickoffFacingRotation, getKickoffKickerStand, findKickoffPassTarget, isKickoffInputLocked, startKickoff } from '../systems/kickoff'
 import {
   applyPlayerSlotBias,
   buildPassRunnerIds,
@@ -114,6 +135,7 @@ import {
   getPassFlightSupportPosition,
   getRoleArriveDist,
   resolveLooseBallChaser,
+  shouldAssistLooseBallChase,
   shouldAutoChaseLooseBall,
   shouldChaseOwnPassBall,
   getSupportPosition,
@@ -148,6 +170,7 @@ import {
   QUICK_PASS_POWER,
   shotLoftFromPower,
   shotSpeedFromPower,
+  getAIShotPower,
   throughSpeedFromPower,
 } from '../systems/shotPower'
 import {
@@ -159,7 +182,7 @@ import {
 import {
   crossLoftForDistance,
   crossSpeedForDistance,
-  findCrossTarget,
+  findCrossTargetAlongAim,
   getCrossReceiveLead,
 } from '../systems/cross'
 import {
@@ -168,7 +191,6 @@ import {
   isCrossReceiveControlActive,
   isCrossTrapActive,
   isCrossVolleyArmed,
-  planReceiveRun,
   tryCrossBallContact,
   tryMaintainCrossTrap,
 } from '../systems/crossAssist'
@@ -199,10 +221,10 @@ import {
   scaleStandingStealInterval,
   shouldOpponentStandingSteal,
 } from '../systems/difficulty'
-import { SLIDE_AI_GOAL_BOX_MAX_DIST, SLIDE_AI_GOAL_DANGER_MAX_DIST, SLIDE_AI_GOAL_BOX_INTERVAL_MUL, SLIDE_DURATION_MS, SLIDE_AI_MAX_DIST, SLIDE_AI_MIN_DIST, SLIDE_AI_MIN_INTERVAL_MS, STANDING_STEAL_AI_CHANCE, STANDING_STEAL_AI_INTERVAL_MS, STANDING_STEAL_AI_MAX_DIST, STRIKE_WARP_TURN_SPEED, USER_STEAL_PROXIMITY_INTERVAL_MS } from '../constants'
+import { SLIDE_AI_GOAL_BOX_MAX_DIST, SLIDE_AI_GOAL_DANGER_MAX_DIST, SLIDE_AI_GOAL_BOX_INTERVAL_MUL, SLIDE_DURATION_MS, SLIDE_AI_MAX_DIST, SLIDE_AI_MIN_DIST, SLIDE_AI_MIN_INTERVAL_MS, STANDING_STEAL_AI_CHANCE, STANDING_STEAL_AI_INTERVAL_MS, STANDING_STEAL_AI_MAX_DIST, STRIKE_WARP_TURN_SPEED, BODY_CHARGE_AI_INTERVAL_MS, BODY_CHARGE_AI_VS_PLAYER_INTERVAL_MS } from '../constants'
 import { alignPlayerModelToCapsule } from '../systems/animationClips'
 import { PlayerAnimController } from '../systems/playerAnimController'
-import { normalizePlayerAnim } from '../systems/playerClipRegistry'
+import { normalizePlayerAnim, pickPassStrikeAnim, pickShotStrikeAnim } from '../systems/playerClipRegistry'
 import { GoalkeeperAnimController } from '../systems/goalkeeperAnimController'
 import { registerGkHands, unregisterGkHands, updateGkHandPositions, getGkHipsWorldXZ, snapshotGkSkeletonToBody, pinGkHips } from '../systems/goalkeeperHands'
 import { usePlayerMixer } from '../systems/usePlayerMixer'
@@ -228,16 +250,43 @@ import { isFieldParadePhase } from '../systems/matchPhases'
 import { replaySystem } from '../systems/replaySystem'
 import type { ControlState } from '../hooks/useKeyboardControls'
 import { clearBallShield, setBallShield } from '../systems/ballShield'
-import { tryStandingSteal, refreshShoulderChargePress } from '../systems/standingSteal'
+import {
+  refreshShoulderChargePress,
+  tryStandingStealOrBodyCharge,
+  tryOffBallBodyCharge,
+  tryAiBodyChargeOnHolder,
+  findOffBallBodyChargeTarget,
+  consumeBodyChargeKnock,
+  clearBodyChargeCooldown,
+  trySkillMoveBeatPressers,
+} from '../systems/standingSteal'
 import { consumeContactAnim, clearContactAnim } from '../systems/playerContactAnims'
 import {
-  applyBodySeparationImpulse,
   getDuelOpponentId,
   getPhysicalDuelDecelMul,
   getPhysicalDuelDurationMs,
   getPhysicalDuelSpeedMul,
   isInPhysicalDuel,
+  releaseBallFromBodyImbalance,
 } from '../systems/playerPhysicalDuel'
+import {
+  registerBodyContactDuel,
+  resolvePlayerBodyCollisions,
+} from '../systems/playerBodyCollision'
+import {
+  canAiAttemptStandingSteal,
+  canPlayerSprint,
+  getPlayerStamina,
+  getStaminaSpeedMul,
+  getStaminaStealChanceMul,
+  getStaminaStealIntervalMul,
+  isSprintWinded,
+  tickPlayerStamina,
+} from '../systems/playerStamina'
+import {
+  applyAttrAimNoise,
+  getPlayerAttrMultipliers,
+} from '../systems/playerAttributes'
 import {
   clearPlayerDribbleControl,
   updatePlayerDribbleControl,
@@ -247,7 +296,7 @@ import {
   clearPlayerSkillMoves,
   updatePlayerSkillSpin,
 } from '../systems/playerSkillMoves'
-import { impulseDribbleFeint, pushDribbleBallRoll } from '../systems/ballDribble'
+import { clearDribbleFeintRoll, pushDribbleBallRoll, syncDribblePossession } from '../systems/ballDribble'
 import { GkHandColliders } from './GkHandColliders'
 import { PlayerBoneColliders } from './PlayerBoneColliders'
 import { needsPlayerBoneSync } from '../systems/playerFootPhysics'
@@ -267,7 +316,7 @@ const AI_DRIBBLE_THINK_MAX_S = 0.68
 /** Alinhamento mínimo corpo→chute antes da IA disparar */
 const AI_SHOOT_FACE_DOT = 0.48
 /** Alinhamento mínimo corpo→passe antes da IA soltar a bola */
-const AI_PASS_FACE_DOT = 0.52
+const AI_PASS_FACE_DOT = 0.62
 
 const RUN_START_THRESHOLD = 0.012
 const RUN_STOP_THRESHOLD = 0.006
@@ -295,7 +344,18 @@ function setOpenSpacePassIntent(
   const teammates = [...playerRegistry.values()].filter(
     (p) => p.team === team && p.id !== me.id && p.role !== 'gk',
   )
-  const receiver = findNearestTeammate(me, teammates)
+  const landX = me.position.x + dx * passDist
+  const landZ = me.position.z + dz * passDist
+  // Cruzamento livre: quem está perto do ponto de queda, não o mais próximo do passador
+  const receiver =
+    passType === 'cross'
+      ? teammates.reduce<PlayerRef | null>((best, p) => {
+          const d = distance2D(p.position, { x: landX, y: 0, z: landZ })
+          if (d > 14) return best
+          if (!best) return p
+          return distance2D(best.position, { x: landX, y: 0, z: landZ }) <= d ? best : p
+        }, null)
+      : findNearestTeammate(me, teammates)
   if (!receiver) {
     store.setPassIntent(null)
     return
@@ -303,16 +363,17 @@ function setOpenSpacePassIntent(
 
   store.setPassIntent({
     receiverId: receiver.id,
-    targetX: me.position.x + dx * passDist,
-    targetZ: me.position.z + dz * passDist,
+    targetX: landX,
+    targetZ: landZ,
     startedAt: performance.now(),
     passingTeam: team,
     passType,
     ballZAtPass: ballRef.current?.z ?? me.position.z,
     runnerIds: buildPassRunnerIds(me.id, team, receiver.id, {
-      x: me.position.x + dx * passDist,
-      z: me.position.z + dz * passDist,
+      x: landX,
+      z: landZ,
     }, passType),
+    soloReceive: shouldSoloReceivePass(receiver.id) || undefined,
   })
 }
 
@@ -326,18 +387,25 @@ export function Player({
   consumeAction,
   consumePassPress,
 }: PlayerProps) {
-  const { scene, animations } = usePlayerAssets()
+  const slotIndex = parsePlayerIndex(id)
+  const editionPlayerId = getEditionPlayerId(team, slotIndex)
+  const glbUrl = getPlayerGlbUrl(editionPlayerId)
+  const preserveSkin = getCustomPlayerGlbUrl(editionPlayerId) != null
+  const { scene, animations } = useGLTF(glbUrl)
   const modelRootRef = useRef<THREE.Group>(null)
   const bodyRef = useRef<RapierRigidBody>(null)
 
-  const slotIndex = parsePlayerIndex(id)
-
   const cloned = useMemo(() => {
     const model = SkeletonUtils.clone(scene) as THREE.Group
-    applyPlayerMaterials(model, getPlayerAppearance(team, slotIndex, role), false)
+    applyPlayerMaterials(
+      model,
+      getPlayerAppearance(team, slotIndex, role),
+      false,
+      { preserveSkin },
+    )
     alignPlayerModelToCapsule(model)
     return model
-  }, [scene, team, role, slotIndex])
+  }, [scene, animations, team, role, slotIndex, glbUrl, preserveSkin, editionPlayerId])
 
   useLayoutEffect(() => {
     if (role === 'gk') {
@@ -358,7 +426,7 @@ export function Player({
     }
   }, [cloned, team, role])
 
-  const { actions, mixer, animToClip } = usePlayerMixer(animations, modelRootRef)
+  const { actions, mixer, animToClip } = usePlayerMixer(animations, modelRootRef, cloned)
   const animCtrl = useRef<PlayerAnimController | null>(null)
   const gkAnimCtrl = useRef<GoalkeeperAnimController | null>(null)
   const replayAnimDriver = useRef<ReplayAnimDriver | null>(null)
@@ -376,13 +444,15 @@ export function Player({
   const locoMoving = useRef(false)
   const inputDir = useRef({ x: 0, z: 1 })
   const moveVel = useRef({ x: 0, z: 0 })
+  /** Direção de corrida congelada no wind-up do chute — corre reto */
+  const shotRunLockRef = useRef<{ x: number; z: number; sprint: boolean } | null>(null)
   const aiDirectMove = useRef(false)
   /** Sticky: chegou no posto da formação — fica parado até o alvo afastar de verdade */
   const formationHold = useRef(false)
   const aiThinkTimer = useRef(0)
   const aiSlideTimer = useRef(0)
   const aiStealTimer = useRef(0)
-  const userStealTimer = useRef(0)
+  const aiBodyChargeTimer = useRef(0)
   const knockdownActive = useRef(false)
   const snapshotSkeletonRef = useRef<(() => void) | null>(null)
   const gkSnapshotSkeletonRef = useRef<(() => void) | null>(null)
@@ -390,10 +460,17 @@ export function Player({
   const lastPossessionSince = useRef(0)
   const dribbleBallOffset = useRef({ x: 0, z: 0 })
   const dribbleTouchSeverity = useRef(0)
+  /** Direção em que o 360 arrasta a bola (fixo no início do spin). */
+  const spinBallDir = useRef({ x: 0, z: 1 })
+  /** Tempo decorrido / duração do 360 — arraste durante a animação. */
+  const spinElapsed = useRef(0)
+  const spinDuration = useRef(0.55)
   const bodyLean = useRef(0)
   const bodyPitch = useRef(0)
   const dribbleCtrl = useRef<DribbleControlOutput | null>(null)
   const wasStopFeint = useRef(false)
+  const wasRunCut = useRef(false)
+  const aiStickPhasePrev = useRef<'drive' | 'arc' | 'cut' | null>(null)
   const wasRunLoco = useRef(false)
   /** Yaw alvo durante animação de passe/chute — warp de corpo estilo FIFA */
   const strikeWarpYaw = useRef<number | null>(null)
@@ -481,6 +558,8 @@ export function Player({
     return () => {
       clearPlayerPhysicalState(id)
       clearContactAnim(id)
+      // NÃO limpa stamina — remount no intervalo (key -h2) não pode zerar fadiga
+      clearBodyChargeCooldown(id)
       unregisterPlayer(id)
     }
   }, [id])
@@ -490,6 +569,7 @@ export function Player({
       if (!mixer || !modelRootRef.current || !actions.gk_idle) return
       const ctrl = new GoalkeeperAnimController(actions, mixer)
       ctrl.init()
+      mixer.update(0)
       gkAnimCtrl.current = ctrl
       registerGkHands(id, cloned)
       return () => {
@@ -503,7 +583,9 @@ export function Player({
     if (!mixer || !modelRootRef.current || !actions.player_idle) return
     const ctrl = new PlayerAnimController(actions, mixer)
     ctrl.init()
+    ctrl.bindModelRoot(modelRootRef.current ?? cloned)
     ctrl.bindHoldBallIdle(actions.gk_idle_ball)
+    mixer.update(0)
     animCtrl.current = ctrl
     registerPlayerBones(id, cloned)
     registerGkHands(id, cloned)
@@ -525,6 +607,7 @@ export function Player({
       if (mixer && actions.gk_idle) {
         const boot = new GoalkeeperAnimController(actions, mixer)
         boot.init()
+        mixer.update(0)
         gkAnimCtrl.current = boot
       }
     } else {
@@ -532,7 +615,9 @@ export function Player({
       if (mixer && actions.player_idle) {
         const boot = new PlayerAnimController(actions, mixer)
         boot.init()
+        boot.bindModelRoot(modelRootRef.current ?? cloned)
         boot.bindHoldBallIdle(actions.gk_idle_ball)
+        mixer.update(0)
         animCtrl.current = boot
       }
     }
@@ -570,10 +655,11 @@ export function Player({
     if (phase !== 'kickoff' || !fieldBounds) return
     if (id !== getKickoffPlayerId(kickoffTeam)) return
     const c = useGameStore.getState().setPiecePosition ?? getBallSpawnPosition(fieldBounds)
-    position.current.set(c.x, 0, c.z)
-    tacticalTarget.current = { x: c.x, z: c.z }
-    rotation.current = getKickoffFacingRotation(kickoffTeam, fieldBounds)
-    bodyRef.current?.setTranslation({ x: c.x, y: getPlayerBodyY(), z: c.z }, true)
+    const stand = getKickoffKickerStand(kickoffTeam, fieldBounds, c, id)
+    position.current.set(stand.x, 0, stand.z)
+    tacticalTarget.current = { x: stand.x, z: stand.z }
+    rotation.current = stand.rotation
+    bodyRef.current?.setTranslation({ x: stand.x, y: getPlayerBodyY(), z: stand.z }, true)
     if (modelRootRef.current) {
       modelRootRef.current.rotation.y = rotation.current
     }
@@ -643,6 +729,7 @@ export function Player({
       isSprinting?: boolean
       dribbleBallOffset?: { x: number; z: number }
       dribbleTouchSeverity?: number
+      dribbleSpinning?: boolean
     },
   ) => {
     const outfieldCtrl = animCtrl.current
@@ -686,6 +773,7 @@ export function Player({
     entry.isSprinting = opts?.isSprinting
     entry.dribbleBallOffset = opts?.dribbleBallOffset
     entry.dribbleTouchSeverity = opts?.dribbleTouchSeverity
+    entry.dribbleSpinning = opts?.dribbleSpinning
     entry.anim = opts?.anim ?? displayAnim
     entry.animTime = opts?.animTime ?? displayTime
   }
@@ -696,12 +784,17 @@ export function Player({
       gkAnimCtrl.current?.playFootKick()
     } else {
       const clip = setPieceShootAnim.clip ?? 'player_shoot'
-      animCtrl.current?.playStrike(clip)
+      const aim = setPieceAimAngle
+      const aimX = Math.sin(aim)
+      const aimZ = Math.cos(aim)
+      animCtrl.current?.playStrike(clip, {
+        mirror: shouldMirrorRightFootedStrike(rotation.current, aimX, aimZ),
+      })
     }
     if (useGameStore.getState().setPieceShootAnim?.kickerId === id) {
       useGameStore.setState({ setPieceShootAnim: null })
     }
-  }, [setPieceShootAnim?.at, id, isGoalkeeper])
+  }, [setPieceShootAnim?.at, id, isGoalkeeper, setPieceAimAngle])
 
   useEffect(() => {
     if (!setPieceThrowAnim || setPieceThrowAnim.kickerId !== id || isGoalkeeper) return
@@ -716,10 +809,9 @@ export function Player({
 
   useEffect(() => {
     if (!kickoffStrikeAnim || kickoffStrikeAnim.kickerId !== id) return
+    // Limpa antes do passe — evita double-fire (StrictMode / re-render)
+    useGameStore.setState({ kickoffStrikeAnim: null })
     performKickoffPass()
-    if (useGameStore.getState().kickoffStrikeAnim?.kickerId === id) {
-      useGameStore.setState({ kickoffStrikeAnim: null })
-    }
   }, [kickoffStrikeAnim?.at, id])
 
   useFrame((_, delta) => {
@@ -738,6 +830,7 @@ export function Player({
     } else if (!ctrl && modelRootRef.current && actions.player_idle && mixer) {
       const boot = new PlayerAnimController(actions, mixer)
       boot.init()
+      boot.bindModelRoot(modelRootRef.current ?? cloned)
       boot.bindHoldBallIdle(actions.gk_idle_ball)
       boot.setRootMotionSnapshot(() => snapshotSkeletonRef.current?.())
       animCtrl.current = boot
@@ -836,6 +929,8 @@ export function Player({
     const storeState = useGameStore.getState()
     const isUserActive =
       !isGoalkeeper && team === getUserTeam() && storeState.activePlayerId === id
+    /** Pro + Livre: só stick — sem marcação/tática/perseguição auto */
+    const userManualOnly = isUserActive && isProFreeControl()
     const hasBallNow = storeState.ballPossession?.playerId === id
 
     if (storeState.phase !== 'replay') {
@@ -876,15 +971,39 @@ export function Player({
 
     if (storeState.phase === 'goal-celebration') {
       const celebTeam = replaySystem.getCelebrationTeam()
-      const ball = ballRef.current
+      const scorerId = replaySystem.getCelebrationScorerId()
+      const gather = replaySystem.getCelebrationGather()
       const bodyY = getPlayerBodyY()
+      const elapsed = replaySystem.getCelebrationElapsed()
 
       if (celebTeam && team === celebTeam && !isGoalkeeper) {
-        const dx = ball.x - position.current.x
-        const dz = ball.z - position.current.z
+        const isScorer = id === scorerId
+        // Autor vai pro canto; resto corre atrás dele (offsets pra não empilhar)
+        let tx = gather.x
+        let tz = gather.z
+        if (!isScorer && scorerId) {
+          const scorer = playerRegistry.get(scorerId)
+          if (scorer) {
+            const hash = (id.charCodeAt(id.length - 1) % 7) - 3
+            const side = hash * 0.85
+            const back = 1.1 + Math.abs(hash) * 0.35
+            const face = Math.atan2(gather.x - scorer.position.x, gather.z - scorer.position.z)
+            tx = scorer.position.x - Math.sin(face) * back + Math.cos(face) * side
+            tz = scorer.position.z - Math.cos(face) * back - Math.sin(face) * side
+          }
+        } else if (isScorer) {
+          // Autor: caminho um pouco curvo até o canto
+          const wobble = Math.sin(elapsed * 2.2) * 0.35
+          tx = gather.x + wobble
+          tz = gather.z
+        }
+
+        const dx = tx - position.current.x
+        const dz = tz - position.current.z
         const dist = Math.hypot(dx, dz)
-        if (dist > 0.55) {
-          const step = Math.min(dist, 2.4 * simDelta)
+        const sprintSpeed = isScorer ? 2.65 : 2.35 + (id.charCodeAt(0) % 5) * 0.08
+        if (dist > 0.65) {
+          const step = Math.min(dist, sprintSpeed * simDelta)
           position.current.x += (dx / dist) * step
           position.current.z += (dz / dist) * step
           rotation.current = Math.atan2(dx, dz)
@@ -897,7 +1016,10 @@ export function Player({
             })
           }
         } else if (animFree) {
-          ctrl?.playStrike('player_shoot')
+          // Chegou: comemoração aleatória; se não tiver clip, idle
+          if (!ctrl?.playCelebration()) {
+            ctrl?.forceIdle()
+          }
         }
       } else if (animFree) {
         ctrl?.forceIdle()
@@ -991,17 +1113,19 @@ export function Player({
 
     if (isKickoffWaiting && id === getKickoffPlayerId(storeState.kickoffTeam)) {
       const center = storeState.setPiecePosition!
-      position.current.set(center.x, 0, center.z)
-      rotation.current = getKickoffAimRotation(
-        team,
-        fieldBounds,
-        id,
-        position.current,
-      )
+      const stand = fieldBounds
+        ? getKickoffKickerStand(team, fieldBounds, center, id)
+        : {
+            x: center.x,
+            z: center.z,
+            rotation: rotation.current,
+          }
+      position.current.set(stand.x, 0, stand.z)
+      rotation.current = stand.rotation
       bodyRef.current.setNextKinematicTranslation({
-        x: center.x,
+        x: stand.x,
         y: getPlayerBodyY(),
-        z: center.z,
+        z: stand.z,
       })
       if (modelRootRef.current) {
         modelRootRef.current.rotation.y = rotation.current
@@ -1010,15 +1134,17 @@ export function Player({
 
       const isKickerActive =
         team === getUserTeam() ? isUserActive : team === storeState.kickoffTeam
+      // Só edge de passe/chute — A segurado do skip da intro não pode iniciar sozinho
       if (
         isKickerActive &&
         animFree &&
-        (consumeAction?.('kick') || consumeAction?.('pass'))
+        !isKickoffInputLocked() &&
+        (consumePassPress?.() || consumeAction?.('kick'))
       ) {
         startKickoff()
       }
 
-      syncRegistry(center)
+      syncRegistry({ x: stand.x, z: stand.z }, { rotation: stand.rotation })
       return
     }
 
@@ -1069,8 +1195,18 @@ export function Player({
       const contactAnim = consumeContactAnim(id)
       if (contactAnim === 'shoulder_charge') ctrl.playShoulderCharge()
       else if (contactAnim === 'end_shoulder_charge') ctrl.endShoulderCharge()
-      else if (contactAnim === 'imbalance') ctrl.playImbalance()
-      else if (contactAnim === 'imbalance_stolen') ctrl.playImbalanceStolen()
+      else if (contactAnim === 'imbalance') {
+        ctrl.playImbalance()
+        // Segurança: desequilíbrio COM bola = bola livre (sem magnetismo)
+        if (hasBallNow) {
+          const self = playerRegistry.get(id)
+          if (self) {
+            const duelOpp = getDuelOpponentId(id)
+            const charger = duelOpp ? playerRegistry.get(duelOpp) : null
+            releaseBallFromBodyImbalance(self, charger ?? null)
+          }
+        }
+      } else if (contactAnim === 'imbalance_stolen') ctrl.playImbalanceStolen()
     }
     if (knockdownActive.current) {
       knockdownActive.current = false
@@ -1129,7 +1265,7 @@ export function Player({
             performKick(pendingShot.power, {
               x: pendingShot.dirX,
               z: pendingShot.dirZ,
-            })
+            }, pendingShot.firstTime)
           }
         }
       }
@@ -1146,8 +1282,14 @@ export function Player({
       ) {
         performSlideTackle()
       }
-      if (isUserActive && animFree && phase === 'kickoff' && storeState.ballFrozen) {
-        if (consumeAction?.('kick') || consumeAction?.('pass')) {
+      if (
+        isUserActive &&
+        animFree &&
+        phase === 'kickoff' &&
+        storeState.ballFrozen &&
+        !isKickoffInputLocked()
+      ) {
+        if (consumePassPress?.() || consumeAction?.('kick')) {
           startKickoff()
         }
       }
@@ -1301,7 +1443,7 @@ export function Player({
             held.z - position.current.z,
           )
         } else if (canAiSlideIntercept && interceptEarly) {
-          rollChance = getAISlideChanceOnIntercept(role)
+          rollChance = getAISlideChanceOnIntercept(role, id)
           slideDir = normalize2D(
             ballRef.current.x - position.current.x,
             ballRef.current.z - position.current.z,
@@ -1314,7 +1456,7 @@ export function Player({
             held.z - position.current.z,
           )
         } else if (canAiSlidePress && holderEarly) {
-          rollChance = getAISlideChanceOnHolder(role, isPrimaryMarkerEarly)
+          rollChance = getAISlideChanceOnHolder(role, isPrimaryMarkerEarly, id)
           slideDir = normalize2D(
             holderEarly.position.x - position.current.x,
             holderEarly.position.z - position.current.z,
@@ -1343,6 +1485,7 @@ export function Player({
       !isGoalkeeper &&
       !hasBallNow &&
       !isUserActive &&
+      canAiAttemptStandingSteal(id) &&
       !(passIntentEarly != null &&
         (passIntentEarly.receiverId === id || passIntentEarly.runnerIds?.includes(id))) &&
       opponentHasBallEarly &&
@@ -1363,10 +1506,11 @@ export function Player({
     if (canAiStandingSteal) {
       aiStealTimer.current -= simDelta * 1000
       if (aiStealTimer.current <= 0) {
+        const staminaIntervalMul = getStaminaStealIntervalMul(id)
         const intervalBase =
-          team === getUserTeam()
+          (team === getUserTeam()
             ? STANDING_STEAL_AI_INTERVAL_MS * 0.68
-            : STANDING_STEAL_AI_INTERVAL_MS * 0.82
+            : STANDING_STEAL_AI_INTERVAL_MS * 0.82) * staminaIntervalMul
         aiStealTimer.current = scaleStandingStealInterval(
           intervalBase + Math.random() * intervalBase * 0.45,
           team,
@@ -1379,44 +1523,101 @@ export function Player({
           0,
           1,
         )
-        let rollChance = STANDING_STEAL_AI_CHANCE * roleMul * (0.58 + proximity)
+        let rollChance =
+          STANDING_STEAL_AI_CHANCE *
+          roleMul *
+          (0.58 + proximity) *
+          getStaminaStealChanceMul(id)
         if (!isPrimaryMarkerEarly) rollChance *= 0.82
         if (team === getUserTeam()) rollChance *= 1.45
         else rollChance = scaleStandingStealChance(rollChance, team) * 1.12
+        // Não tenta roubar no meio do giro 180 / spin
+        const holderProtect = holderEarly ? getDribbleStealProtect(holderEarly) : 0
+        if (holderProtect > 0.72) rollChance = 0
+        else if (holderProtect > 0.4) rollChance *= 1 - holderProtect * 0.9
         if (Math.random() < Math.min(0.96, rollChance)) {
           if (holderEarly) refreshShoulderChargePress(id, holderEarly.id)
-          tryStandingSteal(id)
+          tryAiBodyChargeOnHolder(id)
         }
       }
     }
 
-    const canUserProximitySteal =
-      isUserActive &&
-      !shouldBlockManualUserControl(storeState, id) &&
-      !hasBallNow &&
-      !isGoalkeeper &&
+    // IA colada no portador: ombro com timeout longo (não spam)
+    const canAiShoulderHolder =
       canMove &&
-      phase === 'playing' &&
+      !ballFrozen &&
+      !isGoalkeeper &&
+      !hasBallNow &&
+      !isUserActive &&
+      canAiAttemptStandingSteal(id) &&
       opponentHasBallEarly &&
-      holderEarly?.role !== 'gk' &&
       holderEarly != null &&
-      !shouldSkipPassStealForAnticipation(storeState, id, isUserActive)
+      holderEarly.role !== 'gk' &&
+      shouldOpponentStandingSteal(holderEarly.team) &&
+      animFree &&
+      phase === 'playing' &&
+      (isPrimaryMarkerEarly || isCoverPresser(id, team)) &&
+      distToHolderEarly < 0.75
 
-    if (canUserProximitySteal && holderEarly && currentPossEarly) {
-      const held = getHeldBallPoint(holderEarly, currentPossEarly.playerId)
-      const pressingSprint = !!controls?.current?.sprint
-      if (pressingSprint && canStealFromHolder(mySnapshot(), holderEarly, held)) {
-        refreshShoulderChargePress(id, holderEarly.id)
-        userStealTimer.current -= simDelta * 1000
-        if (userStealTimer.current <= 0) {
-          userStealTimer.current = USER_STEAL_PROXIMITY_INTERVAL_MS
-          tryStandingSteal(id)
+    if (canAiShoulderHolder && holderEarly) {
+      aiBodyChargeTimer.current -= simDelta * 1000
+      if (aiBodyChargeTimer.current <= 0) {
+        const holderIsUser =
+          holderEarly.team === getUserTeam() &&
+          holderEarly.id === storeState.activePlayerId
+        aiBodyChargeTimer.current = holderIsUser
+          ? BODY_CHARGE_AI_VS_PLAYER_INTERVAL_MS + Math.random() * 200
+          : BODY_CHARGE_AI_INTERVAL_MS + Math.random() * 1600
+        let shoulderRoll =
+          (role === 'def' ? 0.22 : role === 'mid' ? 0.14 : 0.08) *
+          getStaminaStealChanceMul(id)
+        if (holderIsUser) shoulderRoll *= 1.15
+        if (team !== getUserTeam()) {
+          shoulderRoll = scaleStandingStealChance(shoulderRoll, team) * 0.65
         }
-      } else {
-        userStealTimer.current = 0
-        if (ctrl?.isShoulderCharging()) ctrl.endShoulderCharge()
+        if (Math.random() < Math.min(0.35, shoulderRoll)) {
+          tryAiBodyChargeOnHolder(id)
+        }
       }
     }
+
+    // IA sem bola: ombro em adversário SEM posse — bem raro
+    const canAiOffBallBody =
+      canMove &&
+      !ballFrozen &&
+      !isGoalkeeper &&
+      !hasBallNow &&
+      !isUserActive &&
+      canAiAttemptStandingSteal(id) &&
+      !opponentHasBallEarly &&
+      animFree &&
+      phase === 'playing' &&
+      (role === 'def' || role === 'mid')
+
+    if (canAiOffBallBody) {
+      aiBodyChargeTimer.current -= simDelta * 1000
+      if (aiBodyChargeTimer.current <= 0) {
+        const offTarget = findOffBallBodyChargeTarget(id)
+        const targetIsUser =
+          !!offTarget &&
+          offTarget.team === getUserTeam() &&
+          offTarget.id === storeState.activePlayerId
+        aiBodyChargeTimer.current = targetIsUser
+          ? BODY_CHARGE_AI_VS_PLAYER_INTERVAL_MS + Math.random() * 200
+          : BODY_CHARGE_AI_INTERVAL_MS * 1.35 + Math.random() * 2000
+        if (offTarget) {
+          let roll =
+            (role === 'def' ? 0.16 : 0.1) * getStaminaStealChanceMul(id)
+          if (team !== getUserTeam()) roll = scaleStandingStealChance(roll, team) * 0.55
+          if (targetIsUser) roll *= 1.2
+          if (Math.random() < Math.min(0.28, roll)) {
+            tryOffBallBodyCharge(id, offTarget.id)
+          }
+        }
+      }
+    }
+
+    // Roubo / jogo de corpo do player: SÓ no A (performStandingSteal) — sem auto
 
     if (isPlayerSliding(id)) {
       const dir = getSlideDirection(id)
@@ -1577,6 +1778,7 @@ export function Player({
       canMove &&
       phase === 'playing' &&
       !isGoalkeeper
+    if (!shotChargeWindUp) shotRunLockRef.current = null
 
     const crossVolleyAim =
       isUserActive &&
@@ -1637,11 +1839,12 @@ export function Player({
       phase === 'playing'
 
     const needsAutoReceiveRun =
-      receivingPass ||
-      autoFirstTimeRun ||
-      anticipatedShotRun ||
-      crossVolleyChase ||
-      anticipationChargeRun
+      !userManualOnly &&
+      (receivingPass ||
+        autoFirstTimeRun ||
+        anticipatedShotRun ||
+        crossVolleyChase ||
+        anticipationChargeRun)
 
     const shotLockActive =
       isUserActive &&
@@ -1671,100 +1874,38 @@ export function Player({
       const isCrossPass = passIntent?.passType === 'cross'
       const { ball, velocity: ballVel } = getLiveBallState()
 
-      if (!passIntent) {
-        // Hold no chute / first-time em bola solta — persegue a bola
-        const lookT = THREE.MathUtils.clamp(
-          Math.hypot(ball.x - position.current.x, ball.z - position.current.z) /
-            Math.max(Math.hypot(ballVel.x, ballVel.z), 1.2),
-          0.06,
-          0.38,
-        )
-        const tx = ball.x + ballVel.x * lookT
-        const tz = ball.z + ballVel.z * lookT
-        const bx = tx - position.current.x
-        const bz = tz - position.current.z
-        const bd = Math.hypot(bx, bz)
-        if (bd > 0.12) {
-          dirX = bx / bd
-          dirZ = bz / bd
-          sprint = true
-          moveScale = 1.06
-        } else {
-          dirX = 0
-          dirZ = 0
-          sprint = false
-          moveScale = 0
-        }
-        receiveRunState.current = {
-          hardStop: false,
-          approachDist: bd,
-          directVel: true,
-          targetSpeed: sprint ? PLAYER_SPRINT_SPEED : 0,
-          dirX,
-          dirZ,
-        }
-        aiDirectMove.current = true
-      } else if (passIntent) {
-      const crossInterceptor =
-        !isCrossPass || id === crossInterceptorId || hasCrossVolleyIntent(id)
-
-      const { plan } = planReceiveRun(
-        id,
-        position.current,
-        ball,
-        ballVel,
-        passIntent,
-        null,
-        { crossInterceptor },
-      )
+      // Receber = ir NA BOLA. Sem planejador dançando.
+      const bx = ball.x - position.current.x
+      const bz = ball.z - position.current.z
+      const bd = Math.hypot(bx, bz) || 1
+      dirX = bx / bd
+      dirZ = bz / bd
+      sprint = true
+      moveScale = 1.08
       receiveRunState.current = {
-        hardStop: plan.hardStop,
-        approachDist: plan.approachDist,
-        directVel: isCrossPass || anticipationChargeRun || anticipatedShotRun,
-        targetSpeed: plan.targetSpeed,
-        dirX: plan.dirX,
-        dirZ: plan.dirZ,
-      }
-
-      if (isCrossPass && crossInterceptor && !hasCrossVolleyIntent(id)) {
-        const horiz = Math.hypot(ball.x - position.current.x, ball.z - position.current.z)
-        if (horiz < 3.2) {
-          tryCrossBallContact(id, position.current, ball, ballVel)
-        }
-        const ballLow = (ball.y ?? 0) < 1.15
-        const ballSlow = Math.hypot(ballVel.x, ballVel.z) < 5.5
-        if (ballLow && ballSlow) {
-          tryMaintainCrossTrap(id, team, position.current, ball, ballVel, passIntent)
-        }
-      }
-
-      if (plan.hardStop && hasCrossVolleyIntent(id)) {
-        const bx = ball.x - position.current.x
-        const bz = ball.z - position.current.z
-        const bd = Math.hypot(bx, bz)
-        if (bd > 0.12) {
-          dirX = bx / bd
-          dirZ = bz / bd
-          sprint = true
-          moveScale = 1.04
-        } else {
-          dirX = 0
-          dirZ = 0
-          sprint = false
-          moveScale = 0
-        }
-      } else if (plan.hardStop) {
-        dirX = 0
-        dirZ = 0
-        sprint = false
-        moveScale = 0
-      } else {
-        dirX = plan.dirX
-        dirZ = plan.dirZ
-        sprint = plan.sprint || anticipationChargeRun || anticipatedShotRun
-        moveScale = Math.max(plan.moveScale, anticipationChargeRun || anticipatedShotRun ? 1.04 : 0)
+        hardStop: false,
+        approachDist: bd,
+        directVel: true,
+        targetSpeed: PLAYER_SPRINT_SPEED,
+        dirX,
+        dirZ,
       }
       aiDirectMove.current = true
+
+      if (passIntent && isCrossPass) {
+        const crossInterceptor =
+          id === crossInterceptorId || hasCrossVolleyIntent(id)
+        if (crossInterceptor && !hasCrossVolleyIntent(id)) {
+          const horiz = Math.hypot(ball.x - position.current.x, ball.z - position.current.z)
+          if (horiz < 1.55) {
+            tryCrossBallContact(id, position.current, ball, ballVel)
+          }
+          const ballLow = (ball.y ?? 0) < 1.15
+          const ballSlow = Math.hypot(ballVel.x, ballVel.z) < 5.5
+          if (ballLow && ballSlow) {
+            tryMaintainCrossTrap(id, team, position.current, ball, ballVel, passIntent)
+          }
+        }
       }
     } else if (
       hasCrossVolleyIntent(id) &&
@@ -1790,34 +1931,71 @@ export function Player({
       const aimDirX = pending?.dirX ?? aim?.dirX
       const aimDirZ = pending?.dirZ ?? aim?.dirZ
 
-      const velLen = Math.hypot(moveVel.current.x, moveVel.current.z)
-      const inertiaLen = Math.hypot(inputDir.current.x, inputDir.current.z)
-      const wasSprinting =
-        playerRegistry.get(id)?.isSprinting === true ||
-        !!controls?.current?.sprint ||
-        velLen > PLAYER_SPEED * 1.06
-
-      if (velLen > 0.08) {
-        dirX = moveVel.current.x / velLen
-        dirZ = moveVel.current.z / velLen
-        sprint = wasSprinting || autoFirstTimeWithBall
-        moveScale = sprint ? 1.05 : 1
-      } else if (inertiaLen > 0.04) {
-        dirX = inputDir.current.x / inertiaLen
-        dirZ = inputDir.current.z / inertiaLen
-        sprint = wasSprinting || autoFirstTimeWithBall
-        moveScale = sprint ? 1.05 : 1
-      } else if (aimDirX != null && aimDirZ != null) {
-        const aimLen = Math.hypot(aimDirX, aimDirZ)
-        if (aimLen > 0.01) {
-          dirX = aimDirX / aimLen
-          dirZ = aimDirZ / aimLen
-          sprint = autoFirstTimeWithBall || wasSprinting
-          moveScale = autoFirstTimeWithBall ? 1.05 : wasSprinting ? 1.02 : 0.95
+      // Wind-up do chute: corre RETO na direção que já tinha — stick só mira a seta
+      if (shotChargeWindUp) {
+        if (!shotRunLockRef.current) {
+          const velLen = Math.hypot(moveVel.current.x, moveVel.current.z)
+          const inLen = Math.hypot(inputDir.current.x, inputDir.current.z)
+          let lx: number
+          let lz: number
+          if (velLen > 0.08) {
+            lx = moveVel.current.x / velLen
+            lz = moveVel.current.z / velLen
+          } else if (inLen > 0.04) {
+            lx = inputDir.current.x / inLen
+            lz = inputDir.current.z / inLen
+          } else {
+            lx = Math.sin(rotation.current)
+            lz = Math.cos(rotation.current)
+          }
+          shotRunLockRef.current = {
+            x: lx,
+            z: lz,
+            sprint:
+              playerRegistry.get(id)?.isSprinting === true ||
+              !!controls?.current?.sprint ||
+              velLen > PLAYER_SPEED * 1.06,
+          }
         }
+        const lock = shotRunLockRef.current
+        dirX = lock.x
+        dirZ = lock.z
+        sprint = lock.sprint || !!controls?.current?.sprint
+        moveScale = sprint ? 1.05 : 1
+        inputDir.current.x = dirX
+        inputDir.current.z = dirZ
+        aiDirectMove.current = true
+      } else {
+        shotRunLockRef.current = null
+        const velLen = Math.hypot(moveVel.current.x, moveVel.current.z)
+        const inertiaLen = Math.hypot(inputDir.current.x, inputDir.current.z)
+        const wasSprinting =
+          playerRegistry.get(id)?.isSprinting === true ||
+          !!controls?.current?.sprint ||
+          velLen > PLAYER_SPEED * 1.06
+
+        if (velLen > 0.08) {
+          dirX = moveVel.current.x / velLen
+          dirZ = moveVel.current.z / velLen
+          sprint = wasSprinting || autoFirstTimeWithBall
+          moveScale = sprint ? 1.05 : 1
+        } else if (inertiaLen > 0.04) {
+          dirX = inputDir.current.x / inertiaLen
+          dirZ = inputDir.current.z / inertiaLen
+          sprint = wasSprinting || autoFirstTimeWithBall
+          moveScale = sprint ? 1.05 : 1
+        } else if (aimDirX != null && aimDirZ != null) {
+          const aimLen = Math.hypot(aimDirX, aimDirZ)
+          if (aimLen > 0.01) {
+            dirX = aimDirX / aimLen
+            dirZ = aimDirZ / aimLen
+            sprint = autoFirstTimeWithBall || wasSprinting
+            moveScale = autoFirstTimeWithBall ? 1.05 : wasSprinting ? 1.02 : 0.95
+          }
+        }
+        aiDirectMove.current = true
       }
-      aiDirectMove.current = true
-    } else if (pressAsMarker) {
+    } else if (pressAsMarker && !userManualOnly) {
       const ai = getAIMove(simDelta)
       dirX = ai.dirX
       dirZ = ai.dirZ
@@ -1883,7 +2061,7 @@ export function Player({
       canMove &&
       !bodyActionLocked &&
       !shouldBlockManualUserControl(storeState, id) &&
-      !shouldAutoChaseLooseBall(id, team)
+      (userManualOnly || !shouldAutoChaseLooseBall(id, team))
     ) {
       const c = controls.current
       const f = cameraState.forward
@@ -1921,14 +2099,70 @@ export function Player({
       aiDirectMove.current = false
     } else if (canMove && !bodyActionLocked) {
       const ai = getAIMove(simDelta)
-      dirX = ai.dirX
-      dirZ = ai.dirZ
+      // Apoio ofensivo: desvia forte de companheiro (não light)
+      const supportingMate =
+        !hasBallNow &&
+        !!storeState.ballPossession &&
+        storeState.ballPossession.team === team &&
+        storeState.ballPossession.playerId !== id
+      const steered = hasBallNow
+        ? { x: ai.dirX, z: ai.dirZ }
+        : steerAiMoveDir(id, ai.dirX, ai.dirZ, {
+            withBall: false,
+            light: !supportingMate,
+          })
+      dirX = steered.x
+      dirZ = steered.z
       sprint = ai.sprint
-      moveScale = passInterceptPressing
-        ? Math.min(Math.max(ai.urgency, 1.02), 1.1)
-        : ai.direct
-          ? Math.min(Math.max(ai.urgency, 0.88), 1.02)
-          : Math.max(ai.urgency, 0.94)
+      // Só freia se alguém está NA FRENTE no caminho — não mata sprint por estar perto
+      let pathBlocked = false
+      const moveLen = Math.hypot(dirX, dirZ)
+      if (moveLen > 0.08) {
+        const mx = dirX / moveLen
+        const mz = dirZ / moveLen
+        for (const other of playerRegistry.values()) {
+          if (other.id === id) continue
+          const dx = other.position.x - position.current.x
+          const dz = other.position.z - position.current.z
+          const dist = Math.hypot(dx, dz)
+          const lim = other.team === team ? 1.55 : 1.45
+          if (dist > lim || dist < 1e-4) continue
+          const ahead = (dx / dist) * mx + (dz / dist) * mz
+          if (ahead > 0.45) {
+            pathBlocked = true
+            // Companheiro na frente: desvia lateral em vez de só frear
+            if (other.team === team) {
+              const latX = -mz
+              const latZ = mx
+              const side =
+                dx * latX + dz * latZ >= 0 ? 1 : -1
+              dirX = mx * 0.35 + latX * side * 0.65
+              dirZ = mz * 0.35 + latZ * side * 0.65
+              const dl = Math.hypot(dirX, dirZ) || 1
+              dirX /= dl
+              dirZ /= dl
+            }
+            break
+          }
+        }
+      }
+      // Portador: NUNCA corta sprint por crowd — senão vira trote burro
+      if (pathBlocked && !hasBallNow) {
+        sprint = false
+        moveScale = passInterceptPressing
+          ? Math.min(Math.max(ai.urgency, 1.02), 1.1)
+          : ai.direct
+            ? Math.min(Math.max(ai.urgency, 0.88), 1.02)
+            : Math.max(ai.urgency, 0.94)
+        moveScale *= 0.9
+      } else {
+        moveScale = passInterceptPressing
+          ? Math.min(Math.max(ai.urgency, 1.02), 1.1)
+          : ai.direct
+            ? Math.min(Math.max(ai.urgency, 0.88), 1.02)
+            : Math.max(ai.urgency, 0.94)
+        if (pathBlocked && hasBallNow) moveScale *= 0.94
+      }
       aiDirectMove.current = ai.direct
     } else {
       aiDirectMove.current = false
@@ -1967,7 +2201,13 @@ export function Player({
     const rawDirLen = Math.hypot(dirX, dirZ)
     const rawDirX = rawDirLen > 0.02 ? dirX : 0
     const rawDirZ = rawDirLen > 0.02 ? dirZ : 0
-    if (
+    // Receive: NÃO suaviza direção — senão saracota indo/voltando
+    if (receivingPass || needsAutoReceiveRun) {
+      if (rawDirLen > 0.02) {
+        inputDir.current.x = dirX
+        inputDir.current.z = dirZ
+      }
+    } else if (
       !userCrossReceiveControl &&
       ((urgentMove && rawDirLen > 0.02) || receiveRunState.current.directVel)
     ) {
@@ -1983,39 +2223,61 @@ export function Player({
         dirZ = smoothedDir.z / smLen
       }
     } else {
-      const dirSmooth = hasBallNow
-        ? isUserActive
-          ? sprint
-            ? PLAYER_DIR_SMOOTH_DRIBBLE * 0.9
-            : PLAYER_DIR_SMOOTH_DRIBBLE * 1.2
-          : sprint
-            ? PLAYER_DIR_SMOOTH_DRIBBLE_AI * 0.85
-            : PLAYER_DIR_SMOOTH_DRIBBLE_AI
-        : isUserActive
-          ? PLAYER_DIR_SMOOTH_CONTROLLED
-          : markerPressing || passInterceptPressing
-            ? PLAYER_DIR_SMOOTH_AI_PRESS
-            : aiDirectMove.current
-              ? PLAYER_DIR_SMOOTH_AI_DIRECT
-              : PLAYER_DIR_SMOOTH_AI
-      const smoothedDir = smoothDirection2D(inputDir.current, dirX, dirZ, dirSmooth, simDelta)
-      inputDir.current.x = smoothedDir.x
-      inputDir.current.z = smoothedDir.z
-      if (rawDirLen > 0.02) {
-        const smLen = Math.hypot(smoothedDir.x, smoothedDir.z)
-        if (smLen > 0.02) {
-          dirX = smoothedDir.x / smLen
-          dirZ = smoothedDir.z / smLen
+      const preMoveSp = Math.hypot(moveVel.current.x, moveVel.current.z)
+      let skipDirSmooth = false
+      // Reversão brusca: não suaviza — senão o 180 nunca dispara (IA com bola / Be a Pro)
+      if (rawDirLen > 0.2 && preMoveSp > 0.18 && (hasBallNow || isUserActive)) {
+        const ix = rawDirX / rawDirLen
+        const iz = rawDirZ / rawDirLen
+        const mx = moveVel.current.x / preMoveSp
+        const mz = moveVel.current.z / preMoveSp
+        const faceX = Math.sin(rotation.current)
+        const faceZ = Math.cos(rotation.current)
+        const dotMove = ix * mx + iz * mz
+        const dotFace = ix * faceX + iz * faceZ
+        if (dotMove < -0.18 || dotFace < -0.25) {
+          skipDirSmooth = true
+          inputDir.current.x = ix
+          inputDir.current.z = iz
+          dirX = ix
+          dirZ = iz
         }
-      } else {
-        const coastLen = Math.hypot(smoothedDir.x, smoothedDir.z)
-        if (coastLen > 0.04) {
-          dirX = smoothedDir.x / coastLen
-          dirZ = smoothedDir.z / coastLen
-          moveScale *= 0.88
+      }
+      if (!skipDirSmooth) {
+        const dirSmooth = hasBallNow
+          ? isUserActive
+            ? sprint
+              ? PLAYER_DIR_SMOOTH_DRIBBLE * 0.9
+              : PLAYER_DIR_SMOOTH_DRIBBLE * 0.2
+            : sprint
+              ? PLAYER_DIR_SMOOTH_DRIBBLE_AI * 2.72
+              : PLAYER_DIR_SMOOTH_DRIBBLE_AI * 3
+          : isUserActive
+            ? PLAYER_DIR_SMOOTH_CONTROLLED
+            : markerPressing || passInterceptPressing
+              ? PLAYER_DIR_SMOOTH_AI_PRESS
+              : aiDirectMove.current
+                ? PLAYER_DIR_SMOOTH_AI_DIRECT
+                : PLAYER_DIR_SMOOTH_AI
+        const smoothedDir = smoothDirection2D(inputDir.current, dirX, dirZ, dirSmooth, simDelta)
+        inputDir.current.x = smoothedDir.x
+        inputDir.current.z = smoothedDir.z
+        if (rawDirLen > 0.02) {
+          const smLen = Math.hypot(smoothedDir.x, smoothedDir.z)
+          if (smLen > 0.02) {
+            dirX = smoothedDir.x / smLen
+            dirZ = smoothedDir.z / smLen
+          }
         } else {
-          dirX = 0
-          dirZ = 0
+          const coastLen = Math.hypot(smoothedDir.x, smoothedDir.z)
+          if (coastLen > 0.04) {
+            dirX = smoothedDir.x / coastLen
+            dirZ = smoothedDir.z / coastLen
+            moveScale *= 0.88
+          } else {
+            dirX = 0
+            dirZ = 0
+          }
         }
       }
     }
@@ -2027,8 +2289,16 @@ export function Player({
     const intentLen = Math.hypot(dirX, dirZ)
     const preMoveSpeed = Math.hypot(moveVel.current.x, moveVel.current.z)
 
+    const offBallLoco =
+      isUserActive &&
+      !hasBallNow &&
+      !isGoalkeeper &&
+      phase === 'playing' &&
+      canMove &&
+      !bodyActionLocked
+
     const dribbleEnabled =
-      hasBallNow &&
+      (hasBallNow || offBallLoco) &&
       !isGoalkeeper &&
       phase === 'playing' &&
       canMove &&
@@ -2049,16 +2319,20 @@ export function Player({
       rotation: rotation.current,
       moveVelX: moveVel.current.x,
       moveVelZ: moveVel.current.z,
+      aiCarrier: !isUserActive && hasBallNow,
+      offBallLoco,
     })
     dribbleCtrl.current = dribbleOut
 
     if (
-      dribbleEnabled &&
+      hasBallNow &&
       isUserActive &&
       controls?.current &&
       !storeState.shotChargeActive &&
       ctrl &&
-      !ctrl.isLocked()
+      !ctrl.isLocked() &&
+      storeState.phase !== 'free-kick' &&
+      !storeState.ballFrozen
     ) {
       const spin = updatePlayerSkillSpin(
         id,
@@ -2071,34 +2345,124 @@ export function Player({
       )
       if (spin.triggered) {
         ctrl.playSpin()
-        impulseDribbleFeint(0.12 * WORLD_SCALE, 0.08 * WORLD_SCALE)
+        useGameStore.getState().setStealImmunity(id, 900)
+        trySkillMoveBeatPressers(id, 'spin')
+        clearDribbleFeintRoll()
+        spinElapsed.current = 0
+        spinDuration.current = Math.max(0.35, ctrl.playbackDurationSec('player_spin'))
+        const spd = Math.hypot(moveVel.current.x, moveVel.current.z)
+        if (spd > 0.08) {
+          spinBallDir.current.x = moveVel.current.x / spd
+          spinBallDir.current.z = moveVel.current.z / spd
+        } else {
+          spinBallDir.current.x = Math.sin(rotation.current)
+          spinBallDir.current.z = Math.cos(rotation.current)
+        }
+        dribbleBallOffset.current.x = 0
+        dribbleBallOffset.current.z = 0
+        dribbleTouchSeverity.current = 0
+        const holder = registryEntry.current
+        if (holder) {
+          holder.dribbleSpinning = true
+          holder.dribbleBallOffset = { x: 0, z: 0 }
+          holder.dribbleTouchSeverity = 0
+          holder.velocity.x = moveVel.current.x
+          holder.velocity.z = moveVel.current.z
+        }
       }
     }
 
-    if (dribbleOut.fintaStarted && ctrl && !ctrl.isLocked()) {
+    if (
+      (dribbleOut.fintaStarted || dribbleOut.finta180Started) &&
+      ctrl &&
+      !ctrl.isLocked()
+    ) {
       ctrl.playFinta180()
-      const px = dribbleOut.ballPushX
-      const pz = dribbleOut.ballPushZ
-      const pushLen = Math.hypot(px, pz)
-      const pushSpeed = Math.max(
-        dribbleOut.ballPushSpeed,
-        Math.max(dribbleOut.feintMoveSpeed * 0.95, 2.4 * WORLD_SCALE),
-      )
-      if (pushLen > 0.01) {
-        pushDribbleBallRoll(px, pz, pushSpeed)
-      } else if (Math.hypot(dribbleOut.ballOffsetX, dribbleOut.ballOffsetZ) > 0.01) {
-        pushDribbleBallRoll(dribbleOut.ballOffsetX, dribbleOut.ballOffsetZ, pushSpeed)
+      if (hasBallNow) {
+        // Janela blindada enquanto o giro acontece (player e IA)
+        useGameStore.getState().setStealImmunity(id, 820)
+        trySkillMoveBeatPressers(id, 'finta180')
+        const px = dribbleOut.ballPushX
+        const pz = dribbleOut.ballPushZ
+        const pushLen = Math.hypot(px, pz)
+        const pushSpeed = Math.max(
+          dribbleOut.ballPushSpeed,
+          Math.max(dribbleOut.feintMoveSpeed * 0.95, 2.4 * WORLD_SCALE),
+        )
+        if (pushLen > 0.01) {
+          pushDribbleBallRoll(px, pz, pushSpeed)
+        } else if (Math.hypot(dribbleOut.ballOffsetX, dribbleOut.ballOffsetZ) > 0.01) {
+          pushDribbleBallRoll(dribbleOut.ballOffsetX, dribbleOut.ballOffsetZ, pushSpeed)
+        }
       }
+    } else if (dribbleOut.finta180Started && hasBallNow) {
+      trySkillMoveBeatPressers(id, 'finta180')
     }
+
+    // Corte em corrida: desvia jogo de corpo (player e IA)
+    if (dribbleOut.runCutActive && !wasRunCut.current && hasBallNow) {
+      useGameStore.getState().setStealImmunity(id, 640)
+      trySkillMoveBeatPressers(id, 'cut')
+    }
+    wasRunCut.current = dribbleOut.runCutActive
+
+    // Stick virtual da IA: meia-lua / corte = mesma imunidade da finta do player
+    if (!isUserActive && hasBallNow) {
+      const stickPhase = getAiDribbleStickPhase(id)
+      const prev = aiStickPhasePrev.current
+      if (stickPhase === 'arc') {
+        useGameStore.getState().setStealImmunity(id, 280)
+        if (prev !== 'arc') trySkillMoveBeatPressers(id, 'feint')
+      } else if (stickPhase === 'cut' && prev !== 'cut') {
+        useGameStore.getState().setStealImmunity(id, 720)
+        trySkillMoveBeatPressers(id, 'cut')
+      }
+      aiStickPhasePrev.current = stickPhase
+    } else {
+      aiStickPhasePrev.current = null
+    }
+
     wasStopFeint.current = dribbleOut.stopFeintActive
 
-    // player_finta_01 desabilitada — corte 180 segue só na lógica de drible
+    // player_finta_01 desabilitada — corte 180 segue só na lógica de drible/loco
 
     if (dribbleOut.sprintBlocked) sprint = false
 
-    dribbleBallOffset.current.x = dribbleOut.ballOffsetX
-    dribbleBallOffset.current.z = dribbleOut.ballOffsetZ
-    dribbleTouchSeverity.current = dribbleOut.touchSeverity
+    if (ctrl?.isSpinning()) {
+      // Tempo próprio — não depende do mixer (que só atualiza no fim do frame)
+      spinElapsed.current += simDelta
+      const t = THREE.MathUtils.clamp(
+        spinElapsed.current / Math.max(spinDuration.current, 0.01),
+        0,
+        1,
+      )
+      // Pico CEDO (durante o giro), não no final
+      let forwardPhase: number
+      if (t < 0.58) {
+        forwardPhase = t / 0.28
+      } else if (t < 0.72) {
+        forwardPhase = 1
+      } else {
+        forwardPhase = THREE.MathUtils.lerp(1, 0.35, (t - 0.72) / 0.28)
+      }
+      const pushDist = (0.08 + 1.22 * forwardPhase) * WORLD_SCALE
+      dribbleBallOffset.current.x = spinBallDir.current.x * pushDist
+      dribbleBallOffset.current.z = spinBallDir.current.z * pushDist
+      dribbleTouchSeverity.current = 0
+      const holderLive = registryEntry.current
+      if (holderLive) {
+        holderLive.dribbleSpinning = true
+        holderLive.dribbleBallOffset = {
+          x: dribbleBallOffset.current.x,
+          z: dribbleBallOffset.current.z,
+        }
+      }
+    } else {
+      spinElapsed.current = 0
+      dribbleBallOffset.current.x = dribbleOut.ballOffsetX
+      dribbleBallOffset.current.z = dribbleOut.ballOffsetZ
+      dribbleTouchSeverity.current = dribbleOut.touchSeverity
+    }
 
     // Lean / pitch do tronco — segue a finta/corte com atraso de peso
     {
@@ -2232,18 +2596,35 @@ export function Player({
         : getPhysicalDuelDecelMul(id)
     const inPhysicalDuel =
       shotAimActive || shotChargeWindUp ? false : isInPhysicalDuel(id)
+    const staminaSpeedMul = getStaminaSpeedMul(id)
+    const attrMuls = getPlayerAttrMultipliers(id)
+
+    // Sem fôlego: corta sprint (urgência = interceptação / bola solta perto)
+    const sprintUrgent =
+      passInterceptPressing ||
+      needsAutoReceiveRun ||
+      autoFirstTimeRun ||
+      anticipatedShotRun ||
+      (markerPressing && distToHolderEarly < 0.85)
+    if (sprint && !isGoalkeeper && !canPlayerSprint(id, sprintUrgent)) {
+      sprint = false
+    }
 
     const speed = isGoalkeeper
       ? gkRt?.mode === 'save' && gkRt.saveAnim
         ? 0
         : ballLow
-          ? GK_SPEED * 0.92
+          ? GK_SPEED * 0.92 * attrMuls.pace
           : interceptDist > 2.4
-            ? GK_RUSH_SPEED * 1.08
-            : GK_SPEED * 1.12
+            ? GK_RUSH_SPEED * 1.08 * attrMuls.pace
+            : GK_SPEED * 1.12 * attrMuls.pace
       : dribbleOut.stopFeintActive && intentLen > 0.02
-        ? Math.max(dribbleOut.feintMoveSpeed, PLAYER_SPEED * 0.78)
-        : (sprint ? PLAYER_SPRINT_SPEED : PLAYER_SPEED) * dribbleOut.speedMul * duelSpeedMul
+        ? Math.max(dribbleOut.feintMoveSpeed, PLAYER_SPEED * 0.78) * attrMuls.pace
+        : (sprint ? PLAYER_SPRINT_SPEED : PLAYER_SPEED) *
+          dribbleOut.speedMul *
+          duelSpeedMul *
+          staminaSpeedMul *
+          attrMuls.pace
 
     // Candidato a passe: peito na bola (strafe/costas ao se mover)
     const teammateHasBall =
@@ -2284,7 +2665,9 @@ export function Player({
       }
     }
     sprint = candidateSprint
-    const animSprint = sprint && !inPhysicalDuel
+
+    // Ofegante: animação só walk — sem flip run/walk
+    const animSprint = sprint && !inPhysicalDuel && !isSprintWinded(id)
 
     const targetVelX = intentLen > 0.02 && !bodyActionLocked ? (dirX / intentLen) * moveSpeed * moveScale : 0
     const targetVelZ = intentLen > 0.02 && !bodyActionLocked ? (dirZ / intentLen) * moveSpeed * moveScale : 0
@@ -2311,20 +2694,9 @@ export function Player({
         moveVel.current.x = 0
         moveVel.current.z = 0
       } else {
-        const tvx = rs.dirX * rs.targetSpeed
-        const tvz = rs.dirZ * rs.targetSpeed
-        const nextVel = smoothVelocity2D(
-          moveVel.current,
-          tvx,
-          tvz,
-          simDelta,
-          true,
-          PLAYER_MOVE_DECEL_AI * 1.15,
-          PLAYER_MOVE_ACCEL_AI * 1.45,
-          false,
-        )
-        moveVel.current.x = nextVel.x
-        moveVel.current.z = nextVel.z
+        // Snap na bola — sem smoothVelocity (era o saracoteio)
+        moveVel.current.x = rs.dirX * rs.targetSpeed
+        moveVel.current.z = rs.dirZ * rs.targetSpeed
       }
     } else {
       const receiveApproach = receiveRunState.current
@@ -2357,22 +2729,22 @@ export function Player({
         weightedLoco
           ? isUserActive
             ? sprint
-              ? PLAYER_MOVE_ACCEL_DRIBBLE * 0.95
-              : PLAYER_MOVE_ACCEL_DRIBBLE
+              ? PLAYER_MOVE_ACCEL_DRIBBLE * 0.95 * attrMuls.acceleration
+              : PLAYER_MOVE_ACCEL_DRIBBLE * attrMuls.acceleration
             : sprint
-              ? PLAYER_MOVE_ACCEL_DRIBBLE * 0.9
-              : PLAYER_MOVE_ACCEL_DRIBBLE * 0.98
+              ? PLAYER_MOVE_ACCEL_DRIBBLE * 0.9 * attrMuls.acceleration
+              : PLAYER_MOVE_ACCEL_DRIBBLE * 0.98 * attrMuls.acceleration
           : fieldLoco
             ? isUserActive
               ? urgentMove
-                ? PLAYER_MOVE_ACCEL * 1.2
-                : PLAYER_MOVE_ACCEL
+                ? PLAYER_MOVE_ACCEL * 1.2 * attrMuls.acceleration
+                : PLAYER_MOVE_ACCEL * attrMuls.acceleration
               : markerPressing
-                ? PLAYER_MOVE_ACCEL_AI * 1.18
+                ? PLAYER_MOVE_ACCEL_AI * 1.18 * attrMuls.acceleration
                 : passInterceptPressing
-                  ? PLAYER_MOVE_ACCEL_AI * 1.12
-                  : PLAYER_MOVE_ACCEL_AI * (urgentMove ? 1.08 : 1)
-            : PLAYER_MOVE_ACCEL_AI,
+                  ? PLAYER_MOVE_ACCEL_AI * 1.12 * attrMuls.acceleration
+                  : PLAYER_MOVE_ACCEL_AI * (urgentMove ? 1.08 : 1) * attrMuls.acceleration
+            : PLAYER_MOVE_ACCEL_AI * attrMuls.acceleration,
         weightedLoco,
       )
       moveVel.current.x = nextVel.x
@@ -2385,12 +2757,6 @@ export function Player({
           moveVel.current.x = 0
           moveVel.current.z = 0
         }
-      }
-      // Corpo a corpo: adversários e IA aliada — jogador controlado fica suave no impulse
-      if (duelSpeedMul < 0.88 && !isUserActive) {
-        const separated = applyBodySeparationImpulse(moveVel.current, id, simDelta)
-        moveVel.current.x = separated.x
-        moveVel.current.z = separated.z
       }
     }
 
@@ -2434,6 +2800,13 @@ export function Player({
 
     let moveX = moveVel.current.x * simDelta
     let moveZ = moveVel.current.z * simDelta
+    const knock = consumeBodyChargeKnock(id)
+    if (knock) {
+      moveVel.current.x += knock.x
+      moveVel.current.z += knock.z
+      moveX += knock.x * simDelta
+      moveZ += knock.z * simDelta
+    }
     const actualSpeed = Math.hypot(moveVel.current.x, moveVel.current.z)
     const projectedMove = actualSpeed * simDelta
 
@@ -2450,7 +2823,7 @@ export function Player({
     }
 
     const isMarking =
-      pressAsMarker ||
+      (!userManualOnly && pressAsMarker) ||
       manMarkingActive ||
       (opponentHasBall &&
         !hasBallNow &&
@@ -2461,6 +2834,7 @@ export function Player({
     const receiveWaiting =
       receivingPass &&
       !userCrossReceiveControl &&
+      !userManualOnly &&
       receiveRunState.current.hardStop &&
       passIntent?.passType === 'pass'
 
@@ -2475,36 +2849,40 @@ export function Player({
     const ball = ballRef.current
     const distToBallNow = distance2D(position.current, ball)
 
-    // Corrida pra bola / receive / chase: peito na DIREÇÃO do movimento + run normal
+    // Corrida pura pra bola: peito no movimento (receive / first-time)
     const chaseRun =
       !passCandidateAttend &&
       (needsAutoReceiveRun ||
         receivingPass ||
         autoFirstTimeRun ||
-        anticipatedShotRun ||
-        chasingBallToSteal ||
-        (intentLen > 0.12 && actualSpeed > PLAYER_SPEED * 0.4))
+        anticipatedShotRun)
 
-    // Jockey: peito na bola + strafe — marcação OU candidato a receber
-    const jockeyBall =
+    // Perto da bola sem posse: peito na bola só em jockey/marcação (não Be a Pro forçado)
+    const faceBallOffBall =
       !hasBallNow &&
       phase === 'playing' &&
       !isGoalkeeper &&
       !ctrl?.isStriking() &&
       !isPlayerSliding(id) &&
-      (passCandidateAttend ||
-        (!chaseRun &&
-          distToBallNow < BALL_ATTENTION_DIST &&
-          (isMarking ||
-            pressAsMarker ||
-            manMarkingActive ||
-            (actualSpeed < PLAYER_SPEED * 0.5 && intentLen < 0.55))))
+      !chaseRun &&
+      !animSprint &&
+      distToBallNow < BALL_ATTENTION_DIST * 1.4
 
+    // Jockey: peito na bola + strafe — marcação OU candidato a receber
+    const jockeyBall =
+      faceBallOffBall &&
+      (passCandidateAttend ||
+        isMarking ||
+        (!userManualOnly && pressAsMarker) ||
+        manMarkingActive ||
+        chasingBallToSteal ||
+        (actualSpeed < PLAYER_SPEED * 0.55 && intentLen < 0.55))
+
+    // Sem bola: loco relativo ao peito (frente/lado/trás)
     const useStrafeLoco =
-      jockeyBall &&
+      !hasBallNow &&
+      !isGoalkeeper &&
       !receiveWaiting &&
-      !receivingPass &&
-      !needsAutoReceiveRun &&
       (intentLen > 0.02 ||
         locoMoving.current ||
         actualSpeed > RUN_STOP_THRESHOLD ||
@@ -2554,9 +2932,22 @@ export function Player({
           ? getBallFocusFacing(position.current, ball, rotation.current, 0.18)
           : rotation.current
       } else if ((shotAimActive || shotChargeWindUp) && hasBallNow) {
-        const aim = storeState.strikeAim
-        if (aim) {
-          targetYaw = Math.atan2(aim.dirX, aim.dirZ)
+        // Wind-up: peito na corrida travada — mira é só a seta
+        if (shotChargeWindUp && shotRunLockRef.current) {
+          targetYaw = Math.atan2(shotRunLockRef.current.x, shotRunLockRef.current.z)
+        } else {
+          const moveLen = Math.hypot(moveVel.current.x, moveVel.current.z)
+          const runLen = Math.hypot(dirX, dirZ)
+          if (moveLen > 0.08) {
+            targetYaw = Math.atan2(moveVel.current.x, moveVel.current.z)
+          } else if (runLen > 0.02) {
+            targetYaw = Math.atan2(dirX, dirZ)
+          } else if (storeState.strikeAim) {
+            targetYaw = Math.atan2(
+              storeState.strikeAim.dirX,
+              storeState.strikeAim.dirZ,
+            )
+          }
         }
       } else if (shotLockActive) {
         const turnLen = Math.hypot(dirX, dirZ)
@@ -2580,7 +2971,7 @@ export function Player({
       const baseTurn = dribbleOut.forcedYaw != null
         ? PLAYER_TURN_SPEED_CONTROLLED * dribbleOut.turnRateMul
         : jockeyBall || passCandidateAttend
-          ? PLAYER_TURN_SPEED_BALL_FOCUS * (passCandidateAttend ? 1.35 : 1)
+          ? PLAYER_TURN_SPEED_BALL_FOCUS * (passCandidateAttend ? 1.35 : 1.15)
         : receivingPass || needsAutoReceiveRun
           ? PLAYER_TURN_SPEED_CONTROLLED * 2.1
         : shotAimActive || shotChargeWindUp
@@ -2594,13 +2985,14 @@ export function Player({
               (sprint ? 0.72 : 1.05) *
               (0.85 + dribbleOut.turnRateMul * 0.28)
             : PLAYER_TURN_SPEED_AI
+      const attrTurn = isGoalkeeper ? baseTurn : baseTurn * attrMuls.agility
       if (strikeWarpYaw.current != null) {
         // tickStrikeWarp já ajustou o corpo para o chute/passe
       } else if (dribbleOut.forcedYaw != null) {
         rotation.current = applyPlayerFacing(
           rotation.current,
           dribbleOut.forcedYaw,
-          baseTurn,
+          attrTurn,
           actualSpeed,
           speed,
           true,
@@ -2618,14 +3010,14 @@ export function Player({
         rotation.current = rotateTowardAngle(
           rotation.current,
           targetYaw,
-          PLAYER_TURN_SPEED_BALL_FOCUS * (passCandidateAttend ? 1.35 : 1),
+          PLAYER_TURN_SPEED_BALL_FOCUS * (passCandidateAttend ? 1.35 : 1.15),
           simDelta,
         )
       } else if (fieldLoco && hasBallNow) {
         rotation.current = applyPlayerFacing(
           rotation.current,
           targetYaw,
-          baseTurn,
+          attrTurn,
           actualSpeed,
           speed,
           true,
@@ -2641,7 +3033,7 @@ export function Player({
         rotation.current = applyPlayerFacing(
           rotation.current,
           Math.atan2(dirX, dirZ),
-          baseTurn,
+          attrTurn,
           actualSpeed,
           speed,
           true,
@@ -2652,7 +3044,7 @@ export function Player({
         rotation.current = applyPlayerFacing(
           rotation.current,
           targetYaw,
-          baseTurn,
+          attrTurn,
           actualSpeed,
           speed,
           isUserActive,
@@ -2673,6 +3065,12 @@ export function Player({
       moveZ *= strikeMul
       moveVel.current.x *= strikeMul
       moveVel.current.z *= strikeMul
+    } else if (ctrl?.isSpinning()) {
+      const spinMul = ctrl.getSpinMoveMultiplier()
+      moveX *= spinMul
+      moveZ *= spinMul
+      moveVel.current.x *= spinMul
+      moveVel.current.z *= spinMul
     }
 
     const prevX = position.current.x
@@ -2688,6 +3086,42 @@ export function Player({
       const clamped = clampGkPosition({ x: nx, y: 0, z: nz }, team, fieldBounds, maxDepth)
       nx = clamped.x
       nz = clamped.z
+    }
+
+    // Colisão física corpo↔corpo (IA e humano, com ou sem bola)
+    // Corte 180 / finta: sem colisão — senão trava a virada
+    const skippingBodyCollision =
+      bodyActionLocked ||
+      (ctrl?.isFinting() ?? false) ||
+      dribbleOut.stopFeintActive
+    if (phase === 'playing' && !ballFrozen && !skippingBodyCollision) {
+      const bodyHit = resolvePlayerBodyCollisions(
+        id,
+        { x: nx, z: nz },
+        moveVel.current,
+        simDelta,
+      )
+      nx = bodyHit.x
+      nz = bodyHit.z
+      moveVel.current.x = bodyHit.vx
+      moveVel.current.z = bodyHit.vz
+      if (bodyHit.contested) {
+        registerBodyContactDuel(
+          id,
+          bodyHit.opponentId,
+          bodyHit.contactImpulse,
+          bodyHit.contested,
+        )
+      }
+      nx = THREE.MathUtils.clamp(nx, fieldBounds.minX + PLAYER_RADIUS, fieldBounds.maxX - PLAYER_RADIUS)
+      nz = THREE.MathUtils.clamp(nz, fieldBounds.minZ + PLAYER_RADIUS, fieldBounds.maxZ - PLAYER_RADIUS)
+      if (isGoalkeeper) {
+        const maxDepth =
+          gkRt?.allowStep && gkRt.mode === 'save' ? gkRt.stepDepth : GK_MAX_STEP_FROM_LINE
+        const clamped = clampGkPosition({ x: nx, y: 0, z: nz }, team, fieldBounds, maxDepth)
+        nx = clamped.x
+        nz = clamped.z
+      }
     }
 
     const moved = Math.hypot(nx - prevX, nz - prevZ)
@@ -2751,8 +3185,8 @@ export function Player({
         if (locoMoving.current) {
           wasRunLoco.current = true
           ctrl?.exitFieldIdle()
-          if (ctrl?.isFinting() || ctrl?.isImbalancing()) {
-            // root-motion — não sobrescreve
+          if (ctrl?.isFinting() || ctrl?.isImbalancing() || ctrl?.isSpinning()) {
+            // root-motion / spin — não sobrescreve a clip
           } else if (dribbleOut.touchAnim) {
             ctrl?.playDribbleTouch(dribbleOut.touchAnim, dribbleOut.touchDuration)
           } else if (dribbleOut.locomotionOverride && hasBallNow) {
@@ -2789,13 +3223,17 @@ export function Player({
               moveLen > 0.08 ? moveVel.current.z : dirZ,
               rotation.current,
             )
+            // Lado/costas: sem sprint — só run pra frente
+            const canSprintAnim =
+              animSprint && local.localForward > 0.35 && Math.abs(local.localRight) < local.localForward
             ctrl?.setStrafeLocomotion({
               moving: true,
-              sprint: animSprint && local.localForward > 0.2,
+              sprint: canSprintAnim,
               localForward: local.localForward,
               localRight: local.localRight,
             })
           } else {
+            // Fallback raro (GK etc.)
             ctrl?.setDirectLocomotion({ moving: true, sprint: animSprint })
           }
           velocity.current.set(moveVel.current.x, 0, moveVel.current.z)
@@ -2838,8 +3276,38 @@ export function Player({
           ? { x: dribbleBallOffset.current.x, z: dribbleBallOffset.current.z }
           : undefined,
         dribbleTouchSeverity: hasBallNow ? dribbleTouchSeverity.current : undefined,
+        dribbleSpinning: hasBallNow && (ctrl?.isSpinning() ?? false),
       },
     )
+
+    if (phase === 'playing' && !ballFrozen && !isGoalkeeper) {
+      // Sprint de stamina: user = botão. IA = só pressão/caça/com bola.
+      // (IA sprintava só pra chegar no posto tático e a barra nunca subia)
+      const staminaSprint = isUserActive
+        ? !!(animSprint && locoMoving.current && !shielding)
+        : !!(
+            animSprint &&
+            locoMoving.current &&
+            !shielding &&
+            (markerPressing ||
+              passInterceptPressing ||
+              hasBallNow ||
+              receivingPass ||
+              autoFirstTimeRun ||
+              anticipatedShotRun ||
+              crossVolleyChase ||
+              shouldAutoChaseLooseBall(id, team))
+          )
+      tickPlayerStamina(id, simDelta, {
+        sprinting: staminaSprint,
+        pressing: !!(markerPressing || passInterceptPressing),
+        shoulderCharging: ctrl?.isShoulderCharging() ?? false,
+        inDuel: inPhysicalDuel,
+        hasBall: hasBallNow,
+        moving: locoMoving.current || Math.hypot(moveVel.current.x, moveVel.current.z) > 0.2,
+        sliding: isPlayerSliding(id),
+      })
+    }
     } finally {
       finishAnimation()
     }
@@ -2942,12 +3410,24 @@ export function Player({
         const ctx = getCarrierContext(id, role, bounds, ball)
         if (now < pendingPass.carryUntil && ctx) {
           const intent = getCarrierMoveIntent(ctx, phase)
+          const call = useGameStore.getState().ballCall
+          const prepCaller =
+            call && call.callerId === pendingPass.targetId
+              ? playerRegistry.get(call.callerId)
+              : null
+          const prep =
+            prepCaller && prepCaller.team === team
+              ? getBallCallPrepMoveDir(ctx, prepCaller)
+              : null
+          const dirX = prep ? prep.x * 0.55 + intent.dirX * 0.45 : intent.dirX
+          const dirZ = prep ? prep.z * 0.55 + intent.dirZ * 0.45 : intent.dirZ
+          const dLen = Math.hypot(dirX, dirZ) || 1
           aiHoldUpLook.current = intent.lookDir
           return {
-            dirX: intent.dirX,
-            dirZ: intent.dirZ,
-            sprint: intent.sprint,
-            urgency: intent.sprint ? 1.02 : intent.holdUp ? 0.88 : 0.92,
+            dirX: dirX / dLen,
+            dirZ: dirZ / dLen,
+            sprint: intent.sprint || !!prep,
+            urgency: intent.sprint || prep ? 1.05 : intent.holdUp ? 0.88 : 0.92,
             direct: false,
           }
         }
@@ -2955,7 +3435,61 @@ export function Player({
         if (aiPassLook.current) {
           aiHoldUpLook.current = aiPassLook.current
         }
-        return { dirX: 0, dirZ: 0, sprint: false, urgency: 0, direct: true }
+        // Fase de mira: quase planta — só ajusta peito pro alvo
+        if (ctx) {
+          const look = aiPassLook.current
+          if (look && Math.hypot(look.x, look.z) > 0.08) {
+            const dLen = Math.hypot(look.x, look.z) || 1
+            return {
+              dirX: look.x / dLen,
+              dirZ: look.z / dLen,
+              sprint: false,
+              urgency: 0.35,
+              direct: true,
+            }
+          }
+          return { dirX: 0, dirZ: 0, sprint: false, urgency: 0, direct: true }
+        }
+         return { dirX: 0, dirZ: 0, sprint: false, urgency: 0, direct: true }
+      }
+
+      // Pedido de bola ativo: prepara ângulo / foge da marcação antes de passar
+      const ballCallPrep = useGameStore.getState().ballCall
+      if (
+        ballCallPrep &&
+        performance.now() < ballCallPrep.until &&
+        ballCallPrep.callerId !== id
+      ) {
+        const ctx = getCarrierContext(id, role, bounds, ball)
+        const caller = playerRegistry.get(ballCallPrep.callerId)
+        if (ctx && caller && caller.team === team) {
+          const delivery = evaluateBallCallDelivery(ctx, caller)
+          if (!delivery.ready) {
+            const prep = getBallCallPrepMoveDir(ctx, caller)
+            const intent = getCarrierMoveIntent(ctx, phase)
+            if (prep) {
+              aiHoldUpLook.current = {
+                x: caller.position.x - position.current.x,
+                z: caller.position.z - position.current.z,
+              }
+              return {
+                dirX: prep.x,
+                dirZ: prep.z,
+                sprint: delivery.underPressure,
+                urgency: delivery.heavyPressure ? 1.08 : 1.0,
+                direct: false,
+              }
+            }
+            aiHoldUpLook.current = intent.lookDir
+            return {
+              dirX: intent.dirX,
+              dirZ: intent.dirZ,
+              sprint: intent.sprint,
+              urgency: intent.sprint ? 1.02 : 0.94,
+              direct: false,
+            }
+          }
+        }
       }
 
       const ctx = getCarrierContext(id, role, bounds, ball)
@@ -3009,46 +3543,35 @@ export function Player({
           hasCrossVolleyIntent(id) ||
           shouldChaseOwnPassBall(id, team, passIntent, ball))
     if (chasesBall && passIntent) {
-      const crossInterceptor =
-        passIntent.passType !== 'cross' ||
-        id === getReceiveInterceptorId(team, passIntent) ||
-        hasCrossVolleyIntent(id)
-      const { plan } = planReceiveRun(
-        id,
-        position.current,
-        ball,
-        ballVel,
-        passIntent,
-        null,
-        { crossInterceptor },
-      )
-
-      if (plan.hardStop && !hasCrossVolleyIntent(id)) {
-        return { dirX: 0, dirZ: 0, sprint: false, urgency: 0, direct: true }
-      }
-
-      if (plan.hardStop && hasCrossVolleyIntent(id)) {
-        const bx = ball.x - position.current.x
-        const bz = ball.z - position.current.z
-        const bd = Math.hypot(bx, bz)
-        if (bd > 0.12) {
-          return {
-            dirX: bx / bd,
-            dirZ: bz / bd,
-            sprint: true,
-            direct: true,
-            urgency: 1.05,
-          }
+      const distBall = distance2D(position.current, ball)
+      // Receptor: corre pro ponto de queda / intercepto — não todos na bola viva
+      const isReceiver = passIntent.receiverId === id
+      let tx = ball.x
+      let tz = ball.z
+      if (isReceiver || passIntent.passType === 'through') {
+        const intercept = getPassInterceptTarget(
+          position.current,
+          ball,
+          ballVel,
+          passIntent,
+        )
+        if (distBall > 2.4 && intercept) {
+          tx = intercept.x
+          tz = intercept.z
+        } else if (distBall > 3.2) {
+          tx = passIntent.targetX * 0.65 + ball.x * 0.35
+          tz = passIntent.targetZ * 0.65 + ball.z * 0.35
         }
-        return { dirX: 0, dirZ: 0, sprint: false, urgency: 0, direct: true }
       }
-
+      const bx = tx - position.current.x
+      const bz = tz - position.current.z
+      const bd = Math.hypot(bx, bz) || 1
       return {
-        dirX: plan.dirX,
-        dirZ: plan.dirZ,
-        sprint: plan.sprint,
+        dirX: bx / bd,
+        dirZ: bz / bd,
+        sprint: true,
         direct: true,
-        urgency: plan.moveScale,
+        urgency: isReceiver ? 1.35 : 1.15,
       }
     }
 
@@ -3079,21 +3602,38 @@ export function Player({
 
     const ballSpeed = Math.hypot(ballVel.x, ballVel.z)
     const passInFlight = passIntent != null
+    // Só bola solta de verdade — durante passe a decisão já está travada acima
     if (!poss && !passInFlight) {
-      const chaseBall = ballSpeed < 1.0 ? ball : predicted
+      const distLive = distance2D(position.current, ball)
+      const chaseBall = ballSpeed < 1.15 || distLive < 2.6 ? ball : predicted
       const chaserId = resolveLooseBallChaser(team, chaseBall)
-      if (chaserId === id) {
+      const assists =
+        chaserId !== id && shouldAssistLooseBallChase(id, team, chaseBall)
+      if (chaserId === id || assists) {
         const dx = chaseBall.x - position.current.x
         const dz = chaseBall.z - position.current.z
         const d = Math.hypot(dx, dz) || 1
-        // Alvo um pouco além da bola — atravessa e domina, sem orbitar/parar curto
-        const overshoot = 0.22
+        // Perto: vai reto na bola (smooth/overshoot faz órbita e “olha” sem dominar)
+        if (distLive < 1.65 || (chaserId === id && distLive < 2.2)) {
+          const liveDx = ball.x - position.current.x
+          const liveDz = ball.z - position.current.z
+          const liveD = Math.hypot(liveDx, liveDz) || 1
+          tacticalTarget.current = { x: ball.x, z: ball.z }
+          return {
+            dirX: liveDx / liveD,
+            dirZ: liveDz / liveD,
+            sprint: true,
+            direct: true,
+            urgency: assists ? 1.28 : 1.48,
+          }
+        }
+        const overshoot = distLive < 1.2 ? 0.08 : 0.22
         const chaseTarget = {
           x: chaseBall.x + (dx / d) * overshoot,
           y: 0,
           z: chaseBall.z + (dz / d) * overshoot,
         }
-        const chaseSmooth = ballSpeed < 0.45 ? 14 : ballSpeed < 1.2 ? 10 : 6.5
+        const chaseSmooth = ballSpeed < 0.45 ? 18 : ballSpeed < 1.2 ? 14 : 9
         tacticalTarget.current = smoothToward(
           tacticalTarget.current,
           chaseTarget,
@@ -3105,7 +3645,7 @@ export function Player({
         return {
           ...moveToward(tacticalTarget.current, true, dist, arriveDist),
           direct: true,
-          urgency: 1.22,
+          urgency: assists ? 1.12 : 1.28,
         }
       }
     }
@@ -3172,7 +3712,7 @@ export function Player({
       !chasesBall &&
       !opponentHasBall
     ) {
-      rawTarget = getPassFlightSupportPosition(team, formation, bounds, passIntent)
+      rawTarget = getPassFlightSupportPosition(team, formation, bounds, passIntent, id)
       tacticalDirect = true
     } else if (
       !poss &&
@@ -3265,10 +3805,12 @@ export function Player({
       const manTarget = getManMarkTarget(id, team, bounds, ball)
       if (manTarget) {
         const shape = getDefensiveShapePosition(team, formation, bounds, ballForShape)
+        const wideSlot = Math.abs(formation.x) >= 0.55
         rawTarget = getBlendedTarget(
           { x: shape.x, z: shape.z },
           { x: manTarget.x, y: 0, z: manTarget.z },
-          scaleMarkBlend(0.96, team),
+          // Laterais: mais forma, menos cola no atacante central
+          scaleMarkBlend(wideSlot ? 0.55 : 0.78, team),
         )
         manMarking = true
       } else {
@@ -3320,9 +3862,19 @@ export function Player({
       !manMarking &&
       !makingDepthRun
 
-    if (canHoldFormation) {
+    // Não trava no posto se tem companheiro colado (vira encavalamento)
+    let crowdedByMate = false
+    for (const other of playerRegistry.values()) {
+      if (other.id === id || other.team !== team || other.role === 'gk') continue
+      if (distance2D(position.current, other.position) < 1.15) {
+        crowdedByMate = true
+        break
+      }
+    }
+
+    if (canHoldFormation && !crowdedByMate) {
       if (formationHold.current) {
-        if (distToRaw < formationArrive * 1.55) {
+        if (distToRaw < formationArrive * 1.35) {
           tacticalTarget.current = { x: position.current.x, z: position.current.z }
           return { dirX: 0, dirZ: 0, sprint: false, urgency: 0, direct: false }
         }
@@ -3334,6 +3886,26 @@ export function Player({
       }
     } else {
       formationHold.current = false
+      if (crowdedByMate && canHoldFormation) {
+        // Empurra alvo pra longe do mate mais próximo
+        let bestAway = { x: rawTarget.x, z: rawTarget.z }
+        let bestD = Infinity
+        for (const other of playerRegistry.values()) {
+          if (other.id === id || other.team !== team || other.role === 'gk') continue
+          const d = distance2D(position.current, other.position)
+          if (d >= 1.15 || d >= bestD) continue
+          bestD = d
+          const away = normalize2D(
+            position.current.x - other.position.x,
+            position.current.z - other.position.z,
+          )
+          bestAway = {
+            x: rawTarget.x + away.x * 1.8,
+            z: rawTarget.z + away.z * 1.4,
+          }
+        }
+        rawTarget = bestAway
+      }
     }
 
     const targetSmooth =
@@ -3380,13 +3952,20 @@ export function Player({
         team,
         position.current,
         poss ? playerRegistry.get(poss.playerId) ?? null : null,
-      ) > 0.42) ||
+      ) > 0.28) ||
       (isMarker && opponentPassInFlight) ||
       (isPassInterceptor(id, team) && opponentPassInFlight) ||
       (isPassLaneBlocker(id, team) && opponentHasBall) ||
-      (phase === 'attack' && (role === 'fwd' || role === 'mid') && distTarget > formationArrive * 1.25) ||
+      (phase === 'attack' && (role === 'fwd' || role === 'mid') && distTarget > formationArrive * 0.95) ||
+      (phase === 'attack' && role === 'fwd' && distTarget > formationArrive * 0.65) ||
       (manMarking && distTarget > 1.1) ||
       distTarget > 2.2
+
+    const sprintUrgent =
+      urgentChase ||
+      (isPassInterceptor(id, team) && opponentPassInFlight) ||
+      (isMarker && opponentPassInFlight)
+    const sprintAllowed = canPlayerSprint(id, sprintUrgent)
 
     const arriveDist = passInterceptChase
       ? 0.12
@@ -3400,7 +3979,12 @@ export function Player({
         ? 0.32
         : formationArrive
 
-    const move = moveToward(tacticalTarget.current, sprint, distTarget, arriveDist)
+    const move = moveToward(
+      tacticalTarget.current,
+      sprint && sprintAllowed,
+      distTarget,
+      arriveDist,
+    )
     const urgencyBoost =
       (isPassInterceptor(id, team) && opponentPassInFlight) ||
       (isMarker && opponentHasBall &&
@@ -3408,7 +3992,7 @@ export function Player({
           team,
           position.current,
           poss ? playerRegistry.get(poss.playerId) ?? null : null,
-        ) > 0.38)
+        ) > 0.26)
         ? 1.12
         : manMarking
           ? 1.08
@@ -3556,12 +4140,17 @@ export function Player({
     style: { power: number; quickPass: boolean; through: boolean },
   ): { x: number; z: number } {
     const dist = distance2D(position.current, target.position)
+    // Mesma potência do chute — senão mira com 0.55 e chuta com outra
+    const power =
+      style.quickPass && !style.through
+        ? quickPassPowerForDistance(dist)
+        : style.power
     const baseSpeed = style.through
       ? throughPassSpeedForDistance(dist)
       : passSpeedForDistance(dist)
     const speed = style.through
-      ? throughSpeedFromPower(baseSpeed, style.power)
-      : passSpeedFromPower(baseSpeed, style.power, style.quickPass)
+      ? throughSpeedFromPower(baseSpeed, power)
+      : passSpeedFromPower(baseSpeed, power, style.quickPass)
     const lead = style.through
       ? getThroughPassLead(target, position.current, speed, fieldBounds!, team)
       : getPassLeadPosition(target, position.current, speed, fieldBounds!)
@@ -3577,6 +4166,62 @@ export function Player({
       aiPendingPass.current = null
       aiPassLook.current = null
       return
+    }
+
+    // Pedido de bola: só agenda passe quando a entrega está limpa o bastante
+    if (team === getUserTeam() && fieldBounds) {
+      const ballCall = store.ballCall
+      if (
+        ballCall &&
+        performance.now() < ballCall.until &&
+        ballCall.callerId !== id &&
+        !aiPendingShot.current
+      ) {
+        const alreadyToCaller =
+          aiPendingPass.current?.targetId === ballCall.callerId
+        if (!alreadyToCaller) {
+          const caller = playerRegistry.get(ballCall.callerId)
+          const ctxEarly = getCarrierContext(id, role, fieldBounds, ballRef.current)
+          if (caller && caller.team === team && caller.role !== 'gk' && ctxEarly) {
+            const delivery = evaluateBallCallDelivery(ctxEarly, caller)
+            if (delivery.ready) {
+              const fwd =
+                (caller.position.z - position.current.z) *
+                getAttackSign(team, fieldBounds)
+              const style = getAIPassParams(ctxEarly, caller, {
+                underPressure: delivery.underPressure,
+                recycle: fwd < -0.8,
+              })
+              const now = performance.now()
+              // Tempo pra abrir o corpo / sair da marcação antes de soltar
+              const carryMs = delivery.heavyPressure
+                ? 220 + Math.random() * 160
+                : delivery.underPressure
+                  ? 420 + Math.random() * 280
+                  : 580 + Math.random() * 420
+              const lookMs = delivery.heavyPressure
+                ? 180 + Math.random() * 120
+                : 280 + Math.random() * 200
+              aiPendingPass.current = {
+                targetId: caller.id,
+                style: {
+                  ...style,
+                  quickPass:
+                    delivery.heavyPressure ||
+                    (distance2D(position.current, caller.position) < 14 &&
+                      !style.through),
+                  through: style.through && fwd > 4 && delivery.blockers === 0,
+                },
+                carryUntil: now + carryMs,
+                releaseAfter: now + carryMs + lookMs,
+              }
+              aiPassLook.current = null
+              // Não limpa o balão aqui — some quando o passe sai ou o pedido expira
+              aiThinkTimer.current = 0.04
+            }
+          }
+        }
+      }
     }
 
     const pendingPass = aiPendingPass.current
@@ -3620,6 +4265,67 @@ export function Player({
         return
       }
 
+      // Antes de soltar: reavalia pedido de bola (marcação pode ter fechado)
+      const liveCall = store.ballCall
+      if (
+        liveCall &&
+        liveCall.callerId === pendingPass.targetId &&
+        fieldBounds
+      ) {
+        const ctxLive = getCarrierContext(id, role, fieldBounds, ballRef.current)
+        if (ctxLive) {
+          const again = evaluateBallCallDelivery(ctxLive, target)
+          if (!again.ready && !again.heavyPressure) {
+            // Adia — continua preparando
+            aiPendingPass.current = {
+              ...pendingPass,
+              carryUntil: now + 280 + Math.random() * 220,
+              releaseAfter: now + 520 + Math.random() * 280,
+            }
+            aiPassLook.current = null
+            aiThinkTimer.current = 0.08
+            return
+          }
+        }
+      }
+
+      // Linha suja no release: só cancela se estiver BEM fechada (2+ bloqueios)
+      if (fieldBounds && !pendingPass.style.cross) {
+        const ctxLane = getCarrierContext(id, role, fieldBounds, ballRef.current)
+        if (ctxLane) {
+          const near = getNearestOpponent(ctxLane.carrier, ctxLane.opponents)
+          const press = near?.dist ?? 99
+          const tired = getPlayerStamina(id) <= 0.32 || isSprintWinded(id)
+          // Marcador no receptor não deve cancelar — já ignorado nos endpoints
+          const maxBlock = press < 2.1 || tired ? 2 : 1
+          if (!isPassLaneClearEnough(ctxLane, target, maxBlock)) {
+            // Em vez de cancelar sempre: tenta outro alvo aberto
+            const alt = findBestPassTarget(ctxLane)
+            if (
+              alt &&
+              alt.id !== target.id &&
+              isPassLaneClearEnough(ctxLane, alt, maxBlock)
+            ) {
+              pendingPass.targetId = alt.id
+              aiPassLook.current = null
+              aiThinkTimer.current = 0.05
+              return
+            }
+            aiPendingPass.current = null
+            aiPassLook.current = null
+            aiThinkTimer.current = 0.06
+            return
+          }
+          if (
+            pendingPass.style.through &&
+            !isPassLaneClearEnough(ctxLane, target, 0)
+          ) {
+            pendingPass.style.through = false
+            pendingPass.style.quickPass = true
+          }
+        }
+      }
+
       aiPendingPass.current = null
       aiPassLook.current = null
       rotation.current = targetYaw
@@ -3635,6 +4341,9 @@ export function Player({
           through: pendingPass.style.through,
           aimDir: aim,
         })
+      }
+      if (store.ballCall?.callerId === pendingPass.targetId) {
+        store.clearBallCall()
       }
       aiThinkTimer.current =
         AI_THINK_MIN_S * 1.1 + Math.random() * (AI_THINK_MAX_S - AI_THINK_MIN_S) * 0.95
@@ -3747,17 +4456,24 @@ export function Player({
       if (target) {
         const fwd =
           (target.position.z - position.current.z) * getAttackSign(team, fieldBounds!)
+        const tired =
+          getPlayerStamina(id) <= 0.32 || isSprintWinded(id)
         const style = getAIPassParams(ctx, target, {
           underPressure,
           recycle: fwd < -0.5,
+          tired,
         })
         const now = performance.now()
-        const carryMs = underPressure
-          ? 300 + Math.random() * 220
-          : 520 + Math.random() * 420
-        const lookMs = underPressure
-          ? 240 + Math.random() * 200
-          : 400 + Math.random() * 340
+        const carryMs = tired
+          ? 160 + Math.random() * 140
+          : underPressure
+            ? 220 + Math.random() * 160
+            : 360 + Math.random() * 260
+        const lookMs = tired
+          ? 120 + Math.random() * 100
+          : underPressure
+            ? 160 + Math.random() * 140
+            : 260 + Math.random() * 200
         aiPendingPass.current = {
           targetId: target.id,
           style,
@@ -3784,18 +4500,17 @@ export function Player({
       fieldBounds != null
         ? Math.abs(getGoalZ(team, fieldBounds) - position.current.z)
         : undefined
-    // Sweet spot da barra — carga cheia manda pra cima de propósito
-    const power =
-      team !== getUserTeam()
-        ? 0.4 + Math.random() * 0.22
-        : 0.38 + Math.random() * 0.28
-    const speed = shotSpeedFromPower(power, goalDist)
+    const power = getAIShotPower(goalDist)
+    const shotAttr = getPlayerAttrMultipliers(id)
+    const speed =
+      shotSpeedFromPower(power, goalDist) * 1.06 * shotAttr.shotPower * (0.94 + shotAttr.finishing * 0.06)
     const loft = shotLoftFromPower(power, goalDist)
-    const targetYaw = Math.atan2(dir.x, dir.z)
+    const noisyDir = applyAttrAimNoise(dir.x, dir.z, id, 'shot')
+    const targetYaw = Math.atan2(noisyDir.x, noisyDir.z)
     playStrikeRelease(
-      'player_shoot',
+      pickShotStrikeAnim(power),
       () => {
-        releaseBallFromFeet(dir.x * speed, 0, dir.z * speed, id, {
+        releaseBallFromFeet(noisyDir.x * speed, 0, noisyDir.z * speed, id, {
           loft,
           releaseKind: 'shot',
         })
@@ -3839,30 +4554,133 @@ export function Player({
   }
 
   function playStrikeRelease(
-    anim: 'player_pass' | 'player_shoot' | 'player_kick',
+    anim:
+      | 'player_pass'
+      | 'player_pass_short'
+      | 'player_pass_long'
+      | 'player_shoot'
+      | 'player_kick'
+      | 'player_kick_high'
+      | 'player_kick_medium'
+      | 'player_kick_low',
     onContact: () => void,
     targetYaw?: number,
+    /** Só force true em casos especiais (ex.: saída de bola). Chute NUNCA é instantâneo. */
+    instantContact = false,
+    firstTime = false,
   ) {
     if (targetYaw != null) strikeWarpYaw.current = targetYaw
+    const aimX =
+      targetYaw != null ? Math.sin(targetYaw) : Math.sin(rotation.current)
+    const aimZ =
+      targetYaw != null ? Math.cos(targetYaw) : Math.cos(rotation.current)
+    const mirror = shouldMirrorRightFootedStrike(
+      rotation.current,
+      aimX,
+      aimZ,
+    )
+    const isShot =
+      anim === 'player_shoot' ||
+      anim === 'player_kick' ||
+      anim === 'player_kick_high' ||
+      anim === 'player_kick_medium' ||
+      anim === 'player_kick_low'
     animCtrl.current?.playStrike(anim, {
       onContact,
-      instantContact: anim === 'player_shoot',
+      instantContact: isShot ? false : instantContact,
+      mirror,
+      firstTime: isShot && firstTime,
     })
   }
 
   function performKickoffPass() {
     if (!fieldBounds) return
+    // Domínio real — sem isso o passe de saída sai do centro / bugado
+    if (!isHoldingBall()) {
+      useGameStore.getState().setPossession(id, team)
+    }
+    const me = mySnapshot()
+    setBallPosition(getBallAtFeet(me))
+    syncDribblePossession(id, useGameStore.getState().possessionSince)
+
+    const store = useGameStore.getState()
     const mate = findKickoffPassTarget(team, id, position.current, fieldBounds)
-    rotation.current = mate
-      ? Math.atan2(
-          mate.position.x - position.current.x,
-          mate.position.z - position.current.z,
-        )
-      : getKickoffFacingRotation(team, fieldBounds)
+
+    // Drag do gramado (~0.55/s) + damping: teto normal de passe (~PASS_SPEED_MAX)
+    // morre antes dos ~12 m até o meio. Saída precisa de impulso próprio.
+    let dx: number
+    let dz: number
+    let dist: number
+    if (mate) {
+      dist = Math.max(distance2D(me.position, mate.position), 8)
+      const provisional = Math.min(BALL_MAX_SPEED * 0.88, PASS_SPEED_MAX * 1.55)
+      const lead = getPassLeadPosition(mate, me.position, provisional, fieldBounds)
+      const n = normalize2D(lead.x - me.position.x, lead.z - me.position.z)
+      dx = n.x
+      dz = n.z
+      const ballZ = ballRef.current?.z ?? me.position.z
+      store.setPassIntent({
+        receiverId: mate.id,
+        targetX: lead.x,
+        targetZ: lead.z,
+        startedAt: performance.now(),
+        passingTeam: team,
+        passType: 'pass',
+        ballZAtPass: ballZ,
+        runnerIds: buildPassRunnerIds(
+          me.id,
+          team,
+          mate.id,
+          { x: lead.x, z: lead.z },
+          'pass',
+        ),
+        soloReceive: shouldSoloReceivePass(mate.id) || undefined,
+      })
+    } else {
+      const yaw = getKickoffFacingRotation(team, fieldBounds)
+      dx = Math.sin(yaw)
+      dz = Math.cos(yaw)
+      dist = 11
+      setOpenSpacePassIntent(me, team, dx, dz, dist, 'pass')
+    }
+
+    const speed = Math.min(
+      BALL_MAX_SPEED * 0.9,
+      Math.max(
+        passSpeedForDistance(dist) * 1.6,
+        dist * 1.2 + 3.2,
+        PASS_SPEED_MAX * 1.5,
+      ),
+    )
+
+    rotation.current = Math.atan2(dx, dz)
     if (modelRootRef.current) {
       modelRootRef.current.rotation.y = rotation.current
     }
-    performPassTo(mate, { kickoff: true, power: 0.48 })
+
+    // Contato imediato — não depende do timer da anim (e não passa pelo teto fraco)
+    const fire = () => {
+      releaseBallFromFeet(dx * speed, 0, dz * speed, id, {
+        loft: 0.035,
+        releaseKind: 'pass',
+      })
+      useGameStore.getState().blockPasserClaim(id, 1400)
+    }
+    if (animCtrl.current) {
+      playStrikeRelease(
+        pickPassStrikeAnim({
+          moveSpeed: Math.hypot(moveVel.current.x, moveVel.current.z),
+          sprinting: !!controls?.current?.sprint,
+          dist,
+          walkSpeed: PLAYER_SPEED,
+        }),
+        fire,
+        rotation.current,
+        true,
+      )
+    } else {
+      fire()
+    }
   }
 
   function performPass(
@@ -3920,18 +4738,16 @@ export function Player({
       (p) => p.team === team && p.id !== id && p.role !== 'gk',
     )
     const ballZ = ballRef.current?.z ?? me.position.z
-    const mate =
-      findCrossTarget(me, teammates, fieldBounds, team, ballZ) ??
-      findAssistedPassTarget(me, teammates, strikeDir, {
-        onsideOnly: { team, bounds: fieldBounds, ballZ },
-      }) ??
-      findPassTargetInFacingDirection(me, teammates, {
-        facingDir: strikeDir,
-        minDist: 4,
-        maxDist: 28,
-        minDot: 0.35,
-        maxLateralRatio: 0.75,
-      })
+    // Só amarra em companheiro se estiver no cone da mira — senão cruza livre
+    const mate = findCrossTargetAlongAim(
+      me,
+      teammates,
+      strikeDir,
+      fieldBounds,
+      team,
+      ballZ,
+      { minDot: 0.62, maxDist: 34 },
+    )
     performCrossTo(mate, power, strikeDir)
   }
 
@@ -3947,26 +4763,25 @@ export function Player({
     const me = mySnapshot()
     const strikeDir = aimDir ?? getStrikeDirection()
 
+    // Mira do stick manda — não redireciona a bola pro companheiro
     let dx = strikeDir.x
     let dz = strikeDir.z
-    let speed = crossSpeedFromPower(crossSpeedForDistance(14), power)
-    let targetX = me.position.x + dx * 12
-    let targetZ = me.position.z + dz * 12
-    let loft = crossLoftFromPower(power, crossLoftForDistance(14))
+    const range = 9 + power * 12
+    let speed = crossSpeedFromPower(crossSpeedForDistance(range), power)
+    let loft = crossLoftFromPower(power, crossLoftForDistance(range))
+    let targetX = me.position.x + dx * range
+    let targetZ = me.position.z + dz * range
 
     if (mate) {
       const dist = distance2D(me.position, mate.position)
-      // Estima velocidade, depois recalcula no ponto de lead (evita passar do atacante)
-      let speedEst = crossSpeedFromPower(crossSpeedForDistance(dist), power)
+      const speedEst = crossSpeedFromPower(crossSpeedForDistance(dist), power)
       const lead = getCrossReceiveLead(mate, me.position, speedEst, fieldBounds, team)
       const leadDist = distance2D(me.position, { x: lead.x, y: 0, z: lead.z })
-      speed = crossSpeedFromPower(crossSpeedForDistance(leadDist), power)
-      loft = crossLoftFromPower(power, crossLoftForDistance(leadDist))
-      const n = normalize2D(lead.x - me.position.x, lead.z - me.position.z)
-      dx = n.x
-      dz = n.z
-      targetX = lead.x
-      targetZ = lead.z
+      // Força/arco pela distância do alvo — sem empilhar max()
+      speed = crossSpeedFromPower(crossSpeedForDistance(Math.max(leadDist, range * 0.75)), power)
+      loft = crossLoftFromPower(power, crossLoftForDistance(Math.max(leadDist, range * 0.75)))
+      targetX = me.position.x + dx * Math.max(leadDist, range * 0.85)
+      targetZ = me.position.z + dz * Math.max(leadDist, range * 0.85)
 
       const ballZ = ballRef.current?.z ?? me.position.z
       const offsideFlag =
@@ -3986,11 +4801,16 @@ export function Player({
         runnerIds: buildPassRunnerIds(me.id, team, mate.id, { x: targetX, z: targetZ }, 'cross'),
       })
     } else {
-      setOpenSpacePassIntent(me, team, dx, dz, 12, 'cross')
+      setOpenSpacePassIntent(me, team, dx, dz, range, 'cross')
     }
 
     playStrikeRelease(
-      'player_pass',
+      pickPassStrikeAnim({
+        moveSpeed: Math.hypot(moveVel.current.x, moveVel.current.z),
+        sprinting: !!controls?.current?.sprint,
+        cross: true,
+        walkSpeed: PLAYER_SPEED,
+      }),
       () => {
         releaseBallFromFeet(dx * speed, 0, dz * speed, id, {
           loft,
@@ -4074,6 +4894,7 @@ export function Player({
           { x: lead.x, z: lead.z },
           opts?.through ? 'through' : 'pass',
         ),
+        soloReceive: shouldSoloReceivePass(mate.id) || undefined,
       })
     } else if (opts?.through) {
       const fallback = throughPassFallbackDir(me, fieldBounds, team)
@@ -4086,17 +4907,34 @@ export function Player({
       setOpenSpacePassIntent(me, team, dx, dz, 8, 'pass')
     }
 
-    const passLoft = passLoftFromPower(power, !!opts?.through)
+    const passLoft = opts?.kickoff ? 0 : passLoftFromPower(power, !!opts?.through)
     const releaseKind = opts?.through ? 'through' : 'pass'
+    const passAttr = getPlayerAttrMultipliers(id)
+    speed *= passAttr.passing
+    const noisyPass = opts?.kickoff
+      ? { x: dx, z: dz }
+      : applyAttrAimNoise(dx, dz, id, 'pass')
+    const passDist = mate
+      ? distance2D(me.position, mate.position)
+      : opts?.through
+        ? 16
+        : 8
+    const passClip = pickPassStrikeAnim({
+      moveSpeed: Math.hypot(moveVel.current.x, moveVel.current.z),
+      sprinting: !!controls?.current?.sprint,
+      dist: passDist,
+      through: !!opts?.through,
+      walkSpeed: PLAYER_SPEED,
+    })
     playStrikeRelease(
-      'player_pass',
+      passClip,
       () => {
-        releaseBallFromFeet(dx * speed, 0, dz * speed, id, {
+        releaseBallFromFeet(noisyPass.x * speed, 0, noisyPass.z * speed, id, {
           loft: passLoft,
           releaseKind,
         })
       },
-      Math.atan2(dx, dz),
+      Math.atan2(noisyPass.x, noisyPass.z),
     )
   }
 
@@ -4108,7 +4946,7 @@ export function Player({
 
   function performStandingSteal() {
     if (isHoldingBall() || isGoalkeeper) return
-    tryStandingSteal(id)
+    tryStandingStealOrBodyCharge(id)
   }
 
   function performSlideTackle() {
@@ -4122,6 +4960,7 @@ export function Player({
   function performKick(
     power = 0.75,
     aimDir?: { x: number; z: number },
+    firstTime = false,
   ) {
     const store = useGameStore.getState()
 
@@ -4152,17 +4991,23 @@ export function Player({
       fieldBounds != null
         ? Math.abs(getGoalZ(team, fieldBounds) - position.current.z)
         : undefined
-    const speed = shotSpeedFromPower(power, goalDist)
+    const speed =
+      shotSpeedFromPower(power, goalDist) *
+      getPlayerAttrMultipliers(id).shotPower *
+      (0.94 + getPlayerAttrMultipliers(id).finishing * 0.06)
     const loft = shotLoftFromPower(power, goalDist)
+    const noisyShot = applyAttrAimNoise(strikeDir.x, strikeDir.z, id, 'shot')
     playStrikeRelease(
-      'player_shoot',
+      pickShotStrikeAnim(power),
       () => {
-        releaseBallFromFeet(strikeDir.x * speed, 0, strikeDir.z * speed, id, {
+        releaseBallFromFeet(noisyShot.x * speed, 0, noisyShot.z * speed, id, {
           loft,
           releaseKind: 'shot',
         })
       },
-      Math.atan2(strikeDir.x, strikeDir.z),
+      Math.atan2(noisyShot.x, noisyShot.z),
+      false,
+      firstTime,
     )
   }
 

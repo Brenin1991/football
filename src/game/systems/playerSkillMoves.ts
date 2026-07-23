@@ -1,7 +1,12 @@
-const SPIN_STICK_MIN = 0.38
-const SPIN_ANGLE_TRIGGER = Math.PI * 0.82
-const SPIN_COOLDOWN = 0.9
-const SPIN_ANGLE_DECAY = 0.88
+const SPIN_STICK_MIN = 0.52
+/** Precisa ~190° de giro rápido — hold de look não conta */
+const SPIN_ANGLE_TRIGGER = Math.PI * 1.05
+const SPIN_COOLDOWN = 1.1
+const SPIN_ANGLE_DECAY = 0.72
+/** rad/s mínimo pra contar como flick (look lento não acumula) */
+const SPIN_MIN_ANG_VEL = 5.5
+/** Stick esquerdo não pode estar dominando (é corrida, não skill) */
+const SPIN_LEFT_DOMINANCE = 0.85
 
 type Runtime = {
   prevAngle: number | null
@@ -30,7 +35,7 @@ export function clearPlayerSkillMoves(id: string) {
   runtimes.delete(id)
 }
 
-/** Detecta rotação do analógico direito (skill) — ignora o esquerdo (andar). */
+/** Detecta flick circular no analógico direito — ignora look lento e o esquerdo. */
 export function updatePlayerSkillSpin(
   id: string,
   skillX: number,
@@ -46,9 +51,8 @@ export function updatePlayerSkillSpin(
   const rightMag = Math.hypot(skillX, skillZ)
   const leftMag = Math.hypot(moveX, moveZ)
 
-  // Só o analógico direito — se o esquerdo está dominando, é corrida, não drible.
   const rightStickActive =
-    rightMag >= SPIN_STICK_MIN && rightMag >= leftMag * 0.72
+    rightMag >= SPIN_STICK_MIN && rightMag >= leftMag * SPIN_LEFT_DOMINANCE
 
   if (!enabled || rt.cooldown > 0 || !rightStickActive) {
     rt.prevAngle = null
@@ -59,7 +63,13 @@ export function updatePlayerSkillSpin(
   const angle = Math.atan2(skillX, skillZ)
   if (rt.prevAngle != null) {
     const deltaAngle = wrapAngle(angle - rt.prevAngle)
-    rt.angleAccum += Math.abs(deltaAngle)
+    const angVel = Math.abs(deltaAngle) / Math.max(delta, 0.001)
+    // Só flick rápido acumula — hold/look lateral decai
+    if (angVel >= SPIN_MIN_ANG_VEL) {
+      rt.angleAccum += Math.abs(deltaAngle)
+    } else {
+      rt.angleAccum *= SPIN_ANGLE_DECAY
+    }
   }
   rt.prevAngle = angle
 

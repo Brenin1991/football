@@ -2,14 +2,19 @@ import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js'
 import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
 import { SCHEMA_SQL } from './schema'
 import { seedDefaultEdition } from './seed'
-import { runMigrations } from './migrate'
+import { runMigrations, ensureSchemaPatches } from './migrate'
 import { invalidateEntityImageCache } from '../lib/entityImageCache'
 import { invalidateShirtTextures } from '../game/psx/shirtTextureApply'
+import { getEditionDbBytes, putEditionDbBytes } from './editionDbStore'
 
-const DB_STORAGE_KEY = 'futebol-edition-db'
+/** Legado — JSON de bytes no localStorage (estoura quota com texturas). */
+const LEGACY_STORAGE_KEY = 'futebol-edition-db'
 
 let sqlModule: SqlJsStatic | null = null
 let db: Database | null = null
+
+/** Fila de gravação no IndexedDB (API sync pra callers). */
+let persistChain: Promise<void> = Promise.resolve()
 
 async function loadSql(): Promise<SqlJsStatic> {
   if (sqlModule) return sqlModule
@@ -25,8 +30,8 @@ function createFreshDatabase(SQL: SqlJsStatic): Database {
   return instance
 }
 
-function loadFromStorage(SQL: SqlJsStatic): Database | null {
-  const raw = localStorage.getItem(DB_STORAGE_KEY)
+function loadFromLegacyLocalStorage(SQL: SqlJsStatic): Database | null {
+  const raw = localStorage.getItem(LEGACY_STORAGE_KEY)
   if (!raw) return null
   try {
     const bytes = Uint8Array.from(JSON.parse(raw) as number[])
@@ -36,23 +41,77 @@ function loadFromStorage(SQL: SqlJsStatic): Database | null {
   }
 }
 
+function clearLegacyLocalStorage() {
+  try {
+    localStorage.removeItem(LEGACY_STORAGE_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+function vacuumDatabase(database: Database) {
+  try {
+    database.run('VACUUM')
+  } catch {
+    /* ignore */
+  }
+}
+
+function enqueuePersist(vacuumFirst: boolean) {
+  persistChain = persistChain
+    .then(async () => {
+      if (!db) return
+      if (vacuumFirst) vacuumDatabase(db)
+      await putEditionDbBytes(db.export())
+      clearLegacyLocalStorage()
+    })
+    .catch((err) => {
+      console.error('[edition-db] Falha ao persistir no IndexedDB:', err)
+    })
+}
+
+/**
+ * Persiste o SQLite no IndexedDB (binário).
+ * Mantém assinatura sync — gravação é enfileirada em background.
+ */
 export function persistDatabase(): void {
   if (!db) return
-  const data = db.export()
-  localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(Array.from(data)))
+  enqueuePersist(false)
+}
+
+/** Aguarda a fila de persistência (útil em export/download). */
+export function flushPersistDatabase(): Promise<void> {
+  return persistChain
 }
 
 export async function initDatabase(): Promise<Database> {
-  if (db) return db
   const SQL = await loadSql()
-  db = loadFromStorage(SQL) ?? createFreshDatabase(SQL)
+  if (!db) {
+    const fromIdb = await getEditionDbBytes()
+    if (fromIdb && fromIdb.byteLength > 0) {
+      db = new SQL.Database(fromIdb)
+    } else {
+      const legacy = loadFromLegacyLocalStorage(SQL)
+      if (legacy) {
+        db = legacy
+        // Migra pro IndexedDB (com VACUUM) e limpa o localStorage inchado
+        enqueuePersist(true)
+      } else {
+        db = createFreshDatabase(SQL)
+        enqueuePersist(false)
+      }
+    }
+  }
+  // Sempre reaplica migrações (HMR / coluna nova sem reload completo)
   runMigrations(db)
   persistDatabase()
+  await flushPersistDatabase()
   return db
 }
 
 export function getDatabase(): Database {
   if (!db) throw new Error('Database not initialized')
+  ensureSchemaPatches(db)
   return db
 }
 
@@ -68,12 +127,16 @@ export function replaceDatabase(bytes: Uint8Array): Database {
 }
 
 export function exportDatabaseBytes(): Uint8Array {
-  return getDatabase().export()
+  const database = getDatabase()
+  vacuumDatabase(database)
+  return database.export()
 }
 
 export function downloadDatabase(filename = 'futebol-edicao.sqlite'): void {
   const bytes = exportDatabaseBytes()
-  const blob = new Blob([bytes], { type: 'application/x-sqlite3' })
+  const copy = new Uint8Array(bytes.byteLength)
+  copy.set(bytes)
+  const blob = new Blob([copy.buffer], { type: 'application/x-sqlite3' })
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url

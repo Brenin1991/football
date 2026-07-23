@@ -25,15 +25,15 @@ export function ReplayOverlay() {
   const progress = Math.round(replaySystem.getPlaybackProgress() * 100)
 
   return (
-    <div className="psx-replay-overlay pes-hud-shell" aria-hidden>
+    <div className="psx-replay-overlay" aria-hidden>
       <div className="psx-replay-scanlines" />
 
-      <div className="psx-replay-tag pes-hud-surface pes-hud-surface--header hud-anim hud-anim--replay-tag">
+      <div className="psx-replay-tag hud-anim hud-anim--replay-tag">
         <span className="psx-replay-dot" />
         REPLAY
       </div>
 
-      <div className="psx-replay-lower pes-hud-surface hud-anim hud-anim--replay-lower">
+      <div className="psx-replay-lower hud-anim hud-anim--replay-lower">
         {highlight ? (
           <div className="psx-replay-highlight">
             <div className="psx-replay-photo-wrap">

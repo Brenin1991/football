@@ -29,6 +29,7 @@ function sortedUserOutfieldByBallDist() {
 /** Troca manual (LB / Tab) — mais perto da bola; se já é o mais perto, cicla pro segundo. */
 export function switchUserPlayer() {
   const store = useGameStore.getState()
+  if (store.controlMode === 'pro') return
   if (!canManualSwitchPlayer(store)) return
 
   const sorted = sortedUserOutfieldByBallDist()
@@ -45,11 +46,13 @@ export function switchUserPlayer() {
  * para passes e chutes first-time. A corrida na bola solta continua automática.
  */
 export function syncActivePlayerOnLooseBall() {
+  const store = useGameStore.getState()
+  if (store.controlMode === 'pro') return
+
   const now = performance.now()
   if (now - lastLooseBallSyncAt < LOOSE_BALL_SYNC_MS) return
   lastLooseBallSyncAt = now
 
-  const store = useGameStore.getState()
   if (store.ballPossession) return
   if (store.phase !== 'playing' || store.ballFrozen) return
   if (performance.now() < store.manualSwitchUntil) return

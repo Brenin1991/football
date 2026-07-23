@@ -10,33 +10,92 @@ import { isOffsideAtZ } from './offside'
 export const CROSS_LOFT = 0.72
 
 /** Teto de velocidade do cruzamento */
-export const CROSS_RECEIVE_MAX_SPEED_MUL = 1.22
+export const CROSS_RECEIVE_MAX_SPEED_MUL = 1.18
 
 export function maxCrossBallSpeed(): number {
-  return PASS_RECEIVE_MAX_SPEED * CROSS_RECEIVE_MAX_SPEED_MUL * 0.96
+  return PASS_RECEIVE_MAX_SPEED * CROSS_RECEIVE_MAX_SPEED_MUL * 0.92
 }
 
 /**
- * Velocidade pra cair no recebedor (leve folga pro drag).
- * Hang um pouco maior = chega no peito/cabeça, não atravessa a área.
+ * Velocidade pra cobrir a distância com arco.
  */
 export function crossSpeedForDistance(dist: number): number {
   const d = Math.max(dist, 5)
-  const hangT = THREE.MathUtils.clamp(0.82 + d * 0.038, 0.95, 1.7)
-  const raw = (d / hangT) * 1.06
+  const hangT = THREE.MathUtils.clamp(0.88 + d * 0.038, 1.0, 1.85)
+  const raw = (d / hangT) * 0.98
   return THREE.MathUtils.clamp(
     raw,
-    PASS_SPEED_MIN * 1.2,
+    PASS_SPEED_MIN * 1.12,
     maxCrossBallSpeed(),
   )
 }
 
 /** Loft cresce com a distância — curto raso, longo flutuante. */
 export function crossLoftForDistance(dist: number): number {
-  return THREE.MathUtils.clamp(0.5 + dist * 0.014, 0.52, 0.82)
+  return THREE.MathUtils.clamp(0.45 + dist * 0.012, 0.46, 0.72)
 }
 
-/** Companheiro na área / segundo poste para cruzamento */
+/**
+ * Alvo de cruzamento só se estiver no cone da mira (não puxa pra trás / lateral oposta).
+ */
+export function findCrossTargetAlongAim(
+  from: PlayerRef,
+  teammates: PlayerRef[],
+  aimDir: { x: number; z: number },
+  bounds: FieldBounds,
+  team: TeamId,
+  ballZ: number,
+  options?: { minDot?: number; maxDist?: number },
+): PlayerRef | null {
+  const minDot = options?.minDot ?? 0.58
+  const maxDist = options?.maxDist ?? 32
+  const aimLen = Math.hypot(aimDir.x, aimDir.z)
+  const fx = aimLen > 0.001 ? aimDir.x / aimLen : Math.sin(from.rotation)
+  const fz = aimLen > 0.001 ? aimDir.z / aimLen : Math.cos(from.rotation)
+  const attackSign = getAttackSign(team, bounds)
+  const goalZ = getAttackingGoalZ(team, bounds)
+  const halfW = (bounds.maxX - bounds.minX) * 0.5
+
+  let best: PlayerRef | null = null
+  let bestScore = -Infinity
+
+  for (const p of teammates) {
+    if (p.id === from.id || p.role === 'gk') continue
+
+    const dx = p.position.x - from.position.x
+    const dz = p.position.z - from.position.z
+    const dist = Math.hypot(dx, dz)
+    if (dist < 3.5 || dist > maxDist) continue
+
+    const forward = dx * fx + dz * fz
+    if (forward < 2) continue
+    const dot = forward / dist
+    if (dot < minDot) continue
+
+    const dzToGoal = (goalZ - p.position.z) * attackSign
+    if (dzToGoal < -2 || dzToGoal > 28) continue
+    if (isOffsideAtZ(team, p.position.z, bounds, ballZ)) continue
+
+    const inBox =
+      dzToGoal > 1.5 &&
+      dzToGoal < 16 &&
+      Math.abs(p.position.x) < halfW * 0.5
+    const score =
+      dot * 4.5 +
+      (inBox ? 2.2 : 0) +
+      (p.role === 'fwd' ? 0.8 : p.role === 'mid' ? 0.25 : 0) -
+      dist * 0.03
+
+    if (score > bestScore) {
+      bestScore = score
+      best = p
+    }
+  }
+
+  return best
+}
+
+/** Companheiro na área / segundo poste para cruzamento (IA — ignora mira do stick) */
 export function findCrossTarget(
   from: PlayerRef,
   teammates: PlayerRef[],

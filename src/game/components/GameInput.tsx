@@ -10,31 +10,49 @@ import {
 import type { ControlState } from '../hooks/useKeyboardControls'
 import { playerRegistry } from '../systems/entityRegistry'
 import { useGameStore, getUserTeam } from '../store/gameStore'
-import { startKickoff } from '../systems/kickoff'
-import { executeSetPieceDelivery, canSetPiecePassOrCross, isActiveSetPiecePhase } from '../systems/setPiece'
+import { startKickoff, getKickoffPlayerId } from '../systems/kickoff'
+import { executeSetPieceDelivery, canSetPiecePassOrCross, isActiveSetPiecePhase, isAttackingFreeKickPresentation } from '../systems/setPiece'
 import {
   createShotChargeState,
   finalizePower,
   getPowerChargeDuration,
   getPowerFillSpeed,
+  isShotCinematicWindupComplete,
   QUICK_PASS_POWER,
   QUICK_PASS_TAP_MS,
+  SHOT_AIM_LOCK_DELAY_MS,
   updatePowerFill,
   type PowerBarMode,
 } from '../systems/shotPower'
 import { getSimDelta, isUserPauseActive } from '../systems/gameTime'
-import { computeShotAimDirection, computeStrikeDirection } from '../systems/strikeAim'
+import {
+  computeCameraRelativeAimInput,
+  computeCinematicShotAimDirection,
+  computeStrikeDirection,
+} from '../systems/strikeAim'
 import { switchUserPlayer } from '../systems/playerSwitch'
 import { canAnticipateStrike, getAnticipatedStrikerId, getPassReceiverId, canManualSwitchPlayer, resolveCrossVolleyStrikerId } from '../systems/anticipation'
 import { releaseCrossVolleyShot, isCrossVolleyArmed } from '../systems/crossAssist'
 import { getMarkerChargeSpeedMul } from '../systems/markerPressure'
+import { replaySystem } from '../systems/replaySystem'
+import { finishMatchIntro } from '../systems/matchIntro'
+import { clearIntroFade } from '../systems/screenTransition'
+import { narrationSfx } from '../systems/narrationSfx'
+import { setCameraLookInput, resetCameraLook } from '../systems/cameraLook'
 
 type GameInputProps = {
   controls: MutableRefObject<ControlState>
   consumeKickRelease: () => boolean
+  consumeSkipPress?: () => boolean
+  clearSkipPress?: () => void
+  clearStickyActionEdges?: () => void
 }
 
-const AIM_ROTATE_SPEED = 2.4
+const AIM_ROTATE_SPEED = 1.15
+const CONTACT_MOVE_SPEED = 1.05
+const STICK_AIM_DEADZONE = 0.28
+/** Curva no stick da cobrança — meia deflexão gira bem menos */
+const SET_PIECE_AIM_STICK_EXP = 1.7
 
 type PassChargeKind = 'pass' | 'through' | 'cross'
 type ShotContext = 'open' | 'setpiece' | null
@@ -45,6 +63,7 @@ function resetChargeState(
     chargeMode: MutableRefObject<PowerBarMode>
     shotContext: MutableRefObject<ShotContext>
     chargeStartedAt: MutableRefObject<number>
+    cinematicAimLock?: MutableRefObject<{ dirX: number; dirZ: number } | null>
   },
   store: ReturnType<typeof useGameStore.getState>,
 ) {
@@ -53,6 +72,7 @@ function resetChargeState(
   refs.chargeMode.current = null
   refs.shotContext.current = null
   refs.chargeStartedAt.current = 0
+  if (refs.cinematicAimLock) refs.cinematicAimLock.current = null
   store.setShotCharge(0, false)
 }
 
@@ -64,6 +84,20 @@ function fireSetPieceDelivery(
   const finalized = finalizePower(power)
   store.setPendingSetPiecePower(finalized)
   if (kind === 'shot' && (store.phase === 'corner' || store.phase === 'penalty')) {
+    store.setSetPieceKickPending(true)
+    return
+  }
+  if (
+    kind === 'shot' &&
+    store.phase === 'free-kick' &&
+    isAttackingFreeKickPresentation(
+      store.phase,
+      store.setPieceTeam,
+      store.setPiecePosition,
+      store.fieldBounds,
+    )
+  ) {
+    // Câmera volta do 3ª pessoa atrás do batedor antes do chute
     store.setSetPieceKickPending(true)
     return
   }
@@ -85,6 +119,74 @@ function fireShotCharge(
   } else if (ctx === 'setpiece') {
     fireSetPieceDelivery(store, 'shot', finalized)
   }
+}
+
+/** Chute a gol em jogo aberto: wind-up cinemático (não cobrança / antecipação). */
+function isCinematicShotContext(shotContext: ShotContext): boolean {
+  return shotContext === 'open'
+}
+
+function lockShotAimFromControls(
+  store: ReturnType<typeof useGameStore.getState>,
+  controls: ControlState,
+  power: number,
+  lockRef?: MutableRefObject<{ dirX: number; dirZ: number } | null>,
+) {
+  const possession = store.ballPossession
+  const strikerId =
+    possession?.team === getUserTeam() && possession.playerId === store.activePlayerId
+      ? store.activePlayerId
+      : store.activePlayerId
+  const player = playerRegistry.get(strikerId)
+  if (!player) return
+
+  // Prefere a mira atual (já ajustada na janela livre); senão stick/frente
+  const prev = store.strikeAim
+  const stick = computeCameraRelativeAimInput(controls)
+  const facingX = Math.sin(player.rotation)
+  const facingZ = Math.cos(player.rotation)
+  let dirX: number
+  let dirZ: number
+  if (prev && prev.mode === 'shot' && Math.hypot(prev.dirX, prev.dirZ) > 0.01) {
+    dirX = prev.dirX
+    dirZ = prev.dirZ
+  } else if (stick.active) {
+    dirX = stick.x
+    dirZ = stick.z
+  } else {
+    dirX = facingX
+    dirZ = facingZ
+  }
+  const len = Math.hypot(dirX, dirZ) || 1
+  const nx = dirX / len
+  const nz = dirZ / len
+  const facingDot = Math.max(-1, Math.min(1, nx * facingX + nz * facingZ))
+
+  if (lockRef) lockRef.current = { dirX: nx, dirZ: nz }
+
+  store.setStrikeAim({
+    originX: player.position.x,
+    originZ: player.position.z,
+    dirX: nx,
+    dirZ: nz,
+    angle: Math.atan2(nx, nz),
+    facingDot,
+    mode: 'shot',
+    power,
+    charging: true,
+    locked: true,
+  })
+}
+
+function tryLockCinematicShotAim(
+  store: ReturnType<typeof useGameStore.getState>,
+  controls: ControlState,
+  chargeStartedAt: number,
+  lockRef: MutableRefObject<{ dirX: number; dirZ: number } | null>,
+) {
+  if (lockRef.current) return
+  if (performance.now() - chargeStartedAt < SHOT_AIM_LOCK_DELAY_MS) return
+  lockShotAimFromControls(store, controls, store.shotChargePower, lockRef)
 }
 
 function strikerHasBall(
@@ -109,7 +211,18 @@ function canChargeOpenPlay(store: ReturnType<typeof useGameStore.getState>) {
 }
 
 function canChargeSetPiece(store: ReturnType<typeof useGameStore.getState>) {
-  return isActiveSetPiecePhase(store.phase) && store.ballFrozen && store.setPieceTeam === getUserTeam()
+  if (
+    !isActiveSetPiecePhase(store.phase) ||
+    !store.ballFrozen ||
+    store.setPieceTeam !== getUserTeam()
+  ) {
+    return false
+  }
+  // Modo Pro: só cobra se o jogador travado for o cobrador
+  if (store.controlMode === 'pro') {
+    return store.setPieceKickerId === store.activePlayerId
+  }
+  return true
 }
 
 function canUpdateAnticipationAim(store: ReturnType<typeof useGameStore.getState>) {
@@ -123,6 +236,8 @@ function canUpdateAnticipationAim(store: ReturnType<typeof useGameStore.getState
 function updateStrikeAim(
   store: ReturnType<typeof useGameStore.getState>,
   controls: ControlState,
+  delta: number,
+  cinematicAimLock?: MutableRefObject<{ dirX: number; dirZ: number } | null>,
 ) {
   if (
     store.phase === 'replay' ||
@@ -160,16 +275,40 @@ function updateStrikeAim(
     return
   }
 
+  const lock = cinematicAimLock?.current
+  // Chute cinemático: mira 100% congelada (ref + flag)
+  if (store.powerBarMode === 'shot' && (store.strikeAim?.locked || lock)) {
+    const dirX = lock?.dirX ?? store.strikeAim!.dirX
+    const dirZ = lock?.dirZ ?? store.strikeAim!.dirZ
+    const facingX = Math.sin(player.rotation)
+    const facingZ = Math.cos(player.rotation)
+    const facingDot = Math.max(
+      -1,
+      Math.min(1, dirX * facingX + dirZ * facingZ),
+    )
+    store.setStrikeAim({
+      originX: player.position.x,
+      originZ: player.position.z,
+      dirX,
+      dirZ,
+      angle: Math.atan2(dirX, dirZ),
+      facingDot,
+      mode: 'shot',
+      power: store.shotChargePower,
+      charging: true,
+      locked: true,
+    })
+    return
+  }
+
+  const prevAim =
+    store.strikeAim && store.strikeAim.mode === store.powerBarMode
+      ? { x: store.strikeAim.dirX, z: store.strikeAim.dirZ }
+      : null
   const rawDir =
     store.powerBarMode === 'shot'
-      ? computeShotAimDirection(
-          controls,
-          player.rotation,
-          store.strikeAim?.mode === 'shot'
-            ? { x: store.strikeAim.dirX, z: store.strikeAim.dirZ }
-            : null,
-        )
-      : computeStrikeDirection(controls, player.rotation)
+      ? computeCinematicShotAimDirection(controls, player.rotation, prevAim)
+      : computeStrikeDirection(controls, player.rotation, prevAim, delta)
   const dir = { x: rawDir.x, z: rawDir.z }
   const facingX = Math.sin(player.rotation)
   const facingZ = Math.cos(player.rotation)
@@ -185,10 +324,25 @@ function updateStrikeAim(
     mode: store.powerBarMode,
     power: store.shotChargePower,
     charging: true,
+    locked: false,
   })
 }
 
-export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
+function setPieceStickAimDelta(moveX: number, simDelta: number): number {
+  const abs = Math.abs(moveX)
+  if (abs <= STICK_AIM_DEADZONE) return 0
+  const remapped = (abs - STICK_AIM_DEADZONE) / (1 - STICK_AIM_DEADZONE)
+  const curved = Math.pow(Math.min(1, remapped), SET_PIECE_AIM_STICK_EXP)
+  return Math.sign(moveX) * curved * AIM_ROTATE_SPEED * simDelta
+}
+
+export function GameInput({
+  controls,
+  consumeKickRelease,
+  consumeSkipPress,
+  clearSkipPress,
+  clearStickyActionEdges,
+}: GameInputProps) {
   const kickoffTimerRef = useRef(0)
   const cornerKickTimerRef = useRef(0)
   const chargeRef = useRef(createShotChargeState())
@@ -201,18 +355,94 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
   const passTapHoldRef = useRef(false)
   const passTapStartedRef = useRef(0)
   const passInAimModeRef = useRef(false)
+  const wasCinematicRef = useRef(false)
+  const skipGraceRef = useRef(0)
+  /** Mira cinemática — sobrevive se o store perder o `locked` */
+  const cinematicAimLockRef = useRef<{ dirX: number; dirZ: number } | null>(null)
 
   useFrame((_, delta) => {
     const store = useGameStore.getState()
     const c = controls.current
+    const cinematic =
+      store.phase === 'replay' ||
+      store.phase === 'goal-celebration' ||
+      store.phase === 'intro'
 
-    if (store.phase === 'replay' || store.phase === 'goal-celebration' || store.phase === 'intro') {
+    if (cinematic) {
       store.setStrikeAim(null)
+      resetCameraLook()
+      // Acabou de entrar: descarta input preso do lance e dá um tempo de graça
+      if (!wasCinematicRef.current) {
+        wasCinematicRef.current = true
+        clearSkipPress?.()
+        consumeSkipPress?.()
+        skipGraceRef.current = 0.35
+      }
+      if (skipGraceRef.current > 0) {
+        skipGraceRef.current = Math.max(0, skipGraceRef.current - delta)
+        clearSkipPress?.()
+        consumeSkipPress?.()
+        return
+      }
+      if (consumeSkipPress?.()) {
+        if (store.phase === 'intro') {
+          clearIntroFade()
+          narrationSfx.stopIntroNarration()
+          clearStickyActionEdges?.()
+          finishMatchIntro()
+        } else {
+          clearStickyActionEdges?.()
+          replaySystem.skip()
+        }
+      }
       return
     }
+
+    // Stick direito → look da câmera (soltou = volta pra bola)
+    setCameraLookInput(c.skillX, c.skillZ)
+
+    if (wasCinematicRef.current) {
+      wasCinematicRef.current = false
+      skipGraceRef.current = 0
+      clearSkipPress?.()
+      consumeSkipPress?.()
+      clearStickyActionEdges?.()
+    }
+
     if (isUserPauseActive()) {
       store.setStrikeAim(null)
       return
+    }
+
+    if (c.toggleAssist) {
+      c.toggleAssist = false
+      if (store.controlMode === 'pro') {
+        store.toggleProAssistMode()
+      }
+    }
+
+    // LB: cancela carga primeiro; senão pede bola (Pro) / troca (time)
+    if (c.cancelCharge && (chargeRef.current.active || passTapHoldRef.current)) {
+      c.cancelCharge = false
+      c.callForBall = false
+      c.switchPlayer = false
+      chargeRef.current.active = false
+      chargeRef.current.power = 0
+      chargeModeRef.current = null
+      shotContextRef.current = null
+      chargeStartedAtRef.current = 0
+      cinematicAimLockRef.current = null
+      passTapHoldRef.current = false
+      passInAimModeRef.current = false
+      store.setShotCharge(0, false)
+      store.setStrikeAim(null)
+      store.setCrossOneTouchActive(false)
+      return
+    }
+
+    if (c.callForBall) {
+      c.callForBall = false
+      store.requestBallCall()
     }
 
     if (c.switchPlayer && store.phase === 'playing' && !store.ballFrozen && !store.shotChargeActive) {
@@ -238,11 +468,15 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
     cornerKickTimerRef.current = 0
 
     if (store.phase === 'kickoff' && store.ballFrozen) {
-      if (store.kickoffTeam !== getUserTeam()) {
+      const userKickoff = store.kickoffTeam === getUserTeam()
+      const lockedIsKicker =
+        store.controlMode !== 'pro' ||
+        store.activePlayerId === getKickoffPlayerId(store.kickoffTeam)
+      // Rival sempre; em Pro, IA cobra se o jogador travado não for o cobrador
+      if (!userKickoff || !lockedIsKicker) {
         kickoffTimerRef.current += simDelta
         if (kickoffTimerRef.current >= SET_PIECE_DELAY) {
-          startKickoff()
-          kickoffTimerRef.current = 0
+          if (startKickoff()) kickoffTimerRef.current = 0
         }
       }
       return
@@ -260,22 +494,32 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
       !setPieceCharge
 
     if (setPieceCharge) {
-      if (c.left) store.rotateSetPieceAim(-AIM_ROTATE_SPEED * simDelta)
-      if (c.right) store.rotateSetPieceAim(AIM_ROTATE_SPEED * simDelta)
-    }
+      const skillMag = Math.hypot(c.skillX, c.skillZ)
+      const usingRightStick = skillMag > STICK_AIM_DEADZONE
 
-    if (c.cancelCharge && (charge.active || passTapHoldRef.current)) {
-      charge.active = false
-      charge.power = 0
-      chargeModeRef.current = null
-      shotContextRef.current = null
-      chargeStartedAtRef.current = 0
-      passTapHoldRef.current = false
-      passInAimModeRef.current = false
-      store.setShotCharge(0, false)
-      store.setStrikeAim(null)
-      store.setCrossOneTouchActive(false)
-      return
+      if (store.phase === 'free-kick') {
+        // Stick DIREITO = SOMENTE ponto na bola. Nunca mira / rotação.
+        if (usingRightStick) {
+          const contactMag = Math.min(1, skillMag)
+          const contactCurve = Math.pow(contactMag, SET_PIECE_AIM_STICK_EXP)
+          store.adjustSetPieceContact(
+            // Espelha X — direita/esquerda da bolinha no sentido do cobrador
+            -c.skillX * CONTACT_MOVE_SPEED * contactCurve * simDelta,
+            c.skillZ * CONTACT_MOVE_SPEED * contactCurve * simDelta,
+          )
+        } else {
+          // Stick ESQUERDO / A-D / D-pad = mira (só com stick direito neutro)
+          if (c.left) store.rotateSetPieceAim(-AIM_ROTATE_SPEED * simDelta)
+          if (c.right) store.rotateSetPieceAim(AIM_ROTATE_SPEED * simDelta)
+          const aimDelta = setPieceStickAimDelta(c.moveX, simDelta)
+          if (aimDelta !== 0) store.rotateSetPieceAim(aimDelta)
+        }
+      } else {
+        if (c.left) store.rotateSetPieceAim(-AIM_ROTATE_SPEED * simDelta)
+        if (c.right) store.rotateSetPieceAim(AIM_ROTATE_SPEED * simDelta)
+        const aimDelta = setPieceStickAimDelta(c.moveX, simDelta)
+        if (aimDelta !== 0) store.rotateSetPieceAim(aimDelta)
+      }
     }
 
     // Antecipação: toque rápido OU mira + força (voleio no cruzamento, first-time no passe)
@@ -336,15 +580,16 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
             chargeMode: chargeModeRef,
             shotContext: shotContextRef,
             chargeStartedAt: chargeStartedAtRef,
+            cinematicAimLock: cinematicAimLockRef,
           },
           store,
         )
         if (wasCrossVolley) {
           releaseCrossVolleyShot(strikerId, power, dirX, dirZ)
         } else if (strikerHasBall(store, strikerId)) {
-          store.setPendingUserShot(power, dirX, dirZ)
+          store.setPendingUserShot(power, dirX, dirZ, false, true)
         } else {
-          store.setPendingUserShot(power, dirX, dirZ, true)
+          store.setPendingUserShot(power, dirX, dirZ, true, true)
         }
         store.setCrossOneTouchActive(false)
       }
@@ -377,6 +622,7 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
               chargeMode: chargeModeRef,
               shotContext: shotContextRef,
               chargeStartedAt: chargeStartedAtRef,
+            cinematicAimLock: cinematicAimLockRef,
             },
             store,
           )
@@ -438,6 +684,7 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
                 chargeMode: chargeModeRef,
                 shotContext: shotContextRef,
                 chargeStartedAt: chargeStartedAtRef,
+            cinematicAimLock: cinematicAimLockRef,
               },
               store,
             )
@@ -449,7 +696,7 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
       prevShotHeldRef.current = shotHeld
       prevGroundPassHeldRef.current = groundPassHeld
       prevOtherPassHeldRef.current = otherPassHeld
-      updateStrikeAim(store, c)
+      updateStrikeAim(store, c, simDelta, cinematicAimLockRef)
       return
     }
 
@@ -498,6 +745,10 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
       shotContextRef.current = resolveShotContext()
       chargeModeRef.current = 'shot'
       store.setShotCharge(0, true, 'shot')
+      // Janela curta pra mirar — trava depois (tryLockCinematicShotAim)
+      if (isCinematicShotContext(shotContextRef.current)) {
+        cinematicAimLockRef.current = null
+      }
     }
 
     if (groundPassPressed) {
@@ -544,7 +795,13 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
       passInAimModeRef.current = false
     }
 
-    if (shotReleased && charge.active && chargeModeRef.current === 'shot') {
+    // Cobrança: ainda solta pra chutar. Jogo aberto: timer cinemático (não solta).
+    if (
+      shotReleased &&
+      charge.active &&
+      chargeModeRef.current === 'shot' &&
+      !isCinematicShotContext(shotContextRef.current)
+    ) {
       const power = finalizePower(charge.power)
       const aim = store.strikeAim
       const shotContext = shotContextRef.current
@@ -563,13 +820,12 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
           chargeMode: chargeModeRef,
           shotContext: shotContextRef,
           chargeStartedAt: chargeStartedAtRef,
+            cinematicAimLock: cinematicAimLockRef,
         },
         store,
       )
       if (wasCrossVolley) {
         releaseCrossVolleyShot(strikerId, power, dirX, dirZ)
-      } else if (canChargeOpenPlay(store)) {
-        store.setPendingUserShot(power, dirX, dirZ)
       } else {
         fireShotCharge(store, shotContext, power)
       }
@@ -584,8 +840,23 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
       const carrierId = store.ballPossession?.playerId ?? store.activePlayerId
       const chargeMul =
         mode === 'shot' ? 1 : getMarkerChargeSpeedMul(carrierId, mode)
+      const cinematicShot =
+        mode === 'shot' && isCinematicShotContext(shotContextRef.current)
 
-      if (mode === 'pass') {
+      // Perdeu a bola no wind-up cinemático — cancela
+      if (cinematicShot && !canChargeOpenPlay(store)) {
+        resetChargeState(
+          charge,
+          {
+            chargeMode: chargeModeRef,
+            shotContext: shotContextRef,
+            chargeStartedAt: chargeStartedAtRef,
+            cinematicAimLock: cinematicAimLockRef,
+          },
+          store,
+        )
+        store.setStrikeAim(null)
+      } else if (mode === 'pass') {
         if (groundPassHeld) {
           updatePowerFill(charge, simDelta, getPowerFillSpeed(mode) * chargeMul)
         }
@@ -595,6 +866,32 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
           updatePowerFill(charge, simDelta, getPowerFillSpeed('shot') * chargeMul)
         }
         store.setShotCharge(charge.power, true, 'shot')
+
+        if (cinematicShot) {
+          tryLockCinematicShotAim(
+            store,
+            c,
+            chargeStartedAtRef.current,
+            cinematicAimLockRef,
+          )
+        }
+
+        if (cinematicShot && isShotCinematicWindupComplete(chargeStartedAtRef.current)) {
+          const power = finalizePower(charge.power)
+          const shotContext = shotContextRef.current
+          resetChargeState(
+            charge,
+            {
+              chargeMode: chargeModeRef,
+              shotContext: shotContextRef,
+              chargeStartedAt: chargeStartedAtRef,
+            cinematicAimLock: cinematicAimLockRef,
+            },
+            store,
+          )
+          fireShotCharge(store, shotContext, power)
+          store.setCrossOneTouchActive(false)
+        }
       } else {
         if (actionHeld) {
           updatePowerFill(charge, simDelta, getPowerFillSpeed(mode) * chargeMul)
@@ -604,18 +901,21 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
 
         if (elapsedMs >= duration * 1000 || charge.power >= 1) {
           const power = finalizePower(charge.power)
+          // Capturar antes do reset — resetChargeState zera shotContextRef
+          const shotContext = shotContextRef.current
           resetChargeState(
             charge,
             {
               chargeMode: chargeModeRef,
               shotContext: shotContextRef,
               chargeStartedAt: chargeStartedAtRef,
+            cinematicAimLock: cinematicAimLockRef,
             },
             store,
           )
 
           if (mode === 'through' || mode === 'cross') {
-            if (shotContextRef.current === 'setpiece' && canSetPiecePassOrCross(store.phase)) {
+            if (shotContext === 'setpiece' && canSetPiecePassOrCross(store.phase)) {
               fireSetPieceDelivery(store, mode === 'cross' ? 'cross' : 'pass', power)
             } else {
               store.setPendingUserPass(mode, power, false, aim?.dirX, aim?.dirZ)
@@ -629,7 +929,7 @@ export function GameInput({ controls, consumeKickRelease }: GameInputProps) {
     prevGroundPassHeldRef.current = groundPassHeld
     prevOtherPassHeldRef.current = otherPassHeld
 
-    updateStrikeAim(store, c)
+    updateStrikeAim(store, c, simDelta, cinematicAimLockRef)
   })
 
   return null

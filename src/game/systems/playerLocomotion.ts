@@ -3,29 +3,34 @@ import { rotateTowardAngle } from './rules'
 import type { PlayerLocoAnim } from '../types'
 
 /** Off-ball: ágil pra receber, marcar, virar 180° */
-export const PLAYER_MOVE_ACCEL = 20.4
-/** IA: mais inércia — vira/freia como stick, sem “teleporte” de direção */
-export const PLAYER_MOVE_ACCEL_AI = 13.2
-/** Freio off-ball — 0 faz patinar; snappy precisa de rate > 0 */
-export const PLAYER_MOVE_DECEL = 0.4
-export const PLAYER_MOVE_DECEL_AI = 3.4
-export const PLAYER_DIR_SMOOTH_CONTROLLED = 23.4
+export const PLAYER_MOVE_ACCEL = 26.5
+/** IA: responsiva sem teleporte — antes ficava “travada” */
+export const PLAYER_MOVE_ACCEL_AI = 21.5
+/** Freio off-ball — suave o bastante pra não engessar a passada */
+export const PLAYER_MOVE_DECEL = 4.2
+export const PLAYER_MOVE_DECEL_AI = 5.0
+export const PLAYER_DIR_SMOOTH_CONTROLLED = 28
 /** Suaviza intenção tática da IA (evita cortes secos) */
-export const PLAYER_DIR_SMOOTH_AI = 11.2
-export const PLAYER_DIR_SMOOTH_AI_PRESS = 9.2
-export const PLAYER_DIR_SMOOTH_AI_DIRECT = 14.5
+export const PLAYER_DIR_SMOOTH_AI = 24
+export const PLAYER_DIR_SMOOTH_AI_PRESS = 18
+export const PLAYER_DIR_SMOOTH_AI_DIRECT = 21
 export const PLAYER_BALL_FOCUS_TURN = 50.5
 
-/** Domínio previsível: stick responde; freio curto (menos “solto”) */
-export const PLAYER_MOVE_ACCEL_DRIBBLE = 14.5
-export const PLAYER_MOVE_DECEL_DRIBBLE = 5.2
-export const PLAYER_DIR_SMOOTH_DRIBBLE = 16.5
-/** IA com bola: um pouco mais filtrada que o stick do usuário */
-export const PLAYER_DIR_SMOOTH_DRIBBLE_AI = 11.8
+/** Domínio: stick responde, freio curto, sem órbita no gramado */
+export const PLAYER_MOVE_ACCEL_DRIBBLE = 17.5
+export const PLAYER_MOVE_DECEL_DRIBBLE = 5.8
+export const PLAYER_DIR_SMOOTH_DRIBBLE = 19
+/** IA com bola: bem mais baixo — preserva meia-lua do stick virtual */
+export const PLAYER_DIR_SMOOTH_DRIBBLE_AI = 100.5
 
-const VEL_YAW_RATE_ACCEL = 10.5
-const VEL_YAW_RATE_COAST = 7.2
-const PLANT_TURN_RAD = 1.85
+/** Giro do momentum no domínio (rad/s) — trote ágil, sprint carrega */
+const VEL_YAW_RATE_JOG = 5.4
+const VEL_YAW_RATE_SPRINT = 2.85
+const VEL_YAW_RATE_COAST = 3.2
+/** Acima disso: planta e reconstrói (evita arco de 180°) */
+const PLANT_TURN_RAD = 1.35
+/** Ângulo em que começa a matar o deslize lateral */
+const SLIP_TURN_RAD = 0.48
 
 function angleDelta(a: number, b: number): number {
   let d = a - b
@@ -88,10 +93,11 @@ function smoothVelocitySnappy(
     const curYaw = Math.atan2(current.x, current.z)
     const tgtYaw = Math.atan2(targetX, targetZ)
     const turn = Math.abs(angleDelta(tgtYaw, curYaw))
-    if (turn > 0.45) {
-      const redirect = THREE.MathUtils.clamp(turn / Math.PI, 0.2, 1)
-      const brake = Math.max(decelRate, accelRate * 0.75)
-      rate = Math.max(rate, brake * (1.35 + redirect * 2.1))
+    // Freio só em virada fechada — correção leve não trava a passada
+    if (turn > 0.7) {
+      const redirect = THREE.MathUtils.clamp(turn / Math.PI, 0.25, 1)
+      const brake = Math.max(decelRate, accelRate * 0.55)
+      rate = Math.max(rate, brake * (0.75 + redirect * 1.15))
     }
   }
 
@@ -106,7 +112,10 @@ function smoothVelocitySnappy(
   return { x, z }
 }
 
-/** Domínio — curva o momentum (peso FIFA). */
+/**
+ * Domínio — peso FIFA/PES sem órbita:
+ * gira o momentum, mata deslize lateral e planta em reversão.
+ */
 function smoothVelocityWeighted(
   current: { x: number; z: number },
   targetX: number,
@@ -121,10 +130,10 @@ function smoothVelocityWeighted(
   const dt = Math.min(delta, 0.05)
 
   if (targetSpeed < 0.03) {
-    const blend = 1 - Math.exp(-decelRate * 0.92 * dt)
+    const blend = 1 - Math.exp(-decelRate * 1.15 * dt)
     const x = current.x * (1 - blend)
     const z = current.z * (1 - blend)
-    if (Math.hypot(x, z) < 0.055) return { x: 0, z: 0 }
+    if (Math.hypot(x, z) < 0.05) return { x: 0, z: 0 }
     return { x, z }
   }
 
@@ -132,8 +141,9 @@ function smoothVelocityWeighted(
   const tgtDirZ = targetZ / targetSpeed
   const desiredSpeed = targetSpeed
 
-  if (curSpeed < 0.14) {
-    const blend = 1 - Math.exp(-accelRate * 1.05 * dt)
+  // Partida / quase parado: vai direto pro stick (close control)
+  if (curSpeed < 0.16) {
+    const blend = 1 - Math.exp(-accelRate * 1.25 * dt)
     return {
       x: current.x + (tgtDirX * desiredSpeed - current.x) * blend,
       z: current.z + (tgtDirZ * desiredSpeed - current.z) * blend,
@@ -147,36 +157,81 @@ function smoothVelocityWeighted(
 
   const speedNorm = THREE.MathUtils.clamp(
     curSpeed / Math.max(desiredSpeed, 0.01),
-    0.35,
-    1.35,
+    0.3,
+    1.4,
   )
-  // PES close control: trote vira rápido; sprint carrega mais inércia
-  const closeControlBoost = THREE.MathUtils.clamp(1.55 - speedNorm * 0.7, 0.85, 1.55)
-  let yawRate =
-    ((accelerating ? VEL_YAW_RATE_ACCEL : VEL_YAW_RATE_COAST) * closeControlBoost) /
-    (0.48 + speedNorm * 0.62)
+  const sprintish = speedNorm > 0.85
+  const baseYaw = accelerating
+    ? sprintish
+      ? VEL_YAW_RATE_SPRINT
+      : VEL_YAW_RATE_JOG
+    : VEL_YAW_RATE_COAST
+  // Close control: trote vira; sprint carrega inércia
+  const closeControlBoost = THREE.MathUtils.clamp(1.65 - speedNorm * 0.85, 0.72, 1.65)
+  let yawRate = (baseYaw * closeControlBoost) / (0.42 + speedNorm * 0.7)
 
   let speed = curSpeed
+
+  // Reversão: planta e reconstrói — NÃO faz arco de 180° no gramado
   if (turnAbs > PLANT_TURN_RAD) {
-    speed *= Math.exp(-2.15 * dt)
-    yawRate *= 1.7
-  } else if (turnAbs > 0.85) {
-    speed *= Math.exp(-0.42 * turnAbs * dt)
-    yawRate *= 1.22
+    const plant = 1 - Math.exp(-(4.8 + turnAbs * 2.2) * dt)
+    speed *= 1 - plant
+    if (speed < desiredSpeed * 0.32) {
+      const rebuild = 1 - Math.exp(-accelRate * 1.35 * dt)
+      return {
+        x: current.x * (1 - rebuild) + tgtDirX * desiredSpeed * rebuild,
+        z: current.z * (1 - rebuild) + tgtDirZ * desiredSpeed * rebuild,
+      }
+    }
+    yawRate *= 2.05
+  } else if (turnAbs > 0.7) {
+    speed *= Math.exp(-0.55 * turnAbs * dt)
+    yawRate *= 1.18
   }
 
   const maxStep = yawRate * dt
   const step = THREE.MathUtils.clamp(turn, -maxStep, maxStep)
   const newYaw = curYaw + step
-  const newDirX = Math.sin(newYaw)
-  const newDirZ = Math.cos(newYaw)
+  let newDirX = Math.sin(newYaw)
+  let newDirZ = Math.cos(newYaw)
+
+  // Mistura leve com a direção do stick — corta órbita pura
+  if (turnAbs > 0.2 && turnAbs < PLANT_TURN_RAD) {
+    const pull = THREE.MathUtils.clamp(0.12 + turnAbs * 0.22, 0.12, 0.42)
+    const pullBlend = 1 - Math.exp(-pull * 14 * dt)
+    newDirX += (tgtDirX - newDirX) * pullBlend
+    newDirZ += (tgtDirZ - newDirZ) * pullBlend
+    const nLen = Math.hypot(newDirX, newDirZ)
+    if (nLen > 0.001) {
+      newDirX /= nLen
+      newDirZ /= nLen
+    }
+  }
 
   const speedingUp = speed < desiredSpeed - 0.02
-  const rate = speedingUp ? accelRate : decelRate * 0.88
+  const rate = speedingUp ? accelRate : decelRate * 1.05
   const blend = 1 - Math.exp(-rate * dt)
   speed = speed + (desiredSpeed - speed) * blend
 
-  return { x: newDirX * speed, z: newDirZ * speed }
+  let vx = newDirX * speed
+  let vz = newDirZ * speed
+
+  // Freio lateral: mata componente perpendicular ao stick (fim do skate)
+  if (turnAbs > SLIP_TURN_RAD) {
+    const along = vx * tgtDirX + vz * tgtDirZ
+    const latX = vx - tgtDirX * along
+    const latZ = vz - tgtDirZ * along
+    const slipKill = THREE.MathUtils.clamp(
+      (turnAbs - SLIP_TURN_RAD) / (Math.PI * 0.55),
+      0,
+      1,
+    )
+    const damp = 1 - Math.exp(-(4.2 + slipKill * 7) * dt)
+    vx -= latX * damp * (0.4 + slipKill * 0.4)
+    vz -= latZ * damp * (0.4 + slipKill * 0.4)
+  }
+
+  return { x: vx, z: vz }
 }
 
 /**
@@ -228,11 +283,11 @@ export function scaleTurnSpeedByMomentum(
     const damp = controlled ? 0.28 : 0.32
     return baseTurnSpeed * Math.max(0.62, 1 - ratio * damp)
   }
-  // Domínio: ágil no close control, pesado no sprint
-  if (ratio < 0.22) return baseTurnSpeed * (controlled ? 1.65 : 1.4)
-  if (ratio < 0.45) return baseTurnSpeed * (controlled ? 1.22 : 1.08)
-  const damp = controlled ? 0.48 : 0.4
-  return baseTurnSpeed * Math.max(0.38, 1 - ratio * damp)
+  // Domínio: close control rápido; sprint gira o peito sem ficar “preso”
+  if (ratio < 0.22) return baseTurnSpeed * (controlled ? 1.72 : 1.45)
+  if (ratio < 0.5) return baseTurnSpeed * (controlled ? 1.28 : 1.12)
+  const damp = controlled ? 0.38 : 0.34
+  return baseTurnSpeed * Math.max(0.48, 1 - ratio * damp)
 }
 
 /**
@@ -251,25 +306,26 @@ export function facingFromMovement(
 
   if (intentLen > 0.02) {
     const intentYaw = Math.atan2(intentX / intentLen, intentZ / intentLen)
-    if (moveSpeed > (weighted ? 0.5 : 0.55)) {
+    if (moveSpeed > (weighted ? 0.42 : 0.55)) {
       const velYaw = Math.atan2(velX, velZ)
       const turn = Math.abs(angleDelta(intentYaw, velYaw))
       if (!weighted) {
         if (turn > 0.5) return intentYaw
         return velYaw
       }
-      if (turn < 0.28) return velYaw
+      // Domínio: peito acompanha o stick no close control; no sprint segue o corpo
+      if (turn < 0.18) return velYaw
       const intentPull = THREE.MathUtils.clamp(
-        0.28 + (1 - turn / Math.PI) * 0.42,
-        0.22,
-        0.62,
+        0.38 + (1 - turn / Math.PI) * 0.4,
+        0.32,
+        0.78,
       )
       return lerpAngle(velYaw, intentYaw, intentPull)
     }
     return intentYaw
   }
 
-  if (moveSpeed > (weighted ? 0.42 : 0.48)) {
+  if (moveSpeed > (weighted ? 0.38 : 0.48)) {
     return Math.atan2(velX, velZ)
   }
   return currentFacing
@@ -293,10 +349,10 @@ export function applyPlayerFacing(
     } else if (currentSpeed < maxSpeed * 0.45 && turnAbs > 1.4) {
       boost = controlled ? 1.4 : 1.25
     }
-  } else if (currentSpeed < maxSpeed * 0.22 && turnAbs > 0.95) {
-    boost = controlled ? 1.48 : 1.32
-  } else if (currentSpeed < maxSpeed * 0.4 && turnAbs > 1.45) {
-    boost = controlled ? 1.22 : 1.12
+  } else if (currentSpeed < maxSpeed * 0.28 && turnAbs > 0.85) {
+    boost = controlled ? 1.55 : 1.35
+  } else if (currentSpeed < maxSpeed * 0.48 && turnAbs > 1.35) {
+    boost = controlled ? 1.28 : 1.15
   }
   const turnSpeed =
     scaleTurnSpeedByMomentum(
@@ -330,19 +386,19 @@ export function plantVelocityForYawError(
   yawErrorAbs: number,
   delta: number,
 ): { x: number; z: number } {
-  if (yawErrorAbs < 0.32) return vel
-  // Virada média: freio forte; quase 180°: para no eixo e gira
+  if (yawErrorAbs < 0.4) return vel
+  // Virada média: freio; quase 180°: planta mais — sem engessar virada leve
   const rate =
     yawErrorAbs > 1.25
-      ? 32
-      : yawErrorAbs > 0.75
-        ? 18 + yawErrorAbs * 10
-        : 11 + yawErrorAbs * 8
+      ? 22
+      : yawErrorAbs > 0.85
+        ? 12 + yawErrorAbs * 7
+        : 7 + yawErrorAbs * 5
   const blend = 1 - Math.exp(-rate * Math.min(delta, 0.05))
   const x = vel.x * (1 - blend)
   const z = vel.z * (1 - blend)
-  if (yawErrorAbs > 1.15) return { x: 0, z: 0 }
-  if (yawErrorAbs > 0.7 && Math.hypot(x, z) < 0.28) return { x: 0, z: 0 }
+  if (yawErrorAbs > 1.25) return { x: 0, z: 0 }
+  if (yawErrorAbs > 0.85 && Math.hypot(x, z) < 0.22) return { x: 0, z: 0 }
   return { x, z }
 }
 
@@ -363,6 +419,22 @@ export function worldToLocalMovement(
   }
 }
 
+/**
+ * Animações de chute/passe são destras.
+ * Mira à direita do peito → espelha (pé esquerdo).
+ * Mira à esquerda / reto → normal (pé direito).
+ */
+export function shouldMirrorRightFootedStrike(
+  bodyYaw: number,
+  aimX: number,
+  aimZ: number,
+  deadzone = 0.14,
+): boolean {
+  const { localRight } = worldToLocalMovement(aimX, aimZ, bodyYaw)
+  // localRight no nosso frame fica invertido vs. “direita do peito” visual
+  return localRight < -deadzone
+}
+
 export function resolveStrafeLocoClip(
   localForward: number,
   localRight: number,
@@ -376,12 +448,13 @@ export function resolveStrafeLocoClip(
   const absF = Math.abs(nf)
   const absR = Math.abs(nr)
 
-  // Sprint só pra frente — de costas/lado nunca usa run
-  if (sprint && nf > 0.35) return 'player_run'
+  // Sprint só pra frente — lado e costas NUNCA usam run
+  if (sprint && nf > 0.4 && absR < absF * 0.85) return 'player_run'
 
-  if (nf < -0.22 && absF >= absR * 0.75) return 'player_backward'
-  if (absR > 0.42 && absR >= absF * 0.85) return nr < 0 ? 'player_left' : 'player_right'
-  if (nf < -0.12) return 'player_backward'
+  // Limiares: off-ball usa left/right/back de verdade
+  if (nf < -0.18 && absF >= absR * 0.65) return 'player_backward'
+  if (absR > 0.32 && absR >= absF * 0.7) return nr < 0 ? 'player_left' : 'player_right'
+  if (nf < -0.08) return 'player_backward'
 
   return 'player_walking'
 }

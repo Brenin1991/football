@@ -1,6 +1,6 @@
 import { useFrame } from '@react-three/fiber'
 import { replaySystem } from '../systems/replaySystem'
-import { ballBodyRef, ballRef } from '../systems/entityRegistry'
+import { ballRef, getBallBody } from '../systems/entityRegistry'
 import { ensureBallKinematic } from '../systems/ballPhysics'
 
 /** Avança sequência de comemoração / replay e sincroniza a bola */
@@ -14,12 +14,7 @@ export function ReplayManager() {
     }
 
     const playback = replaySystem.getBallPlayback()
-    const body = ballBodyRef.current as {
-      setTranslation: (t: { x: number; y: number; z: number }, wake: boolean) => void
-      setRotation: (q: { x: number; y: number; z: number; w: number }, wake: boolean) => void
-      setLinvel: (v: { x: number; y: number; z: number }, wake: boolean) => void
-      setAngvel: (v: { x: number; y: number; z: number }, wake: boolean) => void
-    } | null
+    const body = getBallBody()
 
     if (!body || !playback) return
 
@@ -28,10 +23,14 @@ export function ReplayManager() {
     ballRef.current = { ...pos }
     ballRef.velocity = { ...playback.ballVel }
 
-    body.setTranslation(pos, true)
-    body.setRotation(playback.ballQuat, true)
-    body.setLinvel(playback.ballVel, true)
-    body.setAngvel(playback.ballAngVel, true)
+    try {
+      body.setTranslation(pos, true)
+      body.setRotation(playback.ballQuat, true)
+      body.setLinvel(playback.ballVel, true)
+      body.setAngvel(playback.ballAngVel, true)
+    } catch {
+      /* body freed mid-frame */
+    }
   }, -55)
 
   return null

@@ -98,7 +98,8 @@ export function evaluateAICross(ctx: CarrierContext): AICrossEval {
   const nearByline = depth > 26
 
   if (role === 'gk') return { target: null, score: -99, kind: 'box' }
-  if (role === 'def' && depth < 20) return { target: null, score: -99, kind: 'box' }
+  // Laterais precisam poder cruzar assim que chegam no terço
+  if (role === 'def' && depth < 14) return { target: null, score: -99, kind: 'box' }
   if (depth < 10) return { target: null, score: -99, kind: 'box' }
 
   const target = findCrossTarget(carrier, teammates, bounds, team, ball.z)
@@ -111,10 +112,15 @@ export function evaluateAICross(ctx: CarrierContext): AICrossEval {
   const targetInBox =
     isInAttackingBox(target.position, team, bounds) ||
     (targetDepth > 3 && targetDepth < 17 && Math.abs(target.position.x) < halfW * 0.46)
+  // Aceita alvo perto da área (ainda entrando) — senão nunca corre pro fundo
+  const targetNearBox =
+    targetDepth > 2 &&
+    targetDepth < 22 &&
+    Math.abs(target.position.x - bounds.center.x) < halfW * 0.55
 
-  if (!targetInBox) return { target: null, score: -99, kind: 'box' }
+  if (!targetInBox && !targetNearBox) return { target: null, score: -99, kind: 'box' }
 
-  let score = 0
+  let score = targetInBox ? 0 : -1
   let kind: CrossKind = 'box'
 
   if (wing && finalThird) score += 3.4
@@ -125,6 +131,7 @@ export function evaluateAICross(ctx: CarrierContext): AICrossEval {
   if (nearByline) score += 1.35
   if (role === 'fwd' && wing) score += 0.9
   if (role === 'mid' && wing && depth > 14) score += 0.7
+  if (role === 'def' && wing && depth > 14) score += 1.1
 
   const targetOpen = spaceAround(target.position, opponents)
   if (targetOpen < 1.85) score -= 3.2
@@ -176,7 +183,7 @@ export function shouldAICross(
 ): AICrossEval | null {
   const cross = evaluateAICross(ctx)
   const threshMul = getAICrossThresholdMul(ctx.carrier.team)
-  const minScore = 3.2 * threshMul
+  const minScore = 2.85 * threshMul
   if (!cross.target || cross.score < minScore) return null
 
   const minHold =
@@ -186,10 +193,10 @@ export function shouldAICross(
 
   const wing = isWideCarrier(ctx.carrier, ctx.bounds)
   const depth = attackingDepth(ctx.carrier.team, ctx.carrier.position, ctx.bounds)
-  const beatsPass = cross.score >= passScore + 0.65 * threshMul
-  const wingDelivery = wing && depth > 14 && cross.score >= 3.6 * threshMul
+  const beatsPass = cross.score >= passScore + (wing ? 0.15 : 0.65) * threshMul
+  const wingDelivery = wing && depth > 12 && cross.score >= 2.9 * threshMul
   const switchPlay = cross.kind === 'switch' && cross.score >= 3.8 * threshMul
-  const bylineServe = depth > 24 && wing && cross.score >= 3.4 * threshMul
+  const bylineServe = depth > 22 && wing && cross.score >= 2.95 * threshMul
 
   if (beatsPass || wingDelivery || switchPlay || bylineServe) {
     return cross
@@ -211,17 +218,31 @@ export function getAICrossParams(
 
 /** Condução para abrir ângulo de cruzamento na ponta */
 export function getCrossSetupDribbleDir(ctx: CarrierContext): { x: number; z: number } | null {
-  const cross = evaluateAICross(ctx)
-  if (!cross.target || cross.score < 2.5) return null
-
   const { carrier, bounds, role } = ctx
-  if (role === 'gk' || role === 'def') return null
+  if (role === 'gk') return null
 
   const team = carrier.team
   const sign = getAttackSign(team, bounds)
   const goalZ = getAttackingGoalZ(team, bounds)
   const halfW = (bounds.maxX - bounds.minX) * 0.5
   const depth = attackingDepth(team, carrier.position, bounds)
+  const wing = isWideCarrier(carrier, bounds)
+
+  // Lateral/ponta larga: corre pro fundo mesmo antes do score de cruzamento estar alto
+  if (wing && role === 'def' && depth > 10 && depth < 34) {
+    const wideSign = Math.sign(carrier.position.x - bounds.center.x) || sign
+    if (depth < 18) {
+      const wideX = bounds.center.x + wideSign * halfW * 0.84
+      return normalize2D(wideX - carrier.position.x, sign * 3.6)
+    }
+    const bylineZ = goalZ - sign * 6.2
+    return normalize2D(wideSign * 0.28, bylineZ - carrier.position.z)
+  }
+
+  const cross = evaluateAICross(ctx)
+  if (!cross.target || cross.score < 2.2) return null
+  if (role === 'def' && !wing) return null
+
   if (depth < 8 || depth > 34) return null
 
   const wideSign = Math.sign(carrier.position.x - bounds.center.x) || sign

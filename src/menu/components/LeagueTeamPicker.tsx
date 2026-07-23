@@ -32,8 +32,8 @@ export function LeagueTeamPicker({
   const selectedTeam = teams.find((team) => team.id === teamId) ?? null
 
   return (
-    <section className={`kickoff-side kickoff-side--${side}`}>
-      <div className="kickoff-side__tag">{label}</div>
+    <section className={`fifa-picker fifa-picker--${side}`}>
+      <div className="fifa-picker__tag">{label}</div>
 
       <PickerRow
         title="Liga"
@@ -94,10 +94,13 @@ function PickerRow({
   active: boolean
 }) {
   return (
-    <div className={`kickoff-row${active ? ' kickoff-row--active' : ''}`}>
-      <span className="kickoff-row__label">{title}</span>
-      <span key={value} className="kickoff-row__value kickoff-row__value--change">
+    <div className={`fifa-row${active ? ' fifa-row--active' : ''}`}>
+      <span className="fifa-row__label">{title}</span>
+      <span key={value} className="fifa-row__value">
         {value}
+      </span>
+      <span className="fifa-row__arrows" aria-hidden>
+        ‹ ›
       </span>
     </div>
   )

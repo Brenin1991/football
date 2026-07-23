@@ -2,13 +2,16 @@ import * as THREE from 'three'
 import type { RapierRigidBody } from '@react-three/rapier'
 import type { TeamId } from '../types'
 import { PLAYER_SPEED, PLAYER_SPRINT_SPEED, STEAL_DISTANCE, WORLD_SCALE } from '../constants'
-import { ballBodyRef, playerRegistry, type PlayerRef } from './entityRegistry'
+import { ballBodyRef, ballRef, playerRegistry, type PlayerRef } from './entityRegistry'
 import { useGameStore, getUserTeam } from '../store/gameStore'
 import { adjustStealContestMargin, getOpponentStealVsUserChanceMul, getMatchDifficulty, getUserTeammateStealChanceMul } from './difficulty'
 import { clearDribbleState } from './ballDribble'
 import { ensureBallDynamic, syncBallFromBody } from './ballPhysics'
 import { distance2D, normalize2D } from './rules'
 import { minPlayerFootDist2D } from './playerSkeleton'
+import { getDribbleStealProtect } from './possession'
+import { getStaminaContestMul } from './playerStamina'
+import { getPlayerAttrMultipliers } from './playerAttributes'
 
 const BRAKE_MS = 220
 const BRAKE_FLOOR = 0.68
@@ -126,6 +129,84 @@ export function releaseBallFromSlideTackle(
   store.blockPasserClaim(holder.id, claimFreezeMs + 80)
 }
 
+/**
+ * Desequilíbrio / ombro no portador — bola VAI embora, livre no campo.
+ * Sem magnetismo: limpa posse, joga a bola fora dos pés e congela reclaim.
+ */
+export function releaseBallFromBodyImbalance(
+  holder: PlayerRef,
+  charger?: PlayerRef | null,
+) {
+  const store = useGameStore.getState()
+  if (store.ballPossession?.playerId === holder.id) {
+    store.clearPossession()
+  }
+  clearDribbleState()
+  ensureBallDynamic()
+
+  const face = holderFacing(holder)
+  const perp = { x: -face.z, z: face.x }
+  const side = Math.random() < 0.5 ? 1 : -1
+
+  let awayX = face.x * 0.35 + perp.x * side * 0.75
+  let awayZ = face.z * 0.35 + perp.z * side * 0.75
+  if (charger) {
+    const fromCharger = normalize2D(
+      holder.position.x - charger.position.x,
+      holder.position.z - charger.position.z,
+    )
+    // Empurra a bola pra frente do choque (não cola no ombro do roubador)
+    awayX = fromCharger.x * 0.55 + face.x * 0.2 + perp.x * side * 0.55
+    awayZ = fromCharger.z * 0.55 + face.z * 0.2 + perp.z * side * 0.55
+  }
+
+  const dir = normalize2D(awayX, awayZ)
+  const speed = (2.35 + Math.random() * 1.4) * WORLD_SCALE
+  const lift = 0.12 + Math.random() * 0.16
+  const claimFreezeMs = 720 + Math.random() * 220
+
+  const body = ballBodyRef.current as RapierRigidBody | null
+  if (body) {
+    body.wakeUp()
+    // Tira a bola dos pés imediatamente — senão reclaim no mesmo frame
+    const t = body.translation()
+    const sep = 0.55 * WORLD_SCALE
+    body.setTranslation(
+      {
+        x: t.x + dir.x * sep,
+        y: Math.max(t.y, 0.14),
+        z: t.z + dir.z * sep,
+      },
+      true,
+    )
+    body.setLinvel(
+      {
+        x: dir.x * speed,
+        y: lift,
+        z: dir.z * speed,
+      },
+      true,
+    )
+    syncBallFromBody(body)
+  } else {
+    const cur = ballRef.current
+    ballRef.current = {
+      x: cur.x + dir.x * 0.55 * WORLD_SCALE,
+      y: Math.max(cur.y, 0.14),
+      z: cur.z + dir.z * 0.55 * WORLD_SCALE,
+    }
+    ballRef.velocity = { x: dir.x * speed, y: lift, z: dir.z * speed }
+  }
+
+  store.setLastTouch(charger?.team ?? holder.team)
+  store.freezeDistanceBallClaims(claimFreezeMs)
+  store.blockPasserClaim(holder.id, claimFreezeMs + 160)
+  if (charger) {
+    // Quem desequilibrou também espera um tempo — disputa limpa, não magnetiza
+    store.blockPasserClaim(charger.id, Math.round(claimFreezeMs * 0.45))
+  }
+}
+
 type BrakeState = {
   until: number
   floor: number
@@ -216,10 +297,10 @@ export function getPhysicalDuelDecelMul(playerId: string): number {
 }
 
 function roleMass(role: PlayerRef['role']): number {
-  if (role === 'def') return 1.14
-  if (role === 'mid') return 1
-  if (role === 'fwd') return 0.9
-  return 1.05
+  if (role === 'def') return 1.28
+  if (role === 'mid') return 1.02
+  if (role === 'fwd') return 0.86
+  return 1.18
 }
 
 function contestPower(player: PlayerRef, other: PlayerRef, isAttacker: boolean): number {
@@ -243,7 +324,7 @@ function contestPower(player: PlayerRef, other: PlayerRef, isAttacker: boolean):
     power += clamp(-angle, -0.15, 1) * 0.32
     power += 0.2
   }
-  return power
+  return power * getStaminaContestMul(player.id) * getPlayerAttrMultipliers(player.id).strength
 }
 
 export type StandingStealOutcome = 'stolen' | 'held'
@@ -261,8 +342,10 @@ function standingStealChance(
   else if (margin > 0.05) chance = 0.3
   else if (margin > -0.08) chance = 0.2
   if (holderIsUser) chance *= getOpponentStealVsUserChanceMul()
-  if (stealerIsUser) chance = Math.min(0.92, chance * 1.48 + 0.12)
-  else if (stealerIsUserTeammate) {
+  if (stealerIsUser) {
+    // Jogador precisa sentir o roubo — piso alto quando encostou
+    chance = Math.min(0.94, Math.max(0.52, chance * 1.72 + 0.18))
+  } else if (stealerIsUserTeammate) {
     chance = Math.min(0.88, chance * getUserTeammateStealChanceMul() + 0.06)
   }
   return chance
@@ -294,6 +377,8 @@ export function resolveStandingStealContest(
   let margin = atk - def
   // IA aliada leva o corpo um pouco mais a sério no bote
   if (stealerIsUserTeammate) margin += 0.16
+  // Jogador controlado: empurrão extra na disputa
+  if (stealerIsUser) margin += 0.28
   margin = adjustStealContestMargin(
     margin,
     stealer.team,
@@ -308,20 +393,47 @@ export function resolveStandingStealContest(
     })
     if (footDist != null && footDist < STEAL_DISTANCE) {
       margin += 0.22 + (1 - footDist / STEAL_DISTANCE) * 0.28
+      if (stealerIsUser) margin += 0.18
     }
   }
   if (holderIsUser && stealer.team !== userTeam) {
     const diff = getMatchDifficulty()
-    margin -= diff === 'expert' ? 0.04 : diff === 'hard' ? 0.08 : 0.22
+    margin -= diff === 'expert' ? 0.18 : diff === 'hard' ? 0.22 : 0.32
+  }
+
+  // Drible / finta / 360: portador segura bem melhor a bola
+  const protect = getDribbleStealProtect(holder)
+  if (protect > 0.01) {
+    // Jogador ainda consegue roubar se colar — protect menos brutal
+    const protectMul = stealerIsUser ? 0.55 : 1
+    margin -= (0.28 + protect * 0.85) * protectMul
+  }
+
+  // Desarme do roubador vs força/drible do portador (camada de atributos)
+  {
+    const stealMul = getPlayerAttrMultipliers(stealerId).tackling
+    const holdMul =
+      getPlayerAttrMultipliers(holderId).strength * 0.55 +
+      getPlayerAttrMultipliers(holderId).dribbling * 0.45
+    margin += (stealMul - holdMul) * 0.22
   }
 
   const roll = Math.random()
-  const chance = standingStealChance(
+  let chance = standingStealChance(
     margin,
     holderIsUser,
     stealerIsUser,
     stealerIsUserTeammate,
   )
+  if (protect > 0.01) {
+    chance *= stealerIsUser
+      ? 1 - protect * 0.55
+      : 1 - protect * 0.94
+  }
+  // Corte 180 / spin: quase nunca sai roubo limpo (player ainda tem alguma chance)
+  if (protect > 0.9) {
+    chance *= stealerIsUser ? 0.35 : 0.12
+  }
   const stolen = roll < chance
   const userInvolved = stealerIsUser || holderIsUser
 
@@ -358,7 +470,7 @@ export function resolveStandingStealContest(
     )
     applyPhysicalContactBrake(
       holderId,
-      intensity * (stealerIsUserTeammate ? 0.95 : 0.88),
+      intensity * (stealerIsUserTeammate ? 0.95 : 0.88) * (1 - protect * 0.35),
       holderBrakeMs,
       stealerId,
       BRAKE_FLOOR,
@@ -366,14 +478,24 @@ export function resolveStandingStealContest(
   }
 
   const store = useGameStore.getState()
+  // Falhou o roubo do player: imunidade curta no adversário (pra poder tentar de novo)
   store.setStealImmunity(
     holderId,
-    stealerIsUser ? 420 : holderIsUser ? 1100 : stealerIsUserTeammate ? 220 : 320,
+    stealerIsUser
+      ? 160 + Math.round(protect * 120)
+      : holderIsUser
+        ? 1400 + Math.round(protect * 500)
+        : stealerIsUserTeammate
+          ? 220
+          : 320 + Math.round(protect * 200),
   )
   return 'held'
 }
 
-/** Empurrão leve de corpo durante a disputa — sensação FIFA/PES */
+/**
+ * @deprecated Prefer `resolvePlayerBodyCollisions` — mantido só para fallback
+ * se o solver de cápsula não rodar (ex.: fase especial).
+ */
 export function applyBodySeparationImpulse(
   moveVel: { x: number; z: number },
   selfId: string,
@@ -394,13 +516,8 @@ export function applyBodySeparationImpulse(
   if (dist > 1.55) return moveVel
 
   const closeness = clamp(1 - dist / 1.55, 0, 1)
-  const isActiveUser =
-    self.team === getUserTeam() &&
-    selfId === useGameStore.getState().activePlayerId
-  // Jogador controlado: empurrão suave. IA (sua ou adversária): disputa de corpo real.
-  const pushScale = isActiveUser ? 0.22 : self.team === getUserTeam() ? 0.55 : 0.42
-  const push = pushScale * WORLD_SCALE * simDelta * closeness
-  const damp = isActiveUser ? 0.985 : 0.96 - closeness * 0.05
+  const push = 0.7 * WORLD_SCALE * simDelta * closeness
+  const damp = 0.94 - closeness * 0.06
 
   return {
     x: moveVel.x * damp + sep.x * push,

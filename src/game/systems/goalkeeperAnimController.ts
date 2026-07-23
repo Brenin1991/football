@@ -342,7 +342,11 @@ export class GoalkeeperAnimController {
 
   /** Defesa com o pé — passe fraco, bola rasteira, domínio. */
   playFootSave(onContact?: () => void, onFinished?: () => void) {
-    const clip: PlayerAnim = this.actions.player_pass ? 'player_pass' : 'player_receive'
+    const clip: PlayerAnim = this.actions.player_pass_short
+      ? 'player_pass_short'
+      : this.actions.player_pass
+        ? 'player_pass'
+        : 'player_receive'
     const action = this.actions[clip]
     if (!action) {
       onContact?.()
@@ -417,7 +421,13 @@ export class GoalkeeperAnimController {
 
   /** Chute com o pé (tiro de meta, punt, reposição longa). */
   playFootKick(onContact?: () => void, onFinished?: () => void) {
-    const kickClip: PlayerAnim = this.actions.player_shoot ? 'player_shoot' : 'player_pass'
+    const kickClip: PlayerAnim = this.actions.player_shoot
+      ? 'player_shoot'
+      : this.actions.player_pass_long
+        ? 'player_pass_long'
+        : this.actions.player_pass
+          ? 'player_pass'
+          : 'player_pass_short'
     const action = this.actions[kickClip]
     if (!action) {
       onContact?.()

@@ -1,19 +1,51 @@
-import { EffectComposer, Bloom } from '@react-three/postprocessing'
+import { EffectComposer, Bloom, DepthOfField } from '@react-three/postprocessing'
 import { useFrame, useLoader, useThree } from '@react-three/fiber'
 import { useMemo, useRef, useEffect, useLayoutEffect } from 'react'
 import * as THREE from 'three'
+import type { DepthOfFieldEffect } from 'postprocessing'
 import { PsxCompositeEffect } from '../../psx/PsxCompositeEffect'
 import { updatePsxShaderTime } from '../../psx/psxMaterial'
 import { PSX_CLASSIC } from '../../psx/psxSettings'
-import { FIELD_SCALE, SHADOW_CAMERA, fitDirectionalLightShadowToField } from '../../systems/fieldData'
+import { FIELD_SCALE, fitDirectionalLightShadowToField } from '../../systems/fieldData'
 // @ts-ignore: three example loader types not present
 import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader'
 import { CubeCamera } from '@react-three/drei'
 import { useGameStore } from '../../store/gameStore'
+import {
+  estimateCinematicFocusDistance,
+  getCinematicDofStrength,
+} from '../../systems/cinematicDof'
 
 function PsxEffectPass() {
   const effect = useMemo(() => new PsxCompositeEffect(), [])
   return <primitive object={effect} />
+}
+
+function PsxCinematicDof() {
+  const { camera } = useThree()
+  const dofRef = useRef<DepthOfFieldEffect>(null)
+
+  useFrame(() => {
+    const effect = dofRef.current
+    if (!effect) return
+    const strength = getCinematicDofStrength()
+    effect.bokehScale = strength > 0.02 ? 1.35 * strength : 0
+    if (strength > 0.02) {
+      const focus = estimateCinematicFocusDistance(camera, 2.4)
+      effect.cocMaterial.focusDistance = focus
+      effect.cocMaterial.focusRange = 1.8
+    }
+  })
+
+  return (
+    <DepthOfField
+      ref={dofRef}
+      focusDistance={2.4}
+      focusRange={1.8}
+      bokehScale={0}
+      resolutionScale={0.5}
+    />
+  )
 }
 
 /** Iluminação + pós-processamento estilo PSX */
@@ -78,7 +110,7 @@ export function PsxPipeline() {
     light.shadow.bias = shadow.bias
     light.shadow.normalBias = shadow.normalBias
 
-    fitDirectionalLightShadowToField(light, scene, 1.55)
+    fitDirectionalLightShadowToField(light, scene, 1.12)
 
     const map = light.shadow.map?.texture
     if (map) {
@@ -95,23 +127,18 @@ export function PsxPipeline() {
       <hemisphereLight args={['#a8c4e0', '#3a5a40', 0.28]} />
       <directionalLight
         ref={lightRef}
-        position={[18 * FIELD_SCALE, 28 * FIELD_SCALE, 12 * FIELD_SCALE]}
-        intensity={1}
+        position={[-18 * FIELD_SCALE, 14 * FIELD_SCALE, -12 * FIELD_SCALE]}
+        intensity={2}
         color="#fae2b4"
         castShadow={shadow.enabled}
         shadow-mapSize={[shadow.mapSize, shadow.mapSize]}
-        shadow-camera-near={SHADOW_CAMERA.near}
-        shadow-camera-far={SHADOW_CAMERA.far}
-        shadow-camera-left={-SHADOW_CAMERA.halfX}
-        shadow-camera-right={SHADOW_CAMERA.halfX}
-        shadow-camera-top={SHADOW_CAMERA.halfZ}
-        shadow-camera-bottom={-SHADOW_CAMERA.halfZ}
         shadow-bias={shadow.bias}
         shadow-normalBias={shadow.normalBias}
       />
 
       <EffectComposer multisampling={0}>
           <PsxEffectPass />
+          <PsxCinematicDof />
           <Bloom
             intensity={post.bloom.intensity}
             luminanceThreshold={post.bloom.threshold}

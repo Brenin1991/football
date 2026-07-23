@@ -21,74 +21,21 @@ import { handleGkBallCollision } from '../systems/gkHandPhysics'
 import { getGkBodyBones, getGkHandBones } from '../systems/goalkeeperHands'
 
 const _pos = new THREE.Vector3()
-const OFF_FIELD = { x: 0, y: -80, z: 0 }
+/** Longe do campo — NÃO usar (0,y,0): o spawn da bola é a origem */
+const OFF_FIELD = { x: 200, y: -80, z: 200 }
 
 type GkBoneEntry = {
   bone: THREE.Object3D
-  radius: number
-  restitution: number
-  friction: number
   part: 'left' | 'right' | 'body'
   body: RapierRigidBody | null
 }
 
-type GkBoneSphereProps = {
-  gkId: string
+type GkBoneDef = {
+  bone: THREE.Object3D
   part: 'left' | 'right' | 'body'
   radius: number
   restitution: number
   friction: number
-  index: number
-  entriesRef: React.MutableRefObject<GkBoneEntry[]>
-}
-
-function GkBoneSphere({
-  gkId,
-  part,
-  radius,
-  restitution,
-  friction,
-  index,
-  entriesRef,
-}: GkBoneSphereProps) {
-  return (
-    <RigidBody
-      ref={(body) => {
-        if (!body) return
-        const entry = entriesRef.current[index]
-        if (entry) entry.body = body
-      }}
-      type="kinematicPosition"
-      colliders={false}
-      canSleep={false}
-      userData={{ isGkSaveCollider: true, gkId, part }}
-    >
-      <BallCollider
-        args={[radius]}
-        friction={friction}
-        restitution={restitution}
-        restitutionCombineRule={CoefficientCombineRule.Max}
-        frictionCombineRule={CoefficientCombineRule.Max}
-        onCollisionEnter={(e) => {
-          const other = e.other.rigidBodyObject
-          if (!other?.userData?.isBall) return
-          handleGkBallCollision(gkId, part)
-        }}
-      />
-      {PHYSICS_DEBUG && (
-        <mesh renderOrder={1001}>
-          <sphereGeometry args={[radius, 8, 8]} />
-          <meshBasicMaterial
-            color={part === 'body' ? '#fb923c' : '#facc15'}
-            wireframe
-            transparent
-            opacity={0.9}
-            depthTest={false}
-          />
-        </mesh>
-      )}
-    </RigidBody>
-  )
 }
 
 type GkHandCollidersProps = {
@@ -96,77 +43,62 @@ type GkHandCollidersProps = {
   modelRootRef: React.RefObject<THREE.Group | null>
 }
 
+function discoverGkBones(root: THREE.Object3D): GkBoneDef[] | null {
+  const hands = getGkHandBones(root)
+  if (!hands.left || !hands.right) return null
+  return [
+    {
+      bone: hands.left,
+      part: 'left',
+      radius: GK_HAND_RADIUS,
+      restitution: GK_HAND_RESTITUTION,
+      friction: GK_HAND_FRICTION,
+    },
+    {
+      bone: hands.right,
+      part: 'right',
+      radius: GK_HAND_RADIUS,
+      restitution: GK_HAND_RESTITUTION,
+      friction: GK_HAND_FRICTION,
+    },
+    ...getGkBodyBones(root).map((bone) => ({
+      bone,
+      part: 'body' as const,
+      radius: GK_BODY_BONE_RADIUS,
+      restitution: GK_BODY_RESTITUTION,
+      friction: GK_BODY_FRICTION,
+    })),
+  ]
+}
+
 export function GkHandColliders({ gkId, modelRootRef }: GkHandCollidersProps) {
-  const [bones, setBones] = useState<{
-    left: THREE.Object3D
-    right: THREE.Object3D
-    body: THREE.Object3D[]
-  } | null>(null)
+  const [boneDefs, setBoneDefs] = useState<GkBoneDef[]>([])
   const entriesRef = useRef<GkBoneEntry[]>([])
-  const parkedRef = useRef(true)
+  // false: no 1º frame inativo força park (bodies nascem fora do osso)
+  const parkedRef = useRef(false)
 
   useEffect(() => {
     const root = modelRootRef.current
     if (!root) return
-    const hands = getGkHandBones(root)
-    if (hands.left && hands.right) {
-      setBones({
-        left: hands.left,
-        right: hands.right,
-        body: getGkBodyBones(root),
-      })
-    }
+    const defs = discoverGkBones(root)
+    if (defs) setBoneDefs(defs)
   }, [modelRootRef])
 
   useFrame(() => {
-    if (!bones) {
+    if (boneDefs.length === 0) {
       const root = modelRootRef.current
       if (!root) return
-      const hands = getGkHandBones(root)
-      if (hands.left && hands.right) {
-        setBones({
-          left: hands.left,
-          right: hands.right,
-          body: getGkBodyBones(root),
-        })
-      }
+      const defs = discoverGkBones(root)
+      if (defs) setBoneDefs(defs)
       return
     }
 
-    if (entriesRef.current.length === 0) {
-      const list: GkBoneEntry[] = [
-        {
-          bone: bones.left,
-          radius: GK_HAND_RADIUS,
-          restitution: GK_HAND_RESTITUTION,
-          friction: GK_HAND_FRICTION,
-          part: 'left',
-          body: null,
-        },
-        {
-          bone: bones.right,
-          radius: GK_HAND_RADIUS,
-          restitution: GK_HAND_RESTITUTION,
-          friction: GK_HAND_FRICTION,
-          part: 'right',
-          body: null,
-        },
-        ...bones.body.map((bone) => ({
-          bone,
-          radius: GK_BODY_BONE_RADIUS,
-          restitution: GK_BODY_RESTITUTION,
-          friction: GK_BODY_FRICTION,
-          part: 'body' as const,
-          body: null,
-        })),
-      ]
-      entriesRef.current = list
-    }
-
     const active = areGkPhysicsCollidersActive(gkId)
+    const entries = entriesRef.current
+
     if (!active) {
       if (!parkedRef.current) {
-        for (const entry of entriesRef.current) {
+        for (const entry of entries) {
           entry.body?.setNextKinematicTranslation(OFF_FIELD)
         }
         parkedRef.current = true
@@ -175,7 +107,7 @@ export function GkHandColliders({ gkId, modelRootRef }: GkHandCollidersProps) {
     }
 
     parkedRef.current = false
-    for (const entry of entriesRef.current) {
+    for (const entry of entries) {
       const body = entry.body
       if (!body) continue
       entry.bone.getWorldPosition(_pos)
@@ -183,41 +115,63 @@ export function GkHandColliders({ gkId, modelRootRef }: GkHandCollidersProps) {
     }
   })
 
-  if (!bones) return null
-
-  const handCount = 2
+  if (boneDefs.length === 0) return null
 
   return (
     <>
-      <GkBoneSphere
-        gkId={gkId}
-        part="left"
-        radius={GK_HAND_RADIUS}
-        restitution={GK_HAND_RESTITUTION}
-        friction={GK_HAND_FRICTION}
-        index={0}
-        entriesRef={entriesRef}
-      />
-      <GkBoneSphere
-        gkId={gkId}
-        part="right"
-        radius={GK_HAND_RADIUS}
-        restitution={GK_HAND_RESTITUTION}
-        friction={GK_HAND_FRICTION}
-        index={1}
-        entriesRef={entriesRef}
-      />
-      {bones.body.map((bone, i) => (
-        <GkBoneSphere
+      {boneDefs.map(({ bone, part, radius, restitution, friction }, index) => (
+        <RigidBody
           key={bone.uuid}
-          gkId={gkId}
-          part="body"
-          radius={GK_BODY_BONE_RADIUS}
-          restitution={GK_BODY_RESTITUTION}
-          friction={GK_BODY_FRICTION}
-          index={handCount + i}
-          entriesRef={entriesRef}
-        />
+          ref={(body) => {
+            if (!body) return
+            const entries = entriesRef.current
+            // Cria a entry no ref (como PlayerBoneColliders) — se esperar o
+            // useFrame, o body nunca é ligado e o colisor fica em OFF_FIELD.
+            if (!entries[index]) {
+              entries[index] = { bone, part, body }
+            } else {
+              entries[index].body = body
+              entries[index].bone = bone
+              entries[index].part = part
+            }
+            try {
+              body.setTranslation(OFF_FIELD, true)
+            } catch {
+              /* body ainda não pronto */
+            }
+            parkedRef.current = false
+          }}
+          type="kinematicPosition"
+          colliders={false}
+          canSleep={false}
+          position={[OFF_FIELD.x, OFF_FIELD.y, OFF_FIELD.z]}
+          userData={{ isGkSaveCollider: true, gkId, part }}
+        >
+          <BallCollider
+            args={[radius]}
+            friction={friction}
+            restitution={restitution}
+            restitutionCombineRule={CoefficientCombineRule.Max}
+            frictionCombineRule={CoefficientCombineRule.Max}
+            onCollisionEnter={(e) => {
+              const other = e.other.rigidBodyObject
+              if (!other?.userData?.isBall) return
+              handleGkBallCollision(gkId, part)
+            }}
+          />
+          {PHYSICS_DEBUG && (
+            <mesh renderOrder={1001}>
+              <sphereGeometry args={[radius, 8, 8]} />
+              <meshBasicMaterial
+                color={part === 'body' ? '#fb923c' : '#facc15'}
+                wireframe
+                transparent
+                opacity={0.9}
+                depthTest={false}
+              />
+            </mesh>
+          )}
+        </RigidBody>
       ))}
     </>
   )
